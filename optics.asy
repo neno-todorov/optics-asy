@@ -4650,6 +4650,54 @@ struct BeamSplitter {
     }
 }
 
+struct Polarizer {
+    // 1. Ideal Linear Polarizer Plate
+    static Element LP(pair center, real angle_deg = 0.0, real diameter = 30.0) {
+        Medium polMed = medium("Polarizer").add(Dichroic(0.0, 1000.0));
+        // Rotated to angle_deg
+        return Interface(box(center - (1.0, diameter / 2), center + (1.0, diameter / 2)), polMed, Materials.VACUUM);
+    }
+
+    // 2. Quarter-Wave Plate (QWP) - Retardance = pi/2
+    static Element QWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0) {
+        // Retardance property delta = pi/2 rotated by fastAxis_deg
+        Property qwp = property(
+            "QWP",
+            new Ray[](Ray r, Hit h, mediumResolver res) {
+                r.pol.applyRotation(radians(-fastAxis_deg));
+                r.pol.applyRetardance(pi / 2.0);
+                r.pol.applyRotation(radians(fastAxis_deg));
+                return new Ray[]{r};
+            },
+            PropertyStage.Interact);
+
+        Element plate = Interface(
+            linearBoundary(center, (cos(radians(fastAxis_deg + 90)), sin(radians(fastAxis_deg + 90))), diameter),
+            Materials.VACUUM);
+        plate.surfaces[0].add(qwp);
+        return plate;
+    }
+
+    // 3. Half-Wave Plate (HWP) - Retardance = pi (Rotates linear polarization by 2*theta)
+    static Element HWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0) {
+        Property hwp = property(
+            "HWP",
+            new Ray[](Ray r, Hit h, mediumResolver res) {
+                r.pol.applyRotation(radians(-fastAxis_deg));
+                r.pol.applyRetardance(pi);
+                r.pol.applyRotation(radians(fastAxis_deg));
+                return new Ray[]{r};
+            },
+            PropertyStage.Interact);
+
+        Element plate = Interface(
+            linearBoundary(center, (cos(radians(fastAxis_deg + 90)), sin(radians(fastAxis_deg + 90))), diameter),
+            Materials.VACUUM);
+        plate.surfaces[0].add(hwp);
+        return plate;
+    }
+}
+
 // Absorber, Aperture, Grating & Phase Gradient Factories
 Element Absorber(path boundary, pen stroke = config.rendering.penAbsorber, string name = "Absorber") {
     Property[] props = {Absorb()};
@@ -5709,33 +5757,66 @@ Inset PolarizationInset(Polarization pol,
     real minArrowSize = config.rendering.polarizationInsetMinArrowFraction * orbitR;
 
     // =========================================================================
-    // 1. UNPOLARIZED STARBURST
+    // 1. STARBURST SPOKES (Unpolarized & Partially Polarized)
     // =========================================================================
-    if (I_unpol > config.math.eps) {
-        real unpolR = displayFactor * sqrt(I_unpol);
-        if (dop < config.rendering.polarizationInsetUnpolarizedThreshold && unpolR > minArrowSize) {
-            int spokes = config.rendering.polarizationInsetUnpolarizedSpokes;
-            for (int k = 0; k < spokes; ++k) {
-                pair dir = dir((k * 180.0 / spokes)) * unpolR * 0.85;
-                if (length(dir) > minArrowSize)
-                    draw(ins.pic, -dir -- dir, p + 0.4bp, Arrows(HookHead, 2.0pt));
-                else
-                    draw(ins.pic, -dir -- dir, p + 0.4bp);
-            }
+    // Only drawn when there is a significant unpolarized fraction (DoP < 95%)
+    if (dop < 0.95 && localI > config.math.eps) {
+        real unpolR = displayFactor * sqrt(localI);
+        int spokes = config.rendering.polarizationInsetUnpolarizedSpokes;
+        if (spokes <= 0) spokes = 8;
+
+        real psi = pol.psi();
+        real minSpokeAlpha = 0.05; // Faint floor for orthogonal/unpolarized directions
+        real maxSpokeAlpha = 0.95; // Bold ceiling for dominant polarization direction
+
+        for (int k = 0; k < spokes; ++k) {
+            real ang = radians(k * 180.0 / spokes);
+            pair dir = (cos(ang), sin(ang)) * unpolR * 0.85;
+
+            // Alignment factor along the spoke angle: 1.0 = aligned with psi, 0.0 = perpendicular
+            real cosDiff = cos(ang - psi);
+            real alignWeight = cosDiff * cosDiff;
+
+            // Physical opacity modulation:
+            // - Pure unpolarized (dop = 0): all spokes have equal alpha (0.70)
+            // - Partially polarized (dop > 0): aligned spoke stays bold, orthogonal fades to minSpokeAlpha
+            real spokeFactor = (1.0 - dop) * 0.75 + dop * alignWeight;
+            real spokeAlpha = minSpokeAlpha + (maxSpokeAlpha - minSpokeAlpha) * spokeFactor;
+            spokeAlpha = clamp(spokeAlpha, minSpokeAlpha, 1.0);
+
+            // Give dominant spokes slightly more line weight for clarity
+            // real spokeWidth = (dop > 0.2 && alignWeight > 0.7) ? 0.6bp : 0.4bp;
+            // pen spokePen = p + opacity(spokeAlpha);
+            real s = 1.0 - spokeAlpha;
+            pen spokePen = p + gray(s);
+
+            if (length(dir) > minArrowSize) {
+                draw(ins.pic, (0, 0) -- - dir, spokePen, Arrow(HookHead, 2.0pt), BeginPenMargin);
+                draw(ins.pic, (0, 0) -- dir, spokePen, Arrow(HookHead, 2.0pt), BeginPenMargin);
+            } else
+                draw(ins.pic, -dir -- dir, spokePen);
         }
     }
 
     // =========================================================================
-    // 2. POLARIZED FRACTION (Linear & Elliptical)
+    // 2. POLARIZED SHAPE (Linear Line or Ellipse)
     // =========================================================================
-    if (I_pol > config.math.eps) {
+    // Condition to avoid double-drawing:
+    // - Pure polarized states (dop >= 0.95): always draw the clean line/ellipse.
+    // - Partially polarized states (dop < 0.95): ONLY draw if it has non-zero ellipticity
+    //   (so the viewer can see the ellipse and rotation arrow). If linear, the modulated
+    //   spokes already represent the state without a duplicate line.
+    bool hasEllipticity = (abs(pol.chi()) >= radians(1.5));
+    bool drawPolarizedShape = (dop >= 0.95) || (hasEllipticity && I_pol > config.math.eps);
+
+    if (drawPolarizedShape && I_pol > config.math.eps) {
         real psi = pol.psi();
         real chi = pol.chi();
         real a = displayFactor * sqrt(I_pol) * cos(chi);
         real b = displayFactor * sqrt(I_pol) * abs(sin(chi));
 
-        // Linear polarization:
-        if (abs(chi) < radians(1.5)) {
+        // Linear polarization (only runs for pure polarized states):
+        if (!hasEllipticity) {
             pair tip = a * (cos(psi), sin(psi));
             if (a > minArrowSize)
                 draw(ins.pic, -tip -- tip, p, Arrows(HookHead, 2.5pt));
@@ -5775,7 +5856,6 @@ Inset PolarizationInset(Polarization pol,
     add(ins.pic, fReadout, (0, -r - 2), S);
     return ins;
 }
-
 // Trace Overload: Automatically extracts target point from the ray segment
 Inset PolarizationInset(Trace tr,
                         int segmentIndex = 0,
