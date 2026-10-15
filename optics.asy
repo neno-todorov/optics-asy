@@ -1,8 +1,11 @@
-// ============================================================================
-// PART I: CORE ENGINE
-// ============================================================================
 // optics.asy
-// Optics - Complete, Stateless, Composable 2D Optical Ray Tracing Engine
+//
+// An attempt at a 2D optical ray tracing engine
+//
+// TODO:
+//   1. make it work
+//   2. make documentation
+//   3. make more tests
 
 import geometry;
 import graph;
@@ -37,6 +40,9 @@ pen DarkGreen(real x = 1.0) { return interp(white, dark_green, x); }
 pen DarkYellow(real x = 1.0) { return interp(white, dark_yellow, x); }
 pen DarkBrown(real x = 1.0) { return interp(white, dark_brown, x); }
 
+// ============================================================================
+// PART I: CORE ENGINE
+// ============================================================================
 struct GRINSolverType {
     static int RK4 = 0;  // Classic Fixed-Step
     static int RK45 = 1; // Adaptive Cash-Karp
@@ -424,6 +430,7 @@ Polarization copy(Polarization p) {
     c.Es = p.Es;
     c.Ep = p.Ep;
     c.S = copy(p.S);
+    c.isUnpolarized = p.isUnpolarized;
     return c;
 }
 
@@ -617,18 +624,29 @@ VolumeProperty Gain(real g) {
 VolumeProperty Dichroic(real alpha_s, real alpha_p) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Dichroic";
+
     vp.polarizationStep = new Polarization(Polarization inPol, pair p, pair d, real lambda, real ds) {
         if (inPol == null || ds <= 0) return inPol;
+
         Polarization out = copy(inPol);
+
         real Ts = exp(-alpha_s * ds);
         real Tp = exp(-alpha_p * ds);
-        // 1. Update coherent Jones amplitudes
-        out.Es = out.Es * sqrt(Ts);
-        out.Ep = out.Ep * sqrt(Tp);
-        // 2. Update Stokes parameters via Mueller diattenuation matrix
-        applyDiattenuation(out.S, Ts, Tp);
+
+        // Transform Stokes parameters using the Mueller matrix.
+        applyDiattenuation(out.S, inPol.S, Ts, Tp);
+
+        // Update Jones amplitudes for coherent field tracking.
+        out.Es = inPol.Es * sqrt(Ts);
+        out.Ep = inPol.Ep * sqrt(Tp);
+
+        // The flag describes the output state, not its history.
+        real dop = out.S.dop();
+        out.isUnpolarized = (dop <= 1e-8);
+
         return out;
     };
+
     return vp;
 }
 
@@ -777,10 +795,22 @@ struct Medium {
         }
         real a = absorption(p, d, lambda, inPol);
         if (a != 0) {
+            // Field amplitudes scale as exp(-alpha*ds/2),
+            // so intensity scales as exp(-alpha*ds).
             real decay = exp(-a * ds / 2.0);
+
             currPol.Es = currPol.Es * decay;
             currPol.Ep = currPol.Ep * decay;
+
+            // Keep Stokes intensity consistent with the field amplitudes.
+            // Unpolarized intensity() reads S.S0 directly.
+            currPol.S.S0 *= decay * decay;
+
+            // Recompute Stokes parameters for polarized light.
+            // For unpolarized light, this preserves S.S0 and zeros S1-S3.
+            currPol.syncStokesFromJones();
         }
+
         return currPol;
     }
     // Anisotropic Direction & Normal Conversion (Pure delegation)
