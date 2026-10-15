@@ -1822,6 +1822,69 @@ real delta_refl_above = degrees(atan2(r_refl_above.pol.S3, r_refl_above.pol.S2))
 assert_near("Reflected relative phase above Brewster is 0 deg", delta_refl_above, 0.0, 1e-3);
 write("");
 
+// ============================================================================
+// Test Case 64: Anisotropic Maxwell Boundary Solver - Isotropic Limit
+// ============================================================================
+write("Test Case 64: Anisotropic Maxwell Boundary Solver - Isotropic Limit");
+// When no == ne == n_glass, anisotropic solver MUST match isotropic Snell exactly
+real n_test = 1.55;
+Medium m_iso = medium("Glass_Iso", n_test);
+Medium m_uni_o = medium("Uni_O", n_test);
+Medium m_uni_e = medium("Uni_E", n_test).add(UniaxialExtraordinary(n_test, n_test, (1.0, 0.0)));
+
+Element crystal_iso = Crystal(box((0.0, -20.0), (20.0, 20.0)), m_uni_o, m_uni_e, Materials.VACUUM);
+OpticalSystem sys = system(crystal_iso, Materials.VACUUM);
+
+// Launch at 30 deg incidence
+Ray r_in = Ray((-10, -5), unit((cos(radians(30.0)), sin(radians(30.0)))), pol = Polarization.linear(45.0, 1.0));
+Trace t = sys.trace(r_in);
+Interaction ix = t.interaction(0);
+
+// Theoretical isotropic Fresnel values for n1 = 1.0, n2 = 1.55 at 30 deg
+real cos_i = cos(radians(30.0));
+real sin_t = (1.0 / n_test) * sin(radians(30.0));
+real cos_t = sqrt(1.0 - sin_t * sin_t);
+real rs_iso = (1.0 * cos_i - n_test * cos_t) / (1.0 * cos_i + n_test * cos_t);
+real rp_iso = (n_test * cos_i - 1.0 * cos_t) / (n_test * cos_i + 1.0 * cos_t);
+
+Ray o_ray = ix.transmitted[0];
+Ray e_ray = ix.transmitted[1];
+
+assert_near("Isotropic limit To matches (1 - Rs^2)", o_ray.intensity() / 0.5, 1.0 - rs_iso ^ 2, 1e-5);
+assert_near("Isotropic limit Te matches (1 - Rp^2)", e_ray.intensity() / 0.5, 1.0 - rp_iso ^ 2, 1e-5);
+assert_near_pair("Isotropic limit o-ray and e-ray directions are identical", o_ray.d, e_ray.d, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 65: Anisotropic Maxwell Boundary Solver - Energy Conservation
+// ============================================================================
+write("Test Case 65: Anisotropic Maxwell Boundary Solver - Energy Conservation");
+// Calcite: no = 1.658, ne = 1.486
+real no_cal = 1.658, ne_cal = 1.486;
+pair c_axis = unit((1.0, 1.0)); // 45 deg tilted optic axis
+Medium calcite_o = medium("Calcite_O", no_cal);
+Medium calcite_e = medium("Calcite_E", ne_cal).add(UniaxialExtraordinary(no_cal, ne_cal, c_axis));
+
+Element crystal = Crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e, Materials.VACUUM);
+OpticalSystem sys_energy = system(crystal, Materials.VACUUM);
+
+// Launch arbitrary elliptical polarization at 40 deg incidence
+Polarization p_in = Polarization.fromAngles(25.0, 15.0, 1.0); // Intensity = 1.0
+Ray r_in = Ray((-10, 0), unit((cos(radians(40.0)), sin(radians(40.0)))), pol = p_in);
+
+Trace t = sys_energy.trace(r_in);
+Interaction ix = t.interaction(0);
+
+real power_o = ix.transmitted[0].intensity();
+real power_e = ix.transmitted[1].intensity();
+real power_refl = ix.reflected[0].intensity();
+real total_power_out = power_o + power_e + power_refl;
+
+// Strict Maxwell Poynting flux conservation: R + To + Te == 1.0
+assert_near("Strict energy conservation across anisotropic boundary (R + To + Te = 1)", total_power_out, 1.0, 1e-5);
+assert_true("Extraordinary ray walks off from ordinary ray", abs(ix.transmitted[0].d.y - ix.transmitted[1].d.y) > 0.01);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
