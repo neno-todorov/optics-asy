@@ -771,7 +771,7 @@ write("");
 // Test Case 27: Circular Polarization Handedness
 // ============================================================================
 write("Test Case 27: Circular Polarization Handedness");
-Polarization rcp = Polarization.circular(1, 1.0);
+Polarization rcp = Polarization.circular();
 assert_near("RCP S0", rcp.S0, 1.0, 1e-5);
 assert_near("RCP S1", rcp.S1, 0.0, 1e-5);
 assert_near("RCP S2", rcp.S2, 0.0, 1e-5);
@@ -779,7 +779,7 @@ assert_near("RCP S3", rcp.S3, 1.0, 1e-5);
 assert_near("RCP chi angle (rad)", rcp.chi(), pi / 4.0, 1e-5);
 assert_near("RCP DOP", rcp.dop(), 1.0, 1e-5);
 
-Polarization lcp = Polarization.circular(-1, 1.0);
+Polarization lcp = Polarization.circular(false);
 assert_near("LCP S3", lcp.S3, -1.0, 1e-5);
 assert_near("LCP chi angle (rad)", lcp.chi(), -pi / 4.0, 1e-5);
 assert_near("LCP DOP", lcp.dop(), 1.0, 1e-5);
@@ -1033,7 +1033,7 @@ write("");
 write("Test Case 37: Polarization.scaleTo & Single-Source Phase Tracking");
 
 // Part A: Direct Unit Test on Polarization.scaleTo
-Polarization pol = Polarization.circular(1, 2.0);
+Polarization pol = Polarization.circular(2.0);
 assert_near("Initial intensity", pol.intensity(), 2.0, 1e-6);
 
 pol.scaleTo(8.0);
@@ -1352,7 +1352,7 @@ applyPolarizationRotation(rot, radians(-45.0));
 assert_near("Inverse rotation: S1 restored", rot.S1, 1.0, 1e-5);
 assert_near("Inverse rotation: S2 restored", rot.S2, 0.0, 1e-5);
 
-Polarization circ = Polarization.circular(1, 1.0);
+Polarization circ = Polarization.circular();
 real s3_before = circ.S3;
 applyPolarizationRotation(circ, radians(23.0));
 
@@ -1406,7 +1406,7 @@ write("");
 write("Test Case 48: Stokes physical-state invariants");
 Polarization extraS = Polarization.linear(0.0, 1.0);
 Polarization extraP = Polarization.linear(90.0, 1.0);
-Polarization extraCirc = Polarization.circular(1, 1.0);
+Polarization extraCirc = Polarization.circular();
 
 assert_relative("S-polarized light has unit degree of polarization", extraS.dop(), 1.0);
 assert_relative("P-polarized light has unit degree of polarization", extraP.dop(), 1.0);
