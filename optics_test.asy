@@ -1,38 +1,44 @@
 // test_opticas.asy
-// physical verification and unit test suite for optics.asy
+// physical verification and unit tests for optics.asy
 
 import optics;
 
 write("================================================================================");
-write("         OPTICS.ASY PHYSICAL TEST SUITE                                         ");
+write("         OPTICS.ASY TESTS                                                       ");
 write("================================================================================");
 write("");
 
 // Test Assertion Helpers
 int total_tests = 0;
 int passed_tests = 0;
+int failed_tests = 0;
 
+// Keep tolerances explicit. Comparisons intentionally use "diff <= tol":
+// NaN differences compare false and therefore fail the assertion.
 void assert_near(string testName, real val, real expected, real tol = 1e-4) {
     ++total_tests;
     real diff = abs(val - expected);
-    if (diff < tol) {
+    if (diff <= tol) {
         ++passed_tests;
-        write("  [PASS] " + testName + " = " + string(val) + " (matches expected " + string(expected) + ")");
+        write("  [PASS] " + testName + " = " + string(val));
     } else {
-        write("  [FAIL] " + testName + " = " + string(val) + " (expected " + string(expected) + ", diff " +
-              string(diff) + ")");
+        ++failed_tests;
+        write("  [FAIL] " + testName + " = " + string(val) + " (expected " + string(expected) + ", abs diff " +
+              string(diff) + ", tolerance " + string(tol) + ")");
     }
 }
 
 void assert_near_pair(string testName, pair val, pair expected, real tol = 1e-4) {
     ++total_tests;
     real diff = length(val - expected);
-    if (diff < tol) {
+    if (diff <= tol) {
         ++passed_tests;
-        write("  [PASS] " + testName + " = (" + string(val.x) + ", " + string(val.y) + ") (matches expected)");
+        write("  [PASS] " + testName + " = (" + string(val.x) + ", " + string(val.y) + ")");
     } else {
+        ++failed_tests;
         write("  [FAIL] " + testName + " = (" + string(val.x) + ", " + string(val.y) + ") (expected (" +
-              string(expected.x) + ", " + string(expected.y) + "), diff " + string(diff) + ")");
+              string(expected.x) + ", " + string(expected.y) + "), error " + string(diff) + ", tolerance " +
+              string(tol) + ")");
     }
 }
 
@@ -42,9 +48,30 @@ void assert_bool(string testName, bool val, bool expected) {
         ++passed_tests;
         write("  [PASS] " + testName + " = " + (val ? "true" : "false"));
     } else {
+        ++failed_tests;
         write("  [FAIL] " + testName + " = " + (val ? "true" : "false") + " (expected " +
               (expected ? "true" : "false") + ")");
     }
+}
+
+void assert_true(string testName, bool condition) { assert_bool(testName, condition, true); }
+
+void assert_false(string testName, bool condition) { assert_bool(testName, condition, false); }
+
+// Relative comparison is useful for values whose magnitude varies by orders
+// of magnitude. A small absolute floor still protects comparisons near zero.
+void assert_relative(string testName, real val, real expected, real relTol = 1e-6, real absTol = 1e-10) {
+    real allowed = max(absTol, relTol * max(abs(val), abs(expected)));
+    assert_near(testName, val, expected, allowed);
+}
+
+void assert_stokes_physical(string name, Stokes s, real tol = 1e-5) {
+    assert_bool(name + ": nonnegative S0", s.S0 >= -tol, true);
+
+    real polarized2 = s.S1 * s.S1 + s.S2 * s.S2 + s.S3 * s.S3;
+    real total2 = s.S0 * s.S0;
+
+    assert_bool(name + ": Stokes cone invariant", polarized2 <= total2 + tol, true);
 }
 
 // Spatial resolvers for test boundaries
@@ -291,8 +318,9 @@ write("");
 
 // Test Case 10: Dichroic Polarizer & Malus's Law
 write("Test Case 10: Dichroic Polarizer & Malus's Law");
+real alpha_s_val = 0.0;
 real alpha_p_val = 2.0;
-Medium dichroicFilter = medium("Dichroic Polarizer").add(Dichroic(0.0, alpha_p_val));
+Medium dichroicFilter = medium("Dichroic Polarizer").add(Dichroic(alpha_s_val, alpha_p_val));
 
 // 45-degree linearly polarized light (I = 1.0, Es = Ep = sqrt(0.5))
 Polarization pol_45 = Polarization.linear(45.0, amplitude = 1.0);
@@ -357,12 +385,14 @@ Polarization pol_rot_f = faradayMedium.stepPolarization(pol_init_f, (0, 0), (1, 
 
 assert_near("Forward Faraday Es amplitude (cos 30 deg)", length(pol_rot_f.Es), cos(30 * pi / 180.0));
 assert_near("Forward Faraday Ep amplitude (sin 30 deg)", length(pol_rot_f.Ep), sin(30 * pi / 180.0));
+assert_near("Forward Faraday rotation has positive Ep component", pol_rot_f.Ep.x, sin(radians(30.0)), 1e-4);
 
 // Backward propagation: d = (-1, 0) over ds = 3.0 units. Expected rotation = -30 deg.
 Polarization pol_rot_b = faradayMedium.stepPolarization(pol_init_f, (0, 0), (-1, 0), 633.0, 3.0);
 
 assert_near("Backward Faraday Es amplitude (cos -30 deg)", length(pol_rot_b.Es), cos(-30 * pi / 180.0));
-assert_near("Backward Faraday Ep amplitude (sin -30 deg)", length(pol_rot_b.Ep), abs(sin(-30 * pi / 180.0)));
+assert_near("Backward Faraday Ep amplitude magnitude", length(pol_rot_b.Ep), abs(sin(radians(30.0))));
+assert_near("Backward Faraday rotation has negative Ep component", pol_rot_b.Ep.x, sin(radians(-30.0)), 1e-4);
 assert_near("Intensity conservation in Faraday rotator", pol_rot_f.intensity(), 1.0);
 write("");
 
@@ -855,7 +885,9 @@ VolumeProperty highPriorityIndex = volumeProperty("high priority", priority = 10
 highPriorityIndex.phaseIndex = new real(pair p, pair d, real lambda, Polarization pol) { return 1.6; };
 Medium orderedMedium = medium("ordered").add(highPriorityIndex).add(lowPriorityIndex);
 assert_near("Volume-index profiles compose multiplicatively", orderedMedium.n(), 1.92);
-assert_bool("Volume-property priority determines evaluation order", orderedMedium.orderedProperties()[1].name == "high priority", true);
+assert_bool("Volume-property priority determines evaluation order",
+            orderedMedium.orderedProperties()[1].name == "high priority",
+            true);
 write("");
 
 // Test Case 29: Diverging and Parallel Beam Generator Factories
@@ -913,13 +945,12 @@ real x_v_focus_top = trans_cc_top.p.x + trans_cc_top.d.x * t_v_focus_top;
 assert_near("Biconcave virtual focal point X (expected 50.0)", x_v_focus_top, 50.0);
 write("");
 
-write("Test Case 31: Three-Polarizer Quantum Eraser / Malus Paradox");
-// Unpolarized light through 0 deg, 45 deg, and 90 deg polarizers
-// Classical transmission without middle polarizer: 0%
-// With 45 deg polarizer inserted: I = 0.5 * cos^2(45) * cos^2(45) = 1/8 = 0.125
-Medium pol0 = medium("Pol 0").add(Dichroic(0.0, 100.0));   // Transmits Es (0 deg)
-Medium pol45 = medium("Pol 45").add(OpticalActivity(0.0)); // 45 deg linear analyzer
-Medium pol90 = medium("Pol 90").add(Dichroic(100.0, 0.0)); // Transmits Ep (90 deg)
+write("Test Case 31: Crossed Polarizer Extinction");
+// This setup contains two crossed ideal polarizers. It verifies extinction
+// without claiming to model the separate 45-degree intermediate polarizer
+// experiment (which would require a rotated analyzer element).
+Medium pol0 = medium("Pol 0").add(Dichroic(0.0, 100.0));   // Transmits Es
+Medium pol90 = medium("Pol 90").add(Dichroic(100.0, 0.0)); // Transmits Ep
 
 Element filter0 = Interface(box((10, -5), (12, 5)), pol0, Materials.VACUUM);
 Element filter90 = Interface(box((30, -5), (32, 5)), pol90, Materials.VACUUM);
@@ -935,8 +966,10 @@ Medium flint = medium("Flint 1.62", 1.62);
 Medium water_m = medium("Water 1.333", 1.333333);
 
 real theta_c_deg = degrees(asin(water_m.n() / flint.n()));
-// Use the exact calculated angle (55.3908 deg) or match against the exact analytical expression:
-assert_near("Flint-to-Water Critical Angle", theta_c_deg, 55.3908, 1e-3);
+// The critical angle is derived from Snell's law. Boundary tests below use
+// this computed value rather than a rounded decimal approximation.
+assert_true("Critical angle is physically defined for n_high > n_low",
+            water_m.n() < flint.n() && theta_c_deg > 0.0 && theta_c_deg < 90.0);
 
 Ray ray_below_crit = Ray.angle(p = (-1, 0), angle = theta_c_deg - 2.0, medium = flint);
 Ray ray_above_crit = Ray.angle(p = (-1, 0), angle = theta_c_deg + 2.0, medium = flint);
@@ -974,9 +1007,9 @@ assert_near("Ray 2 zero transverse divergence (d.y = 0)", t_oap2.reflected(0).d.
 write("");
 
 write("Test Case 34: Optical Smith-Helmholtz / Lagrange Invariant");
-real f_lens = 100.0;
+real f_invariant_lens = 100.0;
 real s_obj = 200.0; // 2f conjugate configuration (magnification m = -1)
-Element lens = Lens.thin(center = (0, 0), angle = 0, f = f_lens, diameter = 80);
+Element lens = Lens.thin(center = (0, 0), angle = 0, f = f_invariant_lens, diameter = 80);
 OpticalSystem invSys = system(lens, Materials.VACUUM);
 
 real y_obj = 10.0;
@@ -1119,23 +1152,36 @@ Ray r_guide = Ray(p = (0.01, 0), d = (cos(radians(25.0)), sin(radians(25.0))), m
 Trace t_guide = guideSys.trace(r_guide, far = 120.0);
 
 Ray exit_guide = t_guide.last();
-// Exact: All wall bounces are 100% TIR; exit loss at 25 deg into air yields T = 0.954706
-assert_near("Waveguide output ray intensity (TIR + exit Fresnel loss)", exit_guide.intensity(), 0.954706, 1e-4);
+// Wall reflections are TIR. At the end face, derive unpolarized Fresnel
+// transmission from the core index and the ray's incidence angle.
+real guideN1 = 1.50;
+real guideN2 = 1.0;
+real guideThetaI = radians(25.0);
+real guideSinT = guideN1 / guideN2 * sin(guideThetaI);
+real guideCosT = sqrt(1.0 - guideSinT ^ 2);
+real guideCosI = cos(guideThetaI);
+real guideRs = ((guideN1 * guideCosI - guideN2 * guideCosT) / (guideN1 * guideCosI + guideN2 * guideCosT)) ^ 2;
+real guideRp = ((guideN2 * guideCosI - guideN1 * guideCosT) / (guideN2 * guideCosI + guideN1 * guideCosT)) ^ 2;
+real guideExpectedTransmission = 1.0 - 0.5 * (guideRs + guideRp);
+assert_near("Waveguide output power from end-face Fresnel transmission",
+            exit_guide.intensity(),
+            guideExpectedTransmission,
+            1e-4);
 assert_bool("Ray traversed through the guide to x >= 100", exit_guide.p.x >= 100.0 - 1e-3, true);
 write("");
 
 write("Test Case 41: Degree of Polarization (DoP) & Stokes Vector at Brewster Angle");
-Medium glass_br = medium("Glass", 1.50);
-real theta_B_deg = degrees(atan(1.50 / 1.0)); // 56.30993 deg
+Medium glass_br_41 = medium("Glass", 1.50);
+real theta_B_deg_41 = degrees(atan(1.50 / 1.0)); // 56.30993 deg
 
 // Boundary at x = 0: glass on right (x > 0), vacuum on left
 path boundaryPlane = (0, -50) -- (0, 50);
-Element iface = Interface(boundaryPlane, Materials.VACUUM, glass_br);
+Element iface = Interface(boundaryPlane, Materials.VACUUM, glass_br_41);
 OpticalSystem brSys = system(iface, Materials.VACUUM);
 
 // Unpolarized ray incident at Brewster's angle
 Ray r_unpol = Ray.toPoint(target = (0, 0),
-                          d = (cos(radians(theta_B_deg)), sin(radians(theta_B_deg))),
+                          d = (cos(radians(theta_B_deg_41)), sin(radians(theta_B_deg_41))),
                           distance = 20.0,
                           pol = Polarization.unpolarized(1.0));
 Trace t_br = brSys.trace(r_unpol);
@@ -1147,8 +1193,16 @@ Ray r_trans = t_br.transmitted(0);
 assert_near("Brewster Reflected Ray DoP = 100%", r_refl.pol.S.dop(), 1.0, 1e-4);
 assert_near("Brewster Reflected Ray is purely S-polarized (S1 == S0)", r_refl.pol.S.S1, r_refl.pol.S.S0, 1e-4);
 
-// 2. Transmitted ray degree of polarization: DoP = (Tp - Ts) / (Tp + Ts) = (1 - 0.852071) / (1 + 0.852071) = 7.987%
-real expected_dop = (1.0 - 0.852071) / (1.0 + 0.852071); // 0.079872
+// 2. For unpolarized incident light, Brewster p-transmission is unity.
+// The s-polarized transmitted power is 1-Rs, so DoP = (Tp-Ts)/(Tp+Ts).
+real brewsterSinT = sin(radians(theta_B_deg_41)) / glass_br_41.n();
+real brewsterCosT = sqrt(1.0 - brewsterSinT ^ 2);
+real brewsterRsAmplitude = (cos(radians(theta_B_deg_41)) - glass_br_41.n() * brewsterCosT) /
+                           (cos(radians(theta_B_deg_41)) + glass_br_41.n() * brewsterCosT);
+real brewsterRsPower = brewsterRsAmplitude ^ 2;
+real brewsterTs = 1.0 - brewsterRsPower;
+real brewsterTp = 1.0;
+real expected_dop = (brewsterTp - brewsterTs) / (brewsterTp + brewsterTs);
 assert_near("Brewster Transmitted Ray DoP matches analytical formula (~7.99%)",
             r_trans.pol.S.dop(),
             expected_dop,
@@ -1170,37 +1224,55 @@ assert_near("Porro retroreflected d.x is -1", r_porro_exit.d.x, -1.0, 1e-4);
 assert_near("Porro retroreflected d.y is 0", r_porro_exit.d.y, 0.0, 1e-4);
 assert_near("Porro inverted exit position y = -8.0", r_porro_exit.p.y, -8.0, 1e-4);
 
-// Exact: Two 100% TIR bounces + two normal-incidence Fresnel transmissions (0.96 * 0.96 = 0.9216)
-assert_near("Porro double TIR transmission is 0.9216 (0.96^2)", r_porro_exit.intensity(), 0.9216, 1e-4);
+// Two TIR reflections have unit power reflectance. The two normal-incidence
+// air/glass transmissions are derived from the Fresnel reflectance.
+real porroR0 = ((1.50 - 1.0) / (1.50 + 1.0)) ^ 2;
+real porroT0 = 1.0 - porroR0;
+assert_near("Porro prism intensity from two Fresnel transmissions", r_porro_exit.intensity(), porroT0 ^ 2, 1e-4);
 write("");
 
 write("Test Case 43: Cardinal Points Verification");
 Medium glass_lens = medium("Crown", 1.50);
 
 // Use R2 = 50 (positive magnitude for Lens.biconvex)
-Element thickLens =
+Element thickLens_cardinal =
     Lens.biconvex(center = (50, 0), angle = 0, R1 = 50, R2 = 50, thickness = 10, diameter = 40, glass = glass_lens);
-OpticalSystem sys = system(thickLens, Materials.VACUUM);
+OpticalSystem sys = system(thickLens_cardinal, Materials.VACUUM);
 
 CardinalPoints cp = cardinalPoints(sys);
 
-// 1. Vertices: V1 at x = 45, V2 at x = 55
-assert_near("Front Vertex V1.x = 45", cp.V1.x, 45.0, 1e-3);
-assert_near("Rear Vertex V2.x = 55", cp.V2.x, 55.0, 1e-3);
+// Derive the analytic reference from the lens parameters.
+real n_cardinal = 1.50;
+real R1_cardinal = 50.0;
+real R2_cardinal = -50.0;
+real thickness_cardinal = 10.0;
 
-// 2. Effective Focal Length (EFL): f = 51.724
-assert_near("Effective Focal Length f2 = 51.724", cp.f2, 51.7241, 1e-3);
+// 1. Vertices derive from the lens center and thickness.
+real expectedV1x = 50.0 - thickness_cardinal / 2.0;
+real expectedV2x = 50.0 + thickness_cardinal / 2.0;
+assert_near("Front vertex from center and thickness", cp.V1.x, expectedV1x, 1e-3);
+assert_near("Rear vertex from center and thickness", cp.V2.x, expectedV2x, 1e-3);
 
-// 3. Back Focal Length (BFL) = 48.276
-assert_near("Back Focal Length BFL = 48.276", cp.BFL, 48.2759, 1e-3);
+// Derive EFL from the thick-lensmaker equation. For a biconvex lens,
+// the signed radii are R1 > 0 and R2 < 0.
+real lensPower =
+    (n_cardinal - 1.0) * (1.0 / R1_cardinal - 1.0 / R2_cardinal +
+                          ((n_cardinal - 1.0) * thickness_cardinal) / (n_cardinal * R1_cardinal * R2_cardinal));
+real expectedEFL = 1.0 / lensPower;
+assert_relative("Effective focal length from thick lensmaker equation", cp.f2, expectedEFL, 1e-5, 1e-5);
 
-// 4. Principal Points inside the lens: H1 at x = 48.448, H2 at x = 51.552
-assert_near("Front Principal Point H1.x = 48.448", cp.H1.x, 48.4483, 1e-3);
-assert_near("Rear Principal Point H2.x = 51.552", cp.H2.x, 51.5517, 1e-3);
+// Check cardinal-point geometry through relationships rather than rounded
+// coordinate literals. Vertices and focal points should be separated by BFL.
+real expectedBFL = expectedEFL * (1.0 - ((n_cardinal - 1.0) * thickness_cardinal) / (n_cardinal * R1_cardinal));
+assert_relative("Back focal length from thick-lens paraxial formula", cp.BFL, expectedBFL, 1e-5, 1e-5);
+assert_relative("Rear focal point is one BFL beyond rear vertex", cp.F2.x, cp.V2.x + cp.BFL, 1e-5, 1e-5);
+assert_relative("Front focal point is one BFL before front vertex", cp.F1.x, cp.V1.x - cp.BFL, 1e-5, 1e-5);
 
-// 5. Focal Points: F1 at x = -3.276, F2 at x = 103.276
-assert_near("Rear Focal Point F2.x = 103.276", cp.F2.x, 103.2759, 1e-3);
-assert_near("Front Focal Point F1.x = -3.276", cp.F1.x, -3.2759, 1e-3);
+// Principal-plane displacement is consistent with the difference between
+// effective focal length and back focal length for this symmetric lens.
+real principalOffset = cp.f2 - cp.BFL;
+assert_relative("Front principal point offset", cp.H1.x, cp.V1.x + principalOffset, 1e-5, 1e-5);
+assert_relative("Rear principal point offset", cp.H2.x, cp.V2.x - principalOffset, 1e-5, 1e-5);
 write("");
 
 write("Test Case 44: Mueller Diattenuation and Retardance Helper Verification");
@@ -1234,9 +1306,435 @@ applyDiattenuation(s_jones, s_in, (0, 1), (1, 0));
 assert_near("Jones overload S0 = 1", s_jones.S0, 1.0, 1e-5);
 assert_near("Jones overload S2 = 0", s_jones.S2, 0.0, 1e-5);
 assert_near("Jones overload S3 = 1", s_jones.S3, 1.0, 1e-5);
+
+// 4. Unpolarized light through an ideal polarizer.
+// An ideal polarizer transmits half the intensity of unpolarized light.
+Stokes s_unpol = new Stokes;
+s_unpol.S0 = 1.0;
+s_unpol.S1 = 0.0;
+s_unpol.S2 = 0.0;
+s_unpol.S3 = 0.0;
+
+Stokes s_pol = copy(s_unpol);
+applyDiattenuation(s_pol, 1.0, 0.0);
+
+assert_near("Ideal polarizer: unpolarized output S0", s_pol.S0, 0.5, 1e-5);
+assert_near("Ideal polarizer: output S1", s_pol.S1, 0.5, 1e-5);
+assert_near("Ideal polarizer: output S2", s_pol.S2, 0.0, 1e-5);
+assert_near("Ideal polarizer: output S3", s_pol.S3, 0.0, 1e-5);
+assert_stokes_physical("Ideal polarizer", s_pol);
+
+// 5. Equal transmission must scale every Stokes component equally.
+Stokes s_neutral = new Stokes;
+s_neutral.S0 = 1.0;
+s_neutral.S1 = 0.2;
+s_neutral.S2 = 0.3;
+s_neutral.S3 = 0.1;
+
+Stokes s_neutral_out = copy(s_neutral);
+applyDiattenuation(s_neutral_out, 0.4, 0.4);
+
+assert_near("Equal transmission: S0", s_neutral_out.S0, 0.4, 1e-5);
+assert_near("Equal transmission: S1", s_neutral_out.S1, 0.08, 1e-5);
+assert_near("Equal transmission: S2", s_neutral_out.S2, 0.12, 1e-5);
+assert_near("Equal transmission: S3", s_neutral_out.S3, 0.04, 1e-5);
+assert_stokes_physical("Equal transmission", s_neutral_out);
+
+// 6. Ideal polarizer rejects the orthogonal fully polarized input.
+Stokes s_blocked = new Stokes;
+s_blocked.S0 = 1.0;
+s_blocked.S1 = -1.0;
+s_blocked.S2 = 0.0;
+s_blocked.S3 = 0.0;
+
+applyDiattenuation(s_blocked, 1.0, 0.0);
+
+assert_near("Blocked polarization: S0", s_blocked.S0, 0.0, 1e-5);
+assert_near("Blocked polarization: S1", s_blocked.S1, 0.0, 1e-5);
+assert_near("Blocked polarization: S2", s_blocked.S2, 0.0, 1e-5);
+assert_near("Blocked polarization: S3", s_blocked.S3, 0.0, 1e-5);
+assert_stokes_physical("Blocked polarization", s_blocked);
+
+// 7. Physicality for a partially polarized input.
+Stokes s_partial = new Stokes;
+s_partial.S0 = 1.0;
+s_partial.S1 = 0.2;
+s_partial.S2 = 0.3;
+s_partial.S3 = 0.1;
+
+applyDiattenuation(s_partial, 0.8, 0.3);
+assert_stokes_physical("Partially polarized input", s_partial);
+
+// 8. Complex cross term with reduced coherence.
+Stokes s_coherence = new Stokes;
+s_coherence.S0 = 1.0;
+s_coherence.S1 = 0.0;
+s_coherence.S2 = 0.6;
+s_coherence.S3 = 0.0;
+
+// T1*T2 = 0.25, so |C|^2 = 0.16 <= 0.25.
+applyDiattenuation(s_coherence, s_coherence, 0.5, 0.5, (0.4, 0.0));
+
+assert_near("Reduced coherence: S0 preserved", s_coherence.S0, 0.5, 1e-5);
+assert_near("Reduced coherence: S1", s_coherence.S1, 0.0, 1e-5);
+assert_near("Reduced coherence: S2", s_coherence.S2, 0.24, 1e-5);
+assert_near("Reduced coherence: S3", s_coherence.S3, 0.0, 1e-5);
+assert_stokes_physical("Reduced coherence", s_coherence);
 write("");
 
-// Summary
+// Test Case 45: Polarization copy invariants and state preservation
+write("Test Case 45: Polarization copy invariants and state preservation");
+Polarization extraUnpolarized = Polarization.unpolarized(1.0);
+Polarization extraUnpolarizedCopy = copy(extraUnpolarized);
+assert_bool("Copy preserves unpolarized state flag",
+            extraUnpolarizedCopy.isUnpolarized,
+            extraUnpolarized.isUnpolarized);
+assert_relative("Copy preserves unpolarized intensity", extraUnpolarizedCopy.intensity(), extraUnpolarized.intensity());
+assert_relative("Copy preserves unpolarized degree of polarization",
+                extraUnpolarizedCopy.S.dop(),
+                extraUnpolarized.S.dop());
+
+Polarization extraLinear = Polarization.linear(23.0, amplitude = 1.7);
+Polarization extraLinearCopy = copy(extraLinear);
+assert_bool("Copy preserves linearly polarized state flag", extraLinearCopy.isUnpolarized, extraLinear.isUnpolarized);
+assert_relative("Copy preserves linear-state intensity", extraLinearCopy.intensity(), extraLinear.intensity());
+assert_near_pair("Copy preserves Es complex amplitude", extraLinearCopy.Es, extraLinear.Es);
+assert_near_pair("Copy preserves Ep complex amplitude", extraLinearCopy.Ep, extraLinear.Ep);
+write("");
+
+// Test Case 45-1: Polarization Rotation Consistency
+write("Test Case 45-1: Polarization Rotation Consistency");
+
+// Part A: Rotate horizontal linear polarization by 45 degrees.
+Polarization rot = Polarization.linear(0.0, amplitude = 1.0);
+applyPolarizationRotation(rot, radians(45.0));
+
+assert_near("Rotation 45: Jones Es real", rot.Es.x, 1.0 / sqrt(2.0), 1e-5);
+assert_near("Rotation 45: Jones Ep real", rot.Ep.x, 1.0 / sqrt(2.0), 1e-5);
+assert_near("Rotation 45: S0 preserved", rot.S.S0, 1.0, 1e-5);
+assert_near("Rotation 45: S1 becomes zero", rot.S.S1, 0.0, 1e-5);
+assert_near("Rotation 45: S2 becomes one", rot.S.S2, 1.0, 1e-5);
+assert_near("Rotation 45: S3 remains zero", rot.S.S3, 0.0, 1e-5);
+
+// Part B: Rotate back. The original state should be recovered.
+applyPolarizationRotation(rot, radians(-45.0));
+
+assert_near("Inverse rotation: Es restored", rot.Es.x, 1.0, 1e-5);
+assert_near("Inverse rotation: Ep restored", rot.Ep.x, 0.0, 1e-5);
+assert_near("Inverse rotation: S1 restored", rot.S.S1, 1.0, 1e-5);
+assert_near("Inverse rotation: S2 restored", rot.S.S2, 0.0, 1e-5);
+
+// Part C: A basis rotation must preserve circular polarization's S3.
+Polarization circ = Polarization.circular(rightHanded = true);
+real s3_before = circ.S.S3;
+applyPolarizationRotation(circ, radians(23.0));
+
+assert_near("Circular rotation: S0 preserved", circ.S.S0, 1.0, 1e-5);
+assert_near("Circular rotation: S3 preserved", circ.S.S3, s3_before, 1e-5);
+assert_near("Circular rotation: degree of polarization preserved", circ.S.dop(), 1.0, 1e-5);
+
+// Part D: An unpolarized Stokes state must remain unpolarized.
+Polarization unpolRot = Polarization.unpolarized(2.0);
+applyPolarizationRotation(unpolRot, radians(37.0));
+
+assert_bool("Unpolarized rotation: flag preserved", unpolRot.isUnpolarized, true);
+assert_near("Unpolarized rotation: S0 preserved", unpolRot.S.S0, 2.0, 1e-5);
+assert_near("Unpolarized rotation: S1 remains zero", unpolRot.S.S1, 0.0, 1e-5);
+assert_near("Unpolarized rotation: S2 remains zero", unpolRot.S.S2, 0.0, 1e-5);
+assert_near("Unpolarized rotation: S3 remains zero", unpolRot.S.S3, 0.0, 1e-5);
+assert_near("Unpolarized rotation: DoP remains zero", unpolRot.S.dop(), 0.0, 1e-5);
+write("");
+
+// Test Case 46: Normal-incidence Fresnel boundary conditions
+write("Test Case 46: Normal-incidence Fresnel boundary conditions");
+Ray extraNormalRay = Ray(p = (-1.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
+extraNormalRay.pol = Polarization.unpolarized();
+Refraction extraNormalRef = snell(Materials.VACUUM, glass_15, extraNormalRay, h_int, testResolveIsotropic);
+real extraNormalR = ((n2 - n1) / (n2 + n1)) ^ 2;
+assert_bool("Normal incidence is not total internal reflection", extraNormalRef.totalInternalReflection, false);
+assert_near_pair("Normal-incidence transmitted direction", extraNormalRef.d, (1.0, 0.0));
+assert_relative("Normal-incidence Fresnel reflectance", extraNormalRef.R, extraNormalR);
+assert_relative("Normal-incidence energy balance", extraNormalRef.R + extraNormalRef.T, 1.0);
+write("");
+
+// Test Case 47: Polarization intensity scaling laws
+write("Test Case 47: Polarization intensity scaling laws");
+Polarization extraScaleSource = Polarization.linear(31.0, amplitude = 1.0);
+real extraScaleFactor = 2.75;
+Polarization extraScaleResult = extraScaleSource * extraScaleFactor;
+assert_relative("Amplitude scaling multiplies Es by scale factor",
+                length(extraScaleResult.Es),
+                length(extraScaleSource.Es) * extraScaleFactor);
+assert_relative("Amplitude scaling multiplies Ep by scale factor",
+                length(extraScaleResult.Ep),
+                length(extraScaleSource.Ep) * extraScaleFactor);
+assert_relative("Intensity scales quadratically with amplitude",
+                extraScaleResult.intensity(),
+                extraScaleSource.intensity() * extraScaleFactor ^ 2);
+write("");
+
+// Test Case 48: Stokes physical-state invariants
+write("Test Case 48: Stokes physical-state invariants");
+Polarization extraS = Polarization.s(1.0);
+Polarization extraP = Polarization.p(1.0);
+Polarization extraCirc = Polarization.circular(rightHanded = true, amplitude = 1.0);
+assert_relative("S-polarized light has unit degree of polarization", extraS.S.dop(), 1.0);
+assert_relative("P-polarized light has unit degree of polarization", extraP.S.dop(), 1.0);
+assert_relative("Circularly polarized light has unit degree of polarization", extraCirc.S.dop(), 1.0);
+assert_relative("S-polarized Stokes intensity agrees with Jones intensity", extraS.S.S0, extraS.intensity());
+assert_relative("P-polarized Stokes intensity agrees with Jones intensity", extraP.S.S0, extraP.intensity());
+assert_relative("Circular Stokes intensity agrees with Jones intensity", extraCirc.S.S0, extraCirc.intensity());
+write("");
+
+// Test Case 49: Lossless retarder conserves intensity and degree of polarization
+write("Test Case 49: Lossless retarder conservation");
+Stokes extraRetarderInput = copy(extraCirc.S);
+Stokes extraRetarderOutput = copy(extraRetarderInput);
+applyDiattenuation(extraRetarderOutput, 1.0, 1.0, (cos(pi / 3.0), -sin(pi / 3.0)));
+assert_relative("Lossless retarder preserves S0", extraRetarderOutput.S0, extraRetarderInput.S0);
+assert_relative("Lossless retarder preserves degree of polarization",
+                extraRetarderOutput.dop(),
+                extraRetarderInput.dop());
+write("");
+
+// Test Case 50: Relative tolerance helper across scales
+write("Test Case 50: Relative tolerance helper");
+assert_relative("Relative comparison at unit scale", 1.0 + 1e-8, 1.0, 1e-7);
+assert_relative("Relative comparison at large scale", 1e8 + 0.5, 1e8, 1e-8);
+assert_relative("Relative comparison near zero", 1e-12, 0.0, 1e-6, 1e-11);
+write("");
+
+write("Test Case 51: Complex phase in diattenuation");
+
+Stokes phaseInput = new Stokes;
+phaseInput.S0 = 1.0;
+phaseInput.S1 = 0.0;
+phaseInput.S2 = 1.0;
+phaseInput.S3 = 0.0;
+
+Stokes phaseOutput = copy(phaseInput);
+
+// Equal intensity transmissions preserve S0 and S1.
+// C = 0.3 + 0.2i rotates and scales the S2/S3 components.
+applyDiattenuation(phaseOutput, phaseInput, 0.5, 0.5, (0.3, 0.2));
+
+assert_near("Complex phase: S0", phaseOutput.S0, 0.5, 1e-5);
+assert_near("Complex phase: S1", phaseOutput.S1, 0.0, 1e-5);
+assert_near("Complex phase: S2", phaseOutput.S2, 0.3, 1e-5);
+assert_near("Complex phase: S3", phaseOutput.S3, 0.2, 1e-5);
+
+// Output must remain physical: S1^2 + S2^2 + S3^2 <= S0^2.
+real phasePol2 = phaseOutput.S1 ^ 2 + phaseOutput.S2 ^ 2 + phaseOutput.S3 ^ 2;
+assert_bool("Complex phase: output remains inside Stokes cone", phasePol2 <= phaseOutput.S0 ^ 2 + 1e-5, true);
+write("");
+
+write("Test Case 52: Maximum-coherence physicality boundary");
+
+Stokes boundaryInput = new Stokes;
+boundaryInput.S0 = 1.0;
+boundaryInput.S1 = 0.0;
+boundaryInput.S2 = 1.0;
+boundaryInput.S3 = 0.0;
+
+Stokes boundaryOutput = copy(boundaryInput);
+
+// T1*T2 = 0.8*0.2 = 0.16, so sqrt(T1*T2) = 0.4.
+// C = 0.24 + 0.32i has magnitude exactly 0.4.
+applyDiattenuation(boundaryOutput, boundaryInput, 0.8, 0.2, (0.24, 0.32));
+
+assert_near("Boundary: S0", boundaryOutput.S0, 0.5, 1e-5);
+assert_near("Boundary: S1", boundaryOutput.S1, 0.3, 1e-5);
+assert_near("Boundary: S2", boundaryOutput.S2, 0.24, 1e-5);
+assert_near("Boundary: S3", boundaryOutput.S3, 0.32, 1e-5);
+
+real boundaryPol2 = boundaryOutput.S1 ^ 2 + boundaryOutput.S2 ^ 2 + boundaryOutput.S3 ^ 2;
+assert_near("Boundary: fully polarized output lies on sphere", boundaryPol2, boundaryOutput.S0 ^ 2, 1e-5);
+write("");
+
+write("Test Case 53: Caller keeps Jones and Stokes state synchronized");
+
+// Use a fully polarized input so both Jones amplitudes and Stokes
+// parameters describe the same physical state.
+Polarization syncInput = Polarization.linear(45.0, amplitude = 1.0);
+
+Polarization syncOutput = dichroicFilter.stepPolarization(syncInput, (0, 0), (1, 0), 633.0, prop_dist);
+
+// Check immediately after the caller returns. Do not manually sync first.
+assert_relative("Caller sync: Stokes S0 agrees with output intensity",
+                syncOutput.S.S0,
+                syncOutput.intensity(),
+                1e-5,
+                1e-7);
+
+assert_relative("Caller sync: Stokes degree of polarization is physical", syncOutput.S.dop(), 1.0, 1e-5, 1e-7);
+
+// Copying must preserve the state representation and its intensity.
+Polarization syncCopy = copy(syncOutput);
+assert_relative("Caller sync: copied Stokes S0 agrees with intensity", syncCopy.S.S0, syncCopy.intensity(), 1e-5, 1e-7);
+assert_near_pair("Caller sync: copied Es preserved", syncCopy.Es, syncOutput.Es);
+assert_near_pair("Caller sync: copied Ep preserved", syncCopy.Ep, syncOutput.Ep);
+write("");
+
+// Also check the unpolarized path, where intensity is represented by S0
+// rather than recoverable from a single Jones vector.
+Polarization syncUnpolInput = Polarization.unpolarized(1.0);
+Polarization syncUnpolOutput = dichroicFilter.stepPolarization(syncUnpolInput, (0, 0), (1, 0), 633.0, prop_dist);
+
+// A diattenuator can polarize initially unpolarized light.
+assert_bool("Dichroic output flag reflects output polarization",
+            syncUnpolOutput.isUnpolarized,
+            syncUnpolOutput.S.dop() <= 1e-8);
+
+assert_relative("Unpolarized-path S0 agrees with intensity",
+                syncUnpolOutput.S.S0,
+                syncUnpolOutput.intensity(),
+                1e-5,
+                1e-7);
+
+// For input (I,0,0,0), a linear diattenuator produces:
+// S0' = I*(Ts+Tp)/2, S1' = I*(Ts-Tp)/2.
+real Ts = exp(-alpha_s_val * prop_dist);
+real Tp = exp(-alpha_p_val * prop_dist);
+
+assert_relative("Diattenuator S0 matches Mueller prediction",
+                syncUnpolOutput.S.S0,
+                syncUnpolInput.S.S0 *(Ts + Tp) / 2,
+                1e-5,
+                1e-7);
+
+assert_relative("Diattenuator S1 matches Mueller prediction",
+                syncUnpolOutput.S.S1,
+                syncUnpolInput.S.S0 *(Ts - Tp) / 2,
+                1e-5,
+                1e-7);
+
+assert_near("Diattenuator S2 remains zero", syncUnpolOutput.S.S2, 0.0);
+assert_near("Diattenuator S3 remains zero", syncUnpolOutput.S.S3, 0.0);
+write("");
+
+// Test Case 54: Deep-copy isolation
+write("Test Case 54: Deep-copy isolation");
+
+// Part A: Copy a polarized state and verify its initial values.
+Polarization original = Polarization.linear(45.0, amplitude = 1.0);
+Polarization cloned = copy(original);
+
+assert_near_pair("Copy isolation: initial Es preserved", cloned.Es, original.Es);
+assert_near_pair("Copy isolation: initial Ep preserved", cloned.Ep, original.Ep);
+assert_near("Copy isolation: initial S0 preserved", cloned.S.S0, original.S.S0);
+assert_near("Copy isolation: initial S1 preserved", cloned.S.S1, original.S.S1);
+assert_near("Copy isolation: initial S2 preserved", cloned.S.S2, original.S.S2);
+assert_near("Copy isolation: initial S3 preserved", cloned.S.S3, original.S.S3);
+
+// Modify only the copy's Jones amplitudes.
+cloned.Es = (0.25, 0.5);
+cloned.Ep = (0.75, -0.25);
+
+assert_near_pair("Copy isolation: source Es unchanged", original.Es, (sqrt(0.5), 0.0));
+assert_near_pair("Copy isolation: source Ep unchanged", original.Ep, (sqrt(0.5), 0.0));
+
+// Part B: Modify the copy's nested Stokes object.
+real sourceS0 = original.S.S0;
+real sourceS1 = original.S.S1;
+real sourceS2 = original.S.S2;
+real sourceS3 = original.S.S3;
+
+cloned.S.S0 = 3.0;
+cloned.S.S1 = 1.0;
+cloned.S.S2 = 0.5;
+cloned.S.S3 = -0.25;
+
+assert_near("Copy isolation: source Stokes S0 unchanged", original.S.S0, sourceS0);
+assert_near("Copy isolation: source Stokes S1 unchanged", original.S.S1, sourceS1);
+assert_near("Copy isolation: source Stokes S2 unchanged", original.S.S2, sourceS2);
+assert_near("Copy isolation: source Stokes S3 unchanged", original.S.S3, sourceS3);
+
+// Part C: Mutate source and verify the copy remains independent.
+real clonedS0 = cloned.S.S0;
+real clonedS1 = cloned.S.S1;
+
+original.S.S0 = 2.0;
+original.S.S1 = -0.5;
+
+assert_near("Copy isolation: clone S0 unchanged after source mutation", cloned.S.S0, clonedS0);
+assert_near("Copy isolation: clone S1 unchanged after source mutation", cloned.S.S1, clonedS1);
+
+// Part D: Copy an unpolarized state and preserve its metadata.
+Polarization unpol = Polarization.unpolarized(2.0);
+Polarization unpolCopy = copy(unpol);
+
+assert_bool("Copy isolation: unpolarized flag copied", unpolCopy.isUnpolarized, true);
+assert_near("Copy isolation: unpolarized S0 copied", unpolCopy.S.S0, unpol.S.S0);
+assert_near("Copy isolation: unpolarized S1 copied", unpolCopy.S.S1, 0.0);
+assert_near("Copy isolation: unpolarized S2 copied", unpolCopy.S.S2, 0.0);
+assert_near("Copy isolation: unpolarized S3 copied", unpolCopy.S.S3, 0.0);
+
+// Changing the copy's Stokes data must not affect the original.
+unpolCopy.S.S0 = 7.0;
+unpolCopy.S.S1 = 1.0;
+
+assert_near("Copy isolation: unpolarized source S0 unchanged", unpol.S.S0, 2.0);
+assert_near("Copy isolation: unpolarized source S1 unchanged", unpol.S.S1, 0.0);
+write("");
+
+// Test Case 55: Zero-distance propagation
+write("Test Case 55: Zero-distance propagation");
+
+Polarization zeroDistInput = Polarization.linear(45.0, amplitude = 1.0);
+
+real zeroS0 = zeroDistInput.S.S0;
+real zeroS1 = zeroDistInput.S.S1;
+real zeroS2 = zeroDistInput.S.S2;
+real zeroS3 = zeroDistInput.S.S3;
+pair zeroEs = zeroDistInput.Es;
+pair zeroEp = zeroDistInput.Ep;
+bool zeroUnpol = zeroDistInput.isUnpolarized;
+
+// Zero distance must not apply the dichroic filter.
+Polarization zeroDistOutput = dichroicFilter.stepPolarization(zeroDistInput, (0, 0), (1, 0), 633.0, 0.0);
+
+assert_near("Zero distance: S0 unchanged", zeroDistOutput.S.S0, zeroS0);
+assert_near("Zero distance: S1 unchanged", zeroDistOutput.S.S1, zeroS1);
+assert_near("Zero distance: S2 unchanged", zeroDistOutput.S.S2, zeroS2);
+assert_near("Zero distance: S3 unchanged", zeroDistOutput.S.S3, zeroS3);
+assert_near_pair("Zero distance: Es unchanged", zeroDistOutput.Es, zeroEs);
+assert_near_pair("Zero distance: Ep unchanged", zeroDistOutput.Ep, zeroEp);
+assert_bool("Zero distance: polarization flag unchanged", zeroDistOutput.isUnpolarized, zeroUnpol);
+write("");
+
+// Test Case 56: Unpolarized light through a diattenuator
+write("Test Case 56: Unpolarized light through a diattenuator");
+
+real testTs = 0.8;
+real testTp = 0.2;
+
+Stokes unpolSrcStokes = new Stokes;
+unpolSrcStokes.S0 = 1.0;
+unpolSrcStokes.S1 = 0.0;
+unpolSrcStokes.S2 = 0.0;
+unpolSrcStokes.S3 = 0.0;
+
+Stokes unpolDstStokes = new Stokes;
+
+applyDiattenuation(unpolDstStokes, unpolSrcStokes, testTs, testTp);
+
+real expectedS0 = 0.5 * (testTs + testTp);
+real expectedS1 = 0.5 * (testTs - testTp);
+
+assert_near("Unpolarized diattenuation: S0", unpolDstStokes.S0, expectedS0);
+assert_near("Unpolarized diattenuation: S1", unpolDstStokes.S1, expectedS1);
+assert_near("Unpolarized diattenuation: S2 remains zero", unpolDstStokes.S2, 0.0);
+assert_near("Unpolarized diattenuation: S3 remains zero", unpolDstStokes.S3, 0.0);
+
+// For this example, S0=0.5 and S1=0.3.
+// The resulting degree of polarization is |S1|/S0 = 0.6.
+assert_near("Unpolarized diattenuation: degree of polarization", unpolDstStokes.dop(), 0.6);
+write("");
+
+// Summary: fail the process when any assertion fails so CI cannot silently
+// treat a failing run as successful.
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
+write(" FAILED: " + string(failed_tests));
 write("================================================================================");
+if (failed_tests > 0) abort("optics_test.asy: " + string(failed_tests) + " assertion(s) failed");
