@@ -1742,6 +1742,86 @@ assert_near("Poincare S3", el2.S3, sin(radians(40.0)), 1e-4);
 assert_near("Poincare DOP", el2.dop(), 1.0, 1e-5);
 write("");
 
+// ============================================================================
+// Test Case 63: Dielectric Refraction & Reflection Phase Shifts
+// ============================================================================
+write("Test Case 63: Dielectric Refraction & Reflection Phase Shifts");
+real n_air = 1.0;
+real n_glass = 1.5168; // BK7
+Medium m_air = medium("Air", n_air);
+Medium m_glass = medium("BK7", n_glass);
+
+path boundaryPlane = (0, -50) -- (0, 50);
+Element iface = Interface(boundaryPlane, m_air, m_glass);
+OpticalSystem sys = system(iface, Materials.VACUUM);
+
+real theta_B_deg = degrees(atan(n_glass / n_air)); // ~56.6 deg
+
+// ------------------------------------------------------------------------
+// Part 1: Refraction (Transmission) Phase Shift is Strictly Zero
+// ------------------------------------------------------------------------
+// Launch a 45-deg linearly polarized ray: S = (1, 0, 1, 0), phase = 0
+real theta_i_deg = 30.0; // Angle of incidence
+pair dir_in = (cos(radians(theta_i_deg)), sin(radians(theta_i_deg)));
+Ray r_in1 = Ray(p = (-10 * dir_in.x, -10 * dir_in.y), d = dir_in, medium = m_air, pol = Polarization.linear(45.0, 1.0));
+r_in1.phase = 0.0;
+
+Trace t1 = sys.trace(r_in1);
+Ray r_trans = t1.transmitted(0);
+
+assert_stokes_physical("Transmitted ray physical state", r_trans.pol);
+
+// Transmitted ray must NOT acquire any circular ellipticity (S3 == 0)
+assert_near("Transmitted S3 remains exactly zero (no retardance)", r_trans.pol.S3, 0.0, 1e-5);
+
+// Relative phase between transmitted P and S must be 0 deg
+real delta_trans_deg = degrees(atan2(r_trans.pol.S3, r_trans.pol.S2));
+assert_near("Transmitted relative phase (P - S) is 0 deg", delta_trans_deg, 0.0, 1e-4);
+
+// Carrier phase through boundary is continuous (delta_phi = 0)
+assert_near("Transmitted ray carrier phase is 0", r_trans.phase, 0.0, 1e-5);
+
+// ------------------------------------------------------------------------
+// Part 2: Dielectric Reflection BELOW Brewster's Angle (Phase Flip = 180 deg)
+// ------------------------------------------------------------------------
+// At theta_i = 30 deg (< theta_B ~ 56.6 deg):
+// r_s < 0 (phase pi), r_p > 0 (phase 0) -> Relative phase shift delta = 180 deg
+Ray r_refl_below = t1.reflected(0);
+
+assert_stokes_physical("Reflected below Brewster", r_refl_below.pol);
+assert_near("Reflected S3 below Brewster remains zero", r_refl_below.pol.S3, 0.0, 1e-5);
+
+// S2 must be negative because of the 180 deg relative phase flip:
+assert_true("Reflected S2 below Brewster is negative", r_refl_below.pol.S2 < -1e-4);
+
+real delta_refl_below = degrees(atan2(r_refl_below.pol.S3, r_refl_below.pol.S2));
+assert_near("Reflected relative phase below Brewster is 180 deg", abs(delta_refl_below), 180.0, 1e-3);
+
+// ------------------------------------------------------------------------
+// Part 3: Dielectric Reflection ABOVE Brewster's Angle (Phase Flip = 0 deg)
+// ------------------------------------------------------------------------
+// At theta_i = 75 deg (> theta_B ~ 56.6 deg):
+// Both r_s < 0 and r_p < 0 -> Both acquire pi phase -> Relative phase delta = 0 deg
+real theta_steep_deg = 75.0;
+pair dir_steep = (cos(radians(theta_steep_deg)), sin(radians(theta_steep_deg)));
+Ray r_in2 = Ray(p = (-10 * dir_steep.x, -10 * dir_steep.y),
+                d = dir_steep,
+                medium = m_air,
+                pol = Polarization.linear(45.0, 1.0));
+
+Trace t2 = sys.trace(r_in2);
+Ray r_refl_above = t2.reflected(0);
+
+assert_stokes_physical("Reflected above Brewster", r_refl_above.pol);
+assert_near("Reflected S3 above Brewster remains zero", r_refl_above.pol.S3, 0.0, 1e-5);
+
+// S2 becomes positive again because both r_s and r_p share the same sign (both negative)
+assert_true("Reflected S2 above Brewster is positive", r_refl_above.pol.S2 > 1e-4);
+
+real delta_refl_above = degrees(atan2(r_refl_above.pol.S3, r_refl_above.pol.S2));
+assert_near("Reflected relative phase above Brewster is 0 deg", delta_refl_above, 0.0, 1e-3);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
