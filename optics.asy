@@ -1706,6 +1706,109 @@ PhaseMatch solveBoundaryPhaseMatch(Medium m, pair N, pair T, real kt, pair forwa
     return pm;
 }
 
+// ============================================================================
+// Maxwell Boundary Solver for Isotropic <-> Uniaxial Planar Interfaces
+// ============================================================================
+private
+struct AnisotropicFresnelResult {
+    real Rs, Rp;              // Mode reflectances
+    real To, Te;              // Mode transmittances (ordinary & extraordinary)
+    pair rs, rp;              // Complex reflection coefficients
+    pair to, te;              // Complex transmission coefficients
+    pair d_o, d_e;            // Energy-flow (Poynting / ray) directions
+    pair waveNormal_o;        // Ordinary phase normal
+    pair waveNormal_e;        // Extraordinary phase normal
+    pair reflectedDir;        // Geometric reflected ray direction
+    pair reflectedWaveNormal; // Reflected phase normal
+    bool tir_o;               // TIR flag for ordinary mode
+    bool tir_e;               // TIR flag for extraordinary mode
+};
+
+private
+AnisotropicFresnelResult
+solveUniaxialInterface(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
+    AnisotropicFresnelResult res;
+
+    // 1. Establish orthonormal interface frame
+    InterfaceFrame f = interfaceFrame(med_iso, med_o, r, h, resolve);
+    pair N = f.normal;
+    pair T = (-N.y, N.x); // Unit tangent along surface
+
+    pair incWaveNormal = unitOr(r.waveNormal, r.d);
+    real n1 = f.sourceMedium.n(h.p, incWaveNormal, r.lambda, r.pol);
+    real kt = n1 * dot(incWaveNormal, T);
+    real kn_in = abs(n1 * dot(incWaveNormal, N));
+
+    // Reflected wave kinematics
+    PhaseMatch reflMatch = solveBoundaryPhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
+    res.reflectedDir = reflMatch.groupDirection;
+    res.reflectedWaveNormal = reflMatch.waveNormal;
+
+    // 2. Transmitted Kinematics using existing functional boundary matcher
+    pair intoMed = -N; // Normal pointing into crystal
+    PhaseMatch trans_o = solveBoundaryPhaseMatch(med_o, N, T, kt, intoMed, h.p, r.lambda);
+    PhaseMatch trans_e = solveBoundaryPhaseMatch(med_e, N, T, kt, intoMed, h.p, r.lambda);
+
+    res.d_o = trans_o.groupDirection;
+    res.waveNormal_o = trans_o.waveNormal;
+    res.tir_o = trans_o.tir;
+
+    res.d_e = trans_e.groupDirection; // Contains exact Poynting walk-off
+    res.waveNormal_e = trans_e.waveNormal;
+    res.tir_e = trans_e.tir;
+
+    // ========================================================================
+    // 3. Ordinary Mode (TE / S-Polarization)
+    // ========================================================================
+    if (!res.tir_o) {
+        real qo = abs(trans_o.n * dot(trans_o.waveNormal, N));
+        real denom = kn_in + qo;
+        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
+        res.to = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
+        res.Rs = res.rs.x * res.rs.x;
+        res.To = 1.0 - res.Rs;
+    } else {
+        real no = med_o.n(h.p, incWaveNormal, r.lambda, r.pol);
+        real qo2 = no * no - kt * kt;
+        real qo_im = sqrt(max(0.0, -qo2));
+        pair denom = (kn_in, qo_im);
+        res.rs = (kn_in, -qo_im) / denom;
+        res.to = (0.0, 0.0);
+        res.Rs = 1.0;
+        res.To = 0.0;
+    }
+
+    // ========================================================================
+    // 4. Extraordinary Mode (TM / P-Polarization via Kinematic Impedance)
+    // ========================================================================
+    if (!res.tir_e) {
+        // Full wavevector in crystal: w_e = n * u_e
+        pair we = trans_e.n * trans_e.waveNormal;
+        pair de = trans_e.groupDirection;
+
+        // Normal component of Poynting vector into crystal
+        real dn = abs(dot(de, N));
+        real we_dot_de = abs(dot(we, de));
+
+        // Exact Maxwell boundary surface impedance: Ze = dn / (we . de)
+        real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
+        real Zi = kn_in / (n1 * n1); // Incident TM wave impedance: cos(theta_i) / n1
+
+        real denom_p = Zi + Ze;
+        res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
+        res.te = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
+        res.Rp = res.rp.x * res.rp.x;
+        res.Te = 1.0 - res.Rp;
+    } else {
+        res.rp = (-1.0, 0.0);
+        res.te = (0.0, 0.0);
+        res.Rp = 1.0;
+        res.Te = 0.0;
+    }
+
+    return res;
+}
+
 snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
     Refraction b = new Refraction;
     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
@@ -4006,7 +4109,7 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
                 real Ts = 1.0 - abs2(ref.rs);
                 real Tp = 1.0 - abs2(ref.rp);
                 pair C_T = ref.ts * conj(ref.tp) * sqrtFactor;
-                applyDiattenuation(transRay.pol, r.pol, Ts, Tp, C_T);
+                applyDiattenuation(transRay.pol, r.pol, Ts, Tp);
             }
             rays.push(transRay);
         }
@@ -4207,61 +4310,94 @@ Property PolarizingSplit(Medium med_o, Medium med_e, Medium ambient = null) {
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
         Ray[] rays;
 
-        // Incident S and P channel intensities from Stokes
-        real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
-        real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
+        // Resolve interface frame
+        InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
 
-        // 1. Ordinary Ray (Ordinary Snell + pure S-polarization output)
-        Refraction ref_o = snell(med_o, ambient, r, h, resolve, nan);
-        if (!ref_o.totalInternalReflection) {
-            real I_o = Is_inc * ref_o.T;
-            if (I_o > config.physics.minIntensity) {
-                Ray oRay = spawnRay(r, h, ref_o.d, I_o, ref_o.medium, 0, ref_o.waveNormal);
-                // Pure S-polarization state (S1 = +S0)
-                oRay.pol.S0 = I_o;
-                oRay.pol.S1 = I_o;
-                oRay.pol.S2 = 0.0;
-                oRay.pol.S3 = 0.0;
-                rays.push(oRay);
+        // ---------------------------------------------------------------------
+        // Definitive test: If the ray is NOT already in med_o or med_e,
+        // it is ENTERING the crystal from the outside!
+        // ---------------------------------------------------------------------
+        bool isEntering = (r.medium != med_o && r.medium != med_e);
+
+        if (isEntering) {
+            // =================================================================
+            // CASE 1: ENTERING CRYSTAL (External Ray splits into O and E modes)
+            // =================================================================
+            real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
+            real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
+
+            AnisotropicFresnelResult b = solveUniaxialInterface(r, h, f.sourceMedium, med_o, med_e, resolve);
+
+            // 1. Ordinary Ray (Pure S-polarization in med_o)
+            if (!b.tir_o) {
+                real I_o = Is_inc * b.To;
+                if (I_o > config.physics.minIntensity) {
+                    Ray oRay = spawnRay(r, h, b.d_o, I_o, med_o, 0, b.waveNormal_o);
+                    oRay.pol.S0 = I_o;
+                    oRay.pol.S1 = I_o;
+                    oRay.pol.S2 = 0.0;
+                    oRay.pol.S3 = 0.0;
+                    rays.push(oRay);
+                }
+            }
+
+            // 2. Extraordinary Ray (Pure P-polarization in med_e with walk-off)
+            if (!b.tir_e) {
+                real I_e = Ip_inc * b.Te;
+                if (I_e > config.physics.minIntensity) {
+                    Ray eRay = spawnRay(r, h, b.d_e, I_e, med_e, 0, b.waveNormal_e);
+                    eRay.pol.S0 = I_e;
+                    eRay.pol.S1 = -I_e;
+                    eRay.pol.S2 = 0.0;
+                    eRay.pol.S3 = 0.0;
+                    rays.push(eRay);
+                }
+            }
+
+            // 3. Reflected Ray (Reflecting back into source medium)
+            if (config.physics.traceReflections || config.rendering.drawReflections) {
+                real I_refl = b.Rs * Is_inc + b.Rp * Ip_inc;
+                if (I_refl > config.physics.minIntensity) {
+                    Ray reflRay = spawnRay(r, h, b.reflectedDir, I_refl, f.sourceMedium, 0, b.reflectedWaveNormal);
+                    pair C = b.rs * conj(b.rp);
+
+                    reflRay.pol.S0 = I_refl;
+                    reflRay.pol.S1 = b.Rs * Is_inc - b.Rp * Ip_inc;
+                    reflRay.pol.S2 = C.x * r.pol.S2 - C.y * r.pol.S3;
+                    reflRay.pol.S3 = C.y * r.pol.S2 + C.x * r.pol.S3;
+                    rays.push(reflRay);
+                }
+            }
+        } else {
+            // =================================================================
+            // CASE 2: EXITING CRYSTAL (Ray is already in med_o or med_e)
+            // =================================================================
+            Medium srcMed = (r.medium != null) ? r.medium : med_o;
+            Refraction ref = snell(srcMed, ambient, r, h, resolve, nan);
+
+            if (!ref.totalInternalReflection) {
+                real I_trans = r.intensity() * ref.T;
+                if (I_trans > config.physics.minIntensity) {
+                    Ray transRay = spawnRay(r, h, ref.d, I_trans, ref.medium, 0, ref.waveNormal);
+                    transRay.pol = copy(r.pol);
+                    transRay.pol.scaleTo(I_trans);
+                    rays.push(transRay);
+                }
+            }
+
+            // Internal reflection (e.g. TIR of ordinary ray in Nicol prism)
+            if (config.physics.traceReflections || config.rendering.drawReflections || ref.totalInternalReflection) {
+                real I_refl = r.intensity() * ref.R;
+                if (I_refl > config.physics.minIntensity) {
+                    Ray reflRay =
+                        spawnRay(r, h, ref.reflectedDirection, I_refl, ref.sourceMedium, 0, ref.reflectedWaveNormal);
+                    reflRay.pol = copy(r.pol);
+                    reflRay.pol.scaleTo(I_refl);
+                    rays.push(reflRay);
+                }
             }
         }
 
-        // 2. Extraordinary Ray (Anisotropic Snell + pure P-polarization output)
-        Refraction ref_e = snell(med_e, ambient, r, h, resolve, nan);
-        if (!ref_e.totalInternalReflection) {
-            real I_e = Ip_inc * ref_e.T;
-            if (I_e > config.physics.minIntensity) {
-                Ray eRay = spawnRay(r, h, ref_e.d, I_e, ref_e.medium, 0, ref_e.waveNormal);
-                // Pure P-polarization state (S1 = -S0)
-                eRay.pol.S0 = I_e;
-                eRay.pol.S1 = -I_e;
-                eRay.pol.S2 = 0.0;
-                eRay.pol.S3 = 0.0;
-                rays.push(eRay);
-            }
-        }
-
-        // 3. Reflected Ray (Fresnel reflection with phase retardance)
-        if (config.physics.traceReflections || config.rendering.drawReflections) {
-            real Rs = abs2(ref_o.rs);
-            real Rp = abs2(ref_e.rp);
-            real I_refl = Rs * Is_inc + Rp * Ip_inc;
-
-            if (I_refl > config.physics.minIntensity) {
-                Ray reflRay =
-                    spawnRay(r, h, ref_o.reflectedDirection, I_refl, ref_o.sourceMedium, 0, ref_o.reflectedWaveNormal);
-
-                // Cross-phase term between S and P reflections: C = rs * conj(rp)
-                pair C = ref_o.rs * conj(ref_e.rp);
-
-                reflRay.pol.S0 = I_refl;
-                reflRay.pol.S1 = Rs * Is_inc - Rp * Ip_inc;
-                reflRay.pol.S2 = C.x * r.pol.S2 - C.y * r.pol.S3;
-                reflRay.pol.S3 = C.y * r.pol.S2 + C.x * r.pol.S3;
-
-                rays.push(reflRay);
-            }
-        }
         return rays;
     };
     return p;
