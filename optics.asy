@@ -225,221 +225,188 @@ pair intersection(path a, path b) {
     return (infinity, infinity);
 }
 
-struct Stokes {
+// =============================================================================
+// ============================================================================
+// Polarization (Pure Stokes Representation)
+// ============================================================================
+struct Polarization {
+    // Stokes parameters (Single Source of Truth)
     real S0 = 1.0;
     real S1 = 0.0;
     real S2 = 0.0;
     real S3 = 0.0;
+
+    // --- State Queries ---
+    real intensity() { return S0; }
+
     real dop() {
-        if (S0 <= config.math.stokesIntensityEps) return 0.0;
-        return sqrt(S1 * S1 + S2 * S2 + S3 * S3) / S0;
+        if (S0 <= config.math.eps) return 0.0;
+        return clamp(sqrt(S1 * S1 + S2 * S2 + S3 * S3) / S0, 0.0, 1.0);
     }
-    // Auxiliary angles for visualization
-    real psi() { // psi: tilt of major axis (-pi/2 to pi/2)
-        return 0.5 * atan2(S2, S1);
-    }
-    real chi() { // chi: -pi/4 (LCP) to +pi/4 (RCP)
+
+    // Azimuth / tilt of the major axis: [-pi/2, pi/2]
+    real psi() { return 0.5 * atan2(S2, S1); }
+
+    // Ellipticity angle: [-pi/4 (LCP) to +pi/4 (RCP)]
+    real chi() {
         real p = dop();
-        if (p <= config.math.stokesIntensityEps) return 0.0;
+        if (p <= config.math.eps) return 0.0;
         return 0.5 * asin(clamp(S3 / (S0 * p), -1.0, 1.0));
     }
-}
 
-Stokes
-copy(Stokes s) {
-    if (s == null) return null;
-    Stokes c = new Stokes;
-    c.S0 = s.S0;
-    c.S1 = s.S1;
-    c.S2 = s.S2;
-    c.S3 = s.S3;
-    return c;
-}
-
-struct Polarization {
-    // 1. Coherent field amplitudes (for wave interference)
-    pair Es = (0, 0);
-    pair Ep = (0, 0);
-
-    // 2. Incoherent / Partially-polarized Stokes state
-    Stokes S;
-
-    // 3. Unpolarized state safeguard flag
-    bool isUnpolarized = false;
-
-    // Synchronizes Stokes parameters from Jones vector for pure coherent states
-    void syncStokesFromJones() {
-        if (this.isUnpolarized) {
-            // Guard: Retain unpolarized state (S1=0, S2=0, S3=0)
-            real I = this.S.S0;
-            this.S.S0 = I;
-            this.S.S1 = 0.0;
-            this.S.S2 = 0.0;
-            this.S.S3 = 0.0;
-            return;
+    // --- In-place Transformations ---
+    void scaleTo(real newIntensity) {
+        if (this.S0 > config.math.eps) {
+            real factor = newIntensity / this.S0;
+            this.S0 = newIntensity;
+            this.S1 *= factor;
+            this.S2 *= factor;
+            this.S3 *= factor;
+        } else {
+            this.S0 = newIntensity;
         }
-
-        real Is = this.Es.x * this.Es.x + this.Es.y * this.Es.y;
-        real Ip = this.Ep.x * this.Ep.x + this.Ep.y * this.Ep.y;
-
-        this.S.S0 = Is + Ip;
-        this.S.S1 = Is - Ip;
-        this.S.S2 = 2.0 * (this.Es.x * this.Ep.x + this.Es.y * this.Ep.y);
-        this.S.S3 = 2.0 * (this.Es.x * this.Ep.y - this.Es.y * this.Ep.x);
     }
 
-    // Static Factory: True Unpolarized Light State
+    // Phase retardance between p and s components (Fresnel Rhomb / Waveplates)
+    void applyRetardance(real delta) {
+        real c = cos(delta);
+        real s = sin(delta);
+        real newS2 = S2 * c - S3 * s;
+        real newS3 = S2 * s + S3 * c;
+        S2 = newS2;
+        S3 = newS3;
+    }
+
+    // Rotation of the polarization plane by theta (Optical Activity / Faraday)
+    void applyRotation(real theta) {
+        real c2 = cos(2.0 * theta);
+        real s2 = sin(2.0 * theta);
+        real newS1 = S1 * c2 - S2 * s2;
+        real newS2 = S1 * s2 + S2 * c2;
+        S1 = newS1;
+        S2 = newS2;
+    }
+
+    // ========================================================================
+    // Static Factories
+    // ========================================================================
+
+    // 1. Unpolarized light
     static Polarization unpolarized(real intensity = 1.0) {
         Polarization p = new Polarization;
-        p.isUnpolarized = true;
-        p.S.S0 = intensity;
-        p.S.S1 = 0.0;
-        p.S.S2 = 0.0;
-        p.S.S3 = 0.0;
-
-        real E0 = sqrt(max(0.0, intensity) / 2.0);
-        p.Es = (E0, 0.0);
-        p.Ep = (E0, 0.0);
+        p.S0 = intensity;
+        p.S1 = 0.0;
+        p.S2 = 0.0;
+        p.S3 = 0.0;
         return p;
     }
 
-    // Core elliptical state setter (semi-major axis a, semi-minor axis b, tilt angle theta, phase lag delta)
-    // Setters for coherent states clear the unpolarized flag
-    void setElliptical(real a, real b, real theta_deg = 0.0, real phase_deg = 0.0) {
-        this.isUnpolarized = false; // Transition to coherent state
+    // 2. Linear polarization at angle theta_deg
+    static Polarization linear(real theta_deg, real intensity = 1.0) {
+        Polarization p = new Polarization;
+        real th = radians(theta_deg);
+        p.S0 = intensity;
+        p.S1 = intensity * cos(2.0 * th);
+        p.S2 = intensity * sin(2.0 * th);
+        p.S3 = 0.0;
+        return p;
+    }
+
+    // 3. Circular polarization (+1: RCP, -1: LCP)
+    static Polarization circular(int handedness = 1, real intensity = 1.0) {
+        Polarization p = new Polarization;
+        p.S0 = intensity;
+        p.S1 = 0.0;
+        p.S2 = 0.0;
+        p.S3 = (handedness >= 0 ? 1.0 : -1.0) * intensity;
+        return p;
+    }
+
+    // 4. Elliptical polarization via semi-axes (a, b), phase shift, and tilt
+    static Polarization elliptical(real a = 1.0, real b = 0.5, real phase_deg = 90.0, real theta_deg = 0.0) {
+        Polarization p = new Polarization;
+        real delta = radians(phase_deg);
         real theta = radians(theta_deg);
-        real phase = radians(phase_deg);
 
-        pair E1 = (a, 0.0);
-        pair E2 = (b * cos(phase), b * sin(phase));
+        real s0 = a * a + b * b;
+        real s1 = a * a - b * b;
+        real s2 = 2.0 * a * b * cos(delta);
+        real s3 = 2.0 * a * b * sin(delta);
 
-        this.Es = (E1.x * cos(theta) - E2.x * sin(theta), E1.y * cos(theta) - E2.y * sin(theta));
-        this.Ep = (E1.x * sin(theta) + E2.x * cos(theta), E1.y * sin(theta) + E2.y * cos(theta));
+        // Rotate by tilt angle theta
+        real c2 = cos(2.0 * theta);
+        real s2_th = sin(2.0 * theta);
 
-        this.syncStokesFromJones();
-    }
-
-    // Universal Elliptical Factory:
-    // Supports BOTH:
-    // 1. Semi-axes & phase: elliptical(a, b, theta_deg, phase_deg)
-    // 2. Azimuth & ellipticity angle: elliptical(azimuth = 30, ellipticity = -20)
-    static Polarization elliptical(real a = 1.0,
-                                   real b = 0.0,
-                                   real theta_deg = 0.0,
-                                   real phase_deg = 0.0,
-                                   real azimuth = nan,
-                                   real ellipticity = nan,
-                                   real amplitude = 1.0) {
-        Polarization p = new Polarization;
-        if (!isnan(azimuth) || !isnan(ellipticity)) {
-            // (psi, chi) parameterization
-            real psi = !isnan(azimuth) ? azimuth : 0.0;
-            real chi = !isnan(ellipticity) ? ellipticity : 0.0;
-            real chi_rad = radians(chi);
-            real semi_a = amplitude * cos(chi_rad);
-            real semi_b = amplitude * abs(sin(chi_rad));
-            real p_deg = (chi >= 0) ? 90.0 : -90.0;
-            p.setElliptical(semi_a, semi_b, psi, p_deg);
-        } else {
-            // Standard (a, b, theta, phase) parameterization
-            p.setElliptical(a, b, theta_deg, phase_deg);
-        }
-        return p;
-    }
-    // Static Factory: Circular Polarization (Right-handed or Left-handed)
-    // Matches IEEE / Optics convention used in Test 27:
-    // RCP -> phase lag of -90 deg (Ep.y = -amplitude / sqrt(2))
-    // LCP -> phase lead of +90 deg (Ep.y = +amplitude / sqrt(2))
-    static Polarization circular(bool rightHanded = true, real amplitude = 1.0) {
-        real a = amplitude / sqrt(2.0);
-        return Polarization.elliptical(a, a, 0.0, rightHanded ? -90.0 : 90.0);
-    }
-
-    // Static Factory: Linear Polarization at angle 'deg' to the s-axis
-    static Polarization linear(real angle = 0.0, real amplitude = 1.0) {
-        Polarization p = new Polarization;
-        p.Es = (amplitude * Cos(angle), 0.0);
-        p.Ep = (amplitude * Sin(angle), 0.0);
-        p.syncStokesFromJones();
+        p.S0 = s0;
+        p.S1 = s1 * c2 - s2 * s2_th;
+        p.S2 = s1 * s2_th + s2 * c2;
+        p.S3 = s3;
         return p;
     }
 
-    // Static Factory: Pure S-polarization (TE, horizontal laboratory frame)
-    static Polarization s(real amplitude = 1.0) { return Polarization.linear(0.0, amplitude); }
-    // Static Factory: Pure P-polarization (TM, vertical laboratory frame)
-    static Polarization p(real amplitude = 1.0) { return Polarization.linear(90.0, amplitude); }
-    // Total electric field irradiance
-    real intensity() {
-        if (this.isUnpolarized) return this.S.S0;
-        real I_jones = this.Es.x * this.Es.x + this.Es.y * this.Es.y + this.Ep.x * this.Ep.x + this.Ep.y * this.Ep.y;
-        return (I_jones > config.math.eps) ? I_jones : this.S.S0;
+    // 5. Elliptical polarization via Poincaré angles (psi, chi)
+    static Polarization fromAngles(real psi_deg, real chi_deg, real intensity = 1.0) {
+        Polarization p = new Polarization;
+        real psi = radians(psi_deg);
+        real chi = radians(chi_deg);
+        p.S0 = intensity;
+        p.S1 = intensity * cos(2.0 * chi) * cos(2.0 * psi);
+        p.S2 = intensity * cos(2.0 * chi) * sin(2.0 * psi);
+        p.S3 = intensity * sin(2.0 * chi);
+        return p;
     }
+};
 
-    void scaleTo(real newIntensity) {
-        real oldIntensity = this.intensity();
-        if (oldIntensity > config.math.eps) {
-            real factor = newIntensity / oldIntensity;
-            real ampFactor = sqrt(factor);
-            this.Es = this.Es * ampFactor;
-            this.Ep = this.Ep * ampFactor;
-            this.S.S0 = newIntensity;
-            this.S.S1 *= factor;
-            this.S.S2 *= factor;
-            this.S.S3 *= factor;
-        } else {
-            this.S.S0 = newIntensity;
-            this.S.S1 = 0.0;
-            this.S.S2 = 0.0;
-            this.S.S3 = 0.0;
-            real amp = sqrt(max(0.0, newIntensity) / 2.0);
-            this.Es = (amp, 0.0);
-            this.Ep = (amp, 0.0);
-        }
-    }
+// ============================================================================
+// Standalone Functions & Operators
+// ============================================================================
 
-    // Relative multiplier scale: pol.scale(factor)
-    void scale(real factor) {
-        if (factor < 0) factor = 0;
-        this.scaleTo(this.intensity() * factor);
-    }
-}
-
-// Global Operators (Outside struct)
-Polarization operator+(Polarization a, Polarization b) {
-    Polarization out = new Polarization;
-    out.Es = a.Es + b.Es;
-    out.Ep = a.Ep + b.Ep;
-    out.syncStokesFromJones();
-    return out;
-}
-
-Polarization operator*(real scalar, Polarization a) {
-    Polarization out = new Polarization;
-    out.Es = scalar * a.Es;
-    out.Ep = scalar * a.Ep;
-    out.syncStokesFromJones();
-    return out;
-}
-
-Polarization operator*(Polarization p, real factor) { return factor * p; }
-
-// Deep copy helper for Polarization
 Polarization copy(Polarization p) {
     if (p == null) return null;
     Polarization c = new Polarization;
-    c.Es = p.Es;
-    c.Ep = p.Ep;
-    c.S = copy(p.S);
-    c.isUnpolarized = p.isUnpolarized;
+    c.S0 = p.S0;
+    c.S1 = p.S1;
+    c.S2 = p.S2;
+    c.S3 = p.S3;
     return c;
 }
+
+// Incoherent ray superposition (Stokes addition)
+Polarization operator+(Polarization a, Polarization b) {
+    Polarization out = new Polarization;
+    out.S0 = a.S0 + b.S0;
+    out.S1 = a.S1 + b.S1;
+    out.S2 = a.S2 + b.S2;
+    out.S3 = a.S3 + b.S3;
+    return out;
+}
+
+// Intensity scaling
+Polarization operator*(real scalar, Polarization a) {
+    Polarization out = new Polarization;
+    out.S0 = a.S0 * scalar;
+    out.S1 = a.S1 * scalar;
+    out.S2 = a.S2 * scalar;
+    out.S3 = a.S3 * scalar;
+    return out;
+}
+
+Polarization operator*(Polarization a, real scalar) { return scalar * a; }
+
+// Compatibility wrapper for polarization rotation
+void applyPolarizationRotation(Polarization pol, real theta) {
+    if (pol != null) pol.applyRotation(theta);
+}
+// =============================================================================
 
 // Applies the 4x4 Mueller Diattenuation Matrix (with optional complex cross-coupling / retardance C)
 // from a source Stokes vector to a target Stokes vector (or in-place when target == src),
 // given orthogonal intensity transmittances/reflectances T1 and T2 (e.g. Ts, Tp or Rs, Rp).
 // If C is omitted, C defaults to (sqrt(max(0.0, T1 * T2)), 0.0) (pure zero-retardance diattenuation).
-void applyDiattenuation(Stokes target, Stokes src, real T1, real T2, pair C = (nan, nan)) {
+// 1. General Mueller Diattenuation with optional phase cross-term C
+void applyDiattenuation(Polarization target, Polarization src, real T1, real T2, pair C = (nan, nan)) {
     if (target == null || src == null) return;
+
     real half_sum = 0.5 * (T1 + T2);
     real half_diff = 0.5 * (T1 - T2);
     pair cross = isnan(C.x) ? (sqrt(max(0.0, T1 * T2)), 0.0) : C;
@@ -455,39 +422,17 @@ void applyDiattenuation(Stokes target, Stokes src, real T1, real T2, pair C = (n
     target.S3 = S3_new;
 }
 
-// In-place Stokes overload
-void applyDiattenuation(Stokes S, real T1, real T2, pair C = (nan, nan)) { applyDiattenuation(S, S, T1, T2, C); }
-
-// Complex Jones amplitude overload for Mueller-Jones diagonal transformations (e.g. Fresnel reflection)
-void applyDiattenuation(Stokes target, Stokes src, pair js, pair jp) {
-    applyDiattenuation(target, src, abs2(js), abs2(jp), js * conj(jp));
-}
-
-void applyDiattenuation(Stokes S, pair js, pair jp) { applyDiattenuation(S, S, js, jp); }
-
-// Convenience overloads for Polarization struct
-void applyDiattenuation(Polarization target, Polarization src, real T1, real T2, pair C = (nan, nan)) {
-    if (target != null && target.S != null && src != null && src.S != null) {
-        applyDiattenuation(target.S, src.S, T1, T2, C);
-    }
-}
-
-void applyDiattenuation(Polarization pol, real T1, real T2, pair C = (nan, nan)) {
-    if (pol != null && pol.S != null) {
-        applyDiattenuation(pol.S, pol.S, T1, T2, C);
-    }
-}
-
+// 2. Overload for complex Fresnel amplitude coefficients (js, jp)
 void applyDiattenuation(Polarization target, Polarization src, pair js, pair jp) {
-    if (target != null && target.S != null && src != null && src.S != null) {
-        applyDiattenuation(target.S, src.S, js, jp);
-    }
-}
+    if (target == null || src == null) return;
 
-void applyDiattenuation(Polarization pol, pair js, pair jp) {
-    if (pol != null && pol.S != null) {
-        applyDiattenuation(pol.S, pol.S, js, jp);
-    }
+    real T1 = js.x * js.x + js.y * js.y; // |js|^2
+    real T2 = jp.x * jp.x + jp.y * jp.y; // |jp|^2
+
+    // Cross-term C = js * conj(jp) = (x1 + i*y1) * (x2 - i*y2)
+    pair cross = (js.x * jp.x + js.y * jp.y, js.y * jp.x - js.x * jp.y);
+
+    applyDiattenuation(target, src, T1, T2, cross);
 }
 
 // Applies a physical polarization angle rotation 'theta' (in radians)
@@ -495,26 +440,15 @@ void applyDiattenuation(Polarization pol, pair js, pair jp) {
 void applyPolarizationRotation(Polarization pol, real theta) {
     if (pol == null) return;
 
-    real c = cos(theta);
-    real s = sin(theta);
+    // Rotate Stokes vector (S1, S2) by 2 * theta (Mueller Rotator Matrix)
+    real c = cos(2.0 * theta);
+    real s = sin(2.0 * theta);
 
-    // 1. Rotate Jones electric field vector (Es, Ep) by theta
-    pair newEs = pol.Es * c - pol.Ep * s;
-    pair newEp = pol.Es * s + pol.Ep * c;
-    pol.Es = newEs;
-    pol.Ep = newEp;
+    real newS1 = pol.S1 * c - pol.S2 * s;
+    real newS2 = pol.S1 * s + pol.S2 * c;
 
-    // 2. Rotate Stokes vector (S1, S2) by 2 * theta (Mueller Rotator Matrix)
-    if (pol.S != null) {
-        real c2 = cos(2.0 * theta);
-        real s2 = sin(2.0 * theta);
-
-        real newS1 = pol.S.S1 * c2 - pol.S.S2 * s2;
-        real newS2 = pol.S.S1 * s2 + pol.S.S2 * c2;
-
-        pol.S.S1 = newS1;
-        pol.S.S2 = newS2;
-    }
+    pol.S1 = newS1;
+    pol.S2 = newS2;
 }
 
 // Volume Properties (Medium Components)
@@ -629,24 +563,12 @@ VolumeProperty Dichroic(real alpha_s, real alpha_p) {
         if (inPol == null || ds <= 0) return inPol;
 
         Polarization out = copy(inPol);
-
         real Ts = exp(-alpha_s * ds);
         real Tp = exp(-alpha_p * ds);
-
-        // Transform Stokes parameters using the Mueller matrix.
-        applyDiattenuation(out.S, inPol.S, Ts, Tp);
-
-        // Update Jones amplitudes for coherent field tracking.
-        out.Es = inPol.Es * sqrt(Ts);
-        out.Ep = inPol.Ep * sqrt(Tp);
-
-        // The flag describes the output state, not its history.
-        real dop = out.S.dop();
-        out.isUnpolarized = (dop <= 1e-8);
-
+        // Transform Stokes parameters using the Mueller diattenuation matrix
+        applyDiattenuation(out, inPol, Ts, Tp);
         return out;
     };
-
     return vp;
 }
 
@@ -799,16 +721,9 @@ struct Medium {
             // so intensity scales as exp(-alpha*ds).
             real decay = exp(-a * ds / 2.0);
 
-            currPol.Es = currPol.Es * decay;
-            currPol.Ep = currPol.Ep * decay;
-
             // Keep Stokes intensity consistent with the field amplitudes.
-            // Unpolarized intensity() reads S.S0 directly.
-            currPol.S.S0 *= decay * decay;
-
-            // Recompute Stokes parameters for polarized light.
-            // For unpolarized light, this preserves S.S0 and zeros S1-S3.
-            currPol.syncStokesFromJones();
+            // Unpolarized intensity() reads S0 directly.
+            currPol.S0 *= decay * decay;
         }
 
         return currPol;
@@ -1771,10 +1686,12 @@ snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolv
     pair incWaveNormal = unitOr(r.waveNormal, r.d);
     real n1 = f.sourceMedium.n(h.p, incWaveNormal, r.lambda, r.pol);
     real kt = n1 * dot(incWaveNormal, T);
+
     // Unified Transmitted & Reflected Modes
     PhaseMatch trans = solveBoundaryPhaseMatch(f.targetMedium, N, T, kt, -N, h.p, r.lambda);
     PhaseMatch refl = solveBoundaryPhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
     real n2 = max(config.physics.minRefractiveIndex, trans.n);
+
     b.normal = f.normal;
     b.sourceMedium = f.sourceMedium;
     b.n1 = n1;
@@ -1782,17 +1699,21 @@ snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolv
     b.cosi = f.cosi;
     b.reflectedWaveNormal = refl.waveNormal;
     b.reflectedDirection = refl.groupDirection;
+
     pair cosi = (f.cosi, 0);
+
     if (trans.tir) {
         // Total Internal Reflection (TIR)
         b.totalInternalReflection = true;
         b.d = refl.groupDirection;
         b.medium = f.sourceMedium;
+
         // Exact complex evanescent wave normal: cost = -i * sqrt((kt/n2)^2 - 1)
         real k_im = (n2 > config.math.eps) ? sqrt(max(0.0, (kt / n2) ^ 2 - 1.0)) : 0.0;
         pair cost = (0, -k_im);
         pair denom_s = n1 * cosi + n2 * cost;
         pair denom_p = n2 * cosi + n1 * cost;
+
         b.rs = (abs(denom_s) > config.math.eps) ? (n1 * cosi - n2 * cost) / denom_s : (1, 0);
         b.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (1, 0);
         b.ts = (0, 0);
@@ -1801,25 +1722,33 @@ snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolv
         b.T = 0.0;
         return b;
     }
+
     // Standard / Anisotropic Refraction
     b.totalInternalReflection = false;
     b.cost = trans.cosTheta;
     b.waveNormal = trans.waveNormal;
     b.d = trans.groupDirection;
     b.medium = f.targetMedium;
+
     pair cost = (trans.cosTheta, 0);
     pair denom_s = n1 * cosi + n2 * cost;
     pair denom_p = n2 * cosi + n1 * cost;
+
     b.rs = (abs(denom_s) > config.math.eps) ? (n1 * cosi - n2 * cost) / denom_s : (0, 0);
     b.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (0, 0);
     b.ts = (abs(denom_s) > config.math.eps) ? (2 * n1 * cosi) / denom_s : (0, 0);
     b.tp = (abs(denom_p) > config.math.eps) ? (2 * n1 * cosi) / denom_p : (0, 0);
+
     real I_in = r.intensity();
     if (I_in > config.math.eps) {
-        b.R = ((abs2(b.rs) * abs2(r.pol.Es)) + (abs2(b.rp) * abs2(r.pol.Ep))) / I_in;
+        // Extract S and P power components from Stokes vector
+        real Is = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
+        real Ip = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
+        b.R = (abs2(b.rs) * Is + abs2(b.rp) * Ip) / I_in;
     } else {
         b.R = 0.5 * (abs2(b.rs) + abs2(b.rp));
     }
+
     b.R = isnan(reflectance) ? clamp(b.R, 0.0, 1.0) : clamp(reflectance, 0.0, 1.0);
     b.T = 1.0 - b.R;
     return b;
@@ -2932,12 +2861,15 @@ void drawPolarization(picture pic = currentpicture,
     if (r == null || !r.alive) return;
     RayPolarization effPol = pol.getPolarization(segmentIdx, totalSegments);
     if (!effPol.visible) return;
+
     real L = arclength(traj);
     if (L <= config.rendering.minDrawableLength) return;
+
     // Minimum Segment Length Gate: If the segment is too short to reasonably display a marker, skip entirely.
     real minSegL =
         !isnan(effPol.minSegmentLength) ? effPol.minSegmentLength : config.rendering.minPolarizationSegmentLength;
     if (L < minSegL) return;
+
     // Margins and Spacing Limits
     real s_start = clamp(effPol.before, 0, L);
     real s_end = clamp(L - effPol.after, s_start, L);
@@ -2945,7 +2877,9 @@ void drawPolarization(picture pic = currentpicture,
     real minSep =
         !isnan(effPol.minSeparation) ? effPol.minSeparation : config.rendering.minPolarizationMarkerSeparation;
     if (minSep <= 0) minSep = 0.1;
+
     real[] rawPositions;
+
     // Position Calculation with Overlap Prevention
     if (range < minSep) {
         // Range is too tight for multiple markers: place exactly ONE centered marker
@@ -2989,6 +2923,7 @@ void drawPolarization(picture pic = currentpicture,
             }
         }
     }
+
     // Strict Deduplication Filter (Guarantees no two markers are closer than minSep)
     real[] positions;
     real last_s = -infinity;
@@ -2999,25 +2934,32 @@ void drawPolarization(picture pic = currentpicture,
         }
     }
     if (positions.length == 0) return;
+
     // Render Filtered Markers
     for (real s : positions) {
         real t = arctime(traj, s);
         pair pos = point(traj, t);
         pair d = unitOr(dir(traj, t));
+
         // Evaluate local physical polarization at arc distance s
         Polarization localPol = resolvePolarizationAt(r, s);
-        real localAs = length(localPol.Es);
-        real localAp = length(localPol.Ep);
+
+        // Derive S and P field amplitudes directly from Stokes parameters S0 and S1
+        real localAs = sqrt(max(0.0, 0.5 * (localPol.S0 + localPol.S1)));
+        real localAp = sqrt(max(0.0, 0.5 * (localPol.S0 - localPol.S1)));
         real localI = localPol.intensity();
+
         // Skip marker if local intensity has decayed below threshold
         if (localI < config.physics.minIntensity) continue;
         if (localAs <= effPol.minAmplitude && localAp <= effPol.minAmplitude) continue;
+
         pen localPen = p;
         if (applyOpacity && config.rendering.useIntensityOpacity) {
             real baseAlpha = opacity(p);
             if (baseAlpha == 0) baseAlpha = 1.0;
             localPen = p + opacity(baseAlpha * max(0.0, min(1.0, localI)));
         }
+
         drawPolarizationMarker(pic, pos, d, localAs, localAp, 1, localPen, effPol);
     }
 }
@@ -4032,15 +3974,11 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
             if (isnan(reflectance)) {
                 real sqrtFactor = ref.cosi > config.math.eps ? sqrt((ref.n2 * ref.cost) / (ref.n1 * ref.cosi)) : 0.0;
 
-                // Update coherent Jones amplitudes
-                transRay.pol.Es = ref.ts * r.pol.Es * sqrtFactor;
-                transRay.pol.Ep = ref.tp * r.pol.Ep * sqrtFactor;
-
                 // Mueller transmission transformation for Stokes vector
                 real Ts = 1.0 - abs2(ref.rs);
                 real Tp = 1.0 - abs2(ref.rp);
                 pair C_T = ref.ts * conj(ref.tp) * sqrtFactor;
-                applyDiattenuation(transRay.pol.S, r.pol.S, Ts, Tp, C_T);
+                applyDiattenuation(transRay.pol, r.pol, Ts, Tp, C_T);
             }
             rays.push(transRay);
         }
@@ -4053,12 +3991,8 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
                 spawnRay(r, h, ref.reflectedDirection, intensity, ref.sourceMedium, 0, ref.reflectedWaveNormal);
 
             if (isnan(reflectance)) {
-                // Update coherent Jones amplitudes (pair multiplication applies complex phase)
-                reflRay.pol.Es = ref.rs * r.pol.Es;
-                reflRay.pol.Ep = ref.rp * r.pol.Ep;
-
                 // Mueller reflection transformation for Stokes vector
-                applyDiattenuation(reflRay.pol.S, r.pol.S, ref.rs, ref.rp);
+                applyDiattenuation(reflRay.pol, r.pol, ref.rs, ref.rp);
             }
             rays.push(reflRay);
         }
@@ -4243,43 +4177,59 @@ Property PolarizingSplit(Medium med_o, Medium med_e, Medium ambient = null) {
     p.name = "PolarizingSplit";
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
         Ray[] rays;
-        // Ordinary Ray (Ordinary Snell + S-polarization extraction)
+
+        // Incident S and P channel intensities from Stokes
+        real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
+        real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
+
+        // 1. Ordinary Ray (Ordinary Snell + pure S-polarization output)
         Refraction ref_o = snell(med_o, ambient, r, h, resolve, nan);
         if (!ref_o.totalInternalReflection) {
-            real I_o = (r.pol.Es.x * r.pol.Es.x + r.pol.Es.y * r.pol.Es.y) * ref_o.T;
+            real I_o = Is_inc * ref_o.T;
             if (I_o > config.physics.minIntensity) {
                 Ray oRay = spawnRay(r, h, ref_o.d, I_o, ref_o.medium, 0, ref_o.waveNormal);
-                real sqrtFactor =
-                    ref_o.cosi > config.math.eps ? sqrt((ref_o.n2 * ref_o.cost) / (ref_o.n1 * ref_o.cosi)) : 0.0;
-                oRay.pol.Es = ref_o.ts * r.pol.Es * sqrtFactor;
-                oRay.pol.Ep = (0, 0);
+                // Pure S-polarization state (S1 = +S0)
+                oRay.pol.S0 = I_o;
+                oRay.pol.S1 = I_o;
+                oRay.pol.S2 = 0.0;
+                oRay.pol.S3 = 0.0;
                 rays.push(oRay);
             }
         }
-        // Extraordinary Ray (Anisotropic Snell + P-polarization extraction)
+
+        // 2. Extraordinary Ray (Anisotropic Snell + pure P-polarization output)
         Refraction ref_e = snell(med_e, ambient, r, h, resolve, nan);
         if (!ref_e.totalInternalReflection) {
-            real I_e = (r.pol.Ep.x * r.pol.Ep.x + r.pol.Ep.y * r.pol.Ep.y) * ref_e.T;
+            real I_e = Ip_inc * ref_e.T;
             if (I_e > config.physics.minIntensity) {
                 Ray eRay = spawnRay(r, h, ref_e.d, I_e, ref_e.medium, 0, ref_e.waveNormal);
-                real sqrtFactor =
-                    ref_e.cosi > config.math.eps ? sqrt((ref_e.n2 * ref_e.cost) / (ref_e.n1 * ref_e.cosi)) : 0.0;
-                eRay.pol.Es = (0, 0);
-                eRay.pol.Ep = ref_e.tp * r.pol.Ep * sqrtFactor;
+                // Pure P-polarization state (S1 = -S0)
+                eRay.pol.S0 = I_e;
+                eRay.pol.S1 = -I_e;
+                eRay.pol.S2 = 0.0;
+                eRay.pol.S3 = 0.0;
                 rays.push(eRay);
             }
         }
-        // Reflected Ray
+
+        // 3. Reflected Ray (Fresnel reflection with phase retardance)
         if (config.physics.traceReflections || config.rendering.drawReflections) {
-            real I_refl = (ref_o.rs.x * ref_o.rs.x + ref_o.rs.y * ref_o.rs.y) *
-                              (r.pol.Es.x * r.pol.Es.x + r.pol.Es.y * r.pol.Es.y) +
-                          (ref_e.rp.x * ref_e.rp.x + ref_e.rp.y * ref_e.rp.y) *
-                              (r.pol.Ep.x * r.pol.Ep.x + r.pol.Ep.y * r.pol.Ep.y);
+            real Rs = abs2(ref_o.rs);
+            real Rp = abs2(ref_e.rp);
+            real I_refl = Rs * Is_inc + Rp * Ip_inc;
+
             if (I_refl > config.physics.minIntensity) {
                 Ray reflRay =
                     spawnRay(r, h, ref_o.reflectedDirection, I_refl, ref_o.sourceMedium, 0, ref_o.reflectedWaveNormal);
-                reflRay.pol.Es = ref_o.rs * r.pol.Es;
-                reflRay.pol.Ep = ref_e.rp * r.pol.Ep;
+
+                // Cross-phase term between S and P reflections: C = rs * conj(rp)
+                pair C = ref_o.rs * conj(ref_e.rp);
+
+                reflRay.pol.S0 = I_refl;
+                reflRay.pol.S1 = Rs * Is_inc - Rp * Ip_inc;
+                reflRay.pol.S2 = C.x * r.pol.S2 - C.y * r.pol.S3;
+                reflRay.pol.S3 = C.y * r.pol.S2 + C.x * r.pol.S3;
+
                 rays.push(reflRay);
             }
         }
@@ -5706,35 +5656,40 @@ Inset PolarizationInset(Polarization pol,
     ins.fill = fill;
     ins.badgeText = badgeText;
     real r = size;
+
     // Reference Axes
     draw(ins.pic, (-r, 0) -- (r, 0), gray(0.8), Arrow(HookHead, 2pt));
     draw(ins.pic, (0, -r) -- (0, r), gray(0.8), Arrow(HookHead, 2pt));
     label(ins.pic, "\tiny $S$", (r, 0), 2S + W, gray(0.4));
     label(ins.pic, "\tiny $P$", (0, r), S + 2W, gray(0.4));
+
     // Title
     if (title != "") label(ins.pic, Label("\bfseries{\strut\tiny " + title + "}"), (0, r + 2), N);
+
     real localI = pol.intensity();
     real orbitR = 0.75 * r;
-    real scaleNorm = (!isnan(refAmplitude) && refAmplitude > 0) ? refAmplitude : max(length(pol.Es), length(pol.Ep));
+
+    // Scale normalization directly from Stokes intensity S0
+    real scaleNorm = (!isnan(refAmplitude) && refAmplitude > 0) ? refAmplitude : sqrt(max(0.0, localI));
     if (scaleNorm <= config.math.eps) scaleNorm = 1.0;
     real displayFactor = orbitR / scaleNorm;
-    real dop = pol.S.dop();
+
+    real dop = pol.dop();
     real I_pol = dop * localI;
     real I_unpol = (1.0 - dop) * localI;
-    // Threshold for when a vector is large enough to warrant arrowheads
+
     real minArrowSize = config.rendering.polarizationInsetMinArrowFraction * orbitR;
+
     // =========================================================================
     // 1. UNPOLARIZED STARBURST
     // =========================================================================
     if (I_unpol > config.math.eps) {
         real unpolR = displayFactor * sqrt(I_unpol);
-        // Only draw starburst spokes if unpolR is reasonably visible:
         if (dop < config.rendering.polarizationInsetUnpolarizedThreshold && unpolR > minArrowSize) {
             int spokes = config.rendering.polarizationInsetUnpolarizedSpokes;
             for (int k = 0; k < spokes; ++k) {
                 real ang = radians(k * 180.0 / spokes);
                 pair dir = (cos(ang), sin(ang)) * unpolR * 0.85;
-                // Skip spoke arrowheads if the spoke is shorter than the threshold
                 if (length(dir) > minArrowSize)
                     draw(ins.pic, -dir -- dir, p + 0.4bp, Arrows(HookHead, 2.0pt));
                 else
@@ -5742,18 +5697,19 @@ Inset PolarizationInset(Polarization pol,
             }
         }
     }
+
     // =========================================================================
     // 2. POLARIZED FRACTION (Linear & Elliptical)
     // =========================================================================
     if (I_pol > config.math.eps) {
-        real psi = pol.S.psi();
-        real chi = pol.S.chi();
+        real psi = pol.psi();
+        real chi = pol.chi();
         real a = displayFactor * sqrt(I_pol) * cos(chi);
         real b = displayFactor * sqrt(I_pol) * abs(sin(chi));
+
         // Linear polarization:
         if (abs(chi) < radians(1.5)) {
             pair tip = a * (cos(psi), sin(psi));
-            // Clean comparison to orbit radius!
             if (a > minArrowSize)
                 draw(ins.pic, -tip -- tip, p, Arrows(HookHead, 2.5pt));
             else
@@ -5765,38 +5721,30 @@ Inset PolarizationInset(Polarization pol,
             for (int k = 0; k <= steps; ++k) {
                 real tau = k * 2.0 * pi / steps;
                 real x_loc = a * cos(tau);
-                real y_loc = (pol.S.S3 >= 0 ? 1.0 : -1.0) * b * sin(tau);
+                real y_loc = (pol.S3 >= 0 ? 1.0 : -1.0) * b * sin(tau);
                 real S_t = x_loc * cos(psi) - y_loc * sin(psi);
                 real P_t = x_loc * sin(psi) + y_loc * cos(psi);
                 ellipsePath = ellipsePath .. (S_t, P_t);
             }
-            // Skip handedness arrowhead if the ellipse semi-major axis is too small
             if (a > minArrowSize)
                 draw(ins.pic, ellipsePath, p, Arrow(HookHead(), 2.5pt, Relative(0.85)));
             else
                 draw(ins.pic, ellipsePath, p);
         }
     }
+
     // =========================================================================
-    // 3. READOUT LABEL (Dynamic multi-line packed frame)
+    // 3. READOUT LABEL
     // =========================================================================
     object[] lines;
-    // Line 1: Total Intensity (always shown)
     lines.push(object(Label(format("\tiny $I = %#.3f$", localI))));
-    // Line 2: Polarization state / DoP
     if (dop >= config.rendering.polarizationInsetUnpolarizedThreshold && dop < 0.999) {
         lines.push(object(Label(format("\tiny $\mathrm{DoP} = %.0f\%$", dop * 100.0))));
     } else if (dop < config.rendering.polarizationInsetUnpolarizedThreshold) {
         lines.push(object(Label("\tiny (Unpolarized)")));
     }
-    // Optional Line 3: You can easily add more lines whenever you want!
-    // e.g. for elliptical states:
-    // if (dop >= 1e-4 && abs(pol.S.chi()) >= radians(1.5)) {
-    //     lines.push(object(Label(format("\tiny $\psi = %.1f^\circ$", degrees(pol.S.psi())))));
-    // }
-    // Pack all lines vertically with centered alignment:
+
     frame fReadout = pack(align = S, ... lines);
-    // Attach the packed block centered under the inset:
     add(ins.pic, fReadout, (0, -r - 2), S);
     return ins;
 }
