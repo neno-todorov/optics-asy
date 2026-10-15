@@ -311,12 +311,12 @@ struct Polarization {
     }
 
     // 3. Circular polarization (+1: RCP, -1: LCP)
-    static Polarization circular(int handedness = 1, real intensity = 1.0) {
+    static Polarization circular(bool ccw = true, real intensity = 1.0) {
         Polarization p = new Polarization;
         p.S0 = intensity;
         p.S1 = 0.0;
         p.S2 = 0.0;
-        p.S3 = (handedness >= 0 ? 1.0 : -1.0) * intensity;
+        p.S3 = (ccw ? 1.0 : -1.0) * intensity;
         return p;
     }
 
@@ -5672,7 +5672,7 @@ Inset PolarizationInset(Polarization pol,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 20.0,
-                        real refAmplitude = nan, // <-- FIXED: default to nan
+                        real refAmplitude = 1.0,
                         string title = "",
                         string tag = "",
                         pen p = currentpen,
@@ -5720,8 +5720,7 @@ Inset PolarizationInset(Polarization pol,
         if (dop < config.rendering.polarizationInsetUnpolarizedThreshold && unpolR > minArrowSize) {
             int spokes = config.rendering.polarizationInsetUnpolarizedSpokes;
             for (int k = 0; k < spokes; ++k) {
-                real ang = radians(k * 180.0 / spokes);
-                pair dir = (cos(ang), sin(ang)) * unpolR * 0.85;
+                pair dir = dir((k * 180.0 / spokes)) * unpolR * 0.85;
                 if (length(dir) > minArrowSize)
                     draw(ins.pic, -dir -- dir, p + 0.4bp, Arrows(HookHead, 2.0pt));
                 else
