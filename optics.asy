@@ -4015,13 +4015,9 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
         if (r.intensity() * ref.R > config.physics.minIntensity &&
             (ref.totalInternalReflection || config.physics.traceReflections || config.rendering.drawReflections)) {
             real intensity = r.intensity() * ref.R;
-            Ray reflRay = spawnRay(r,
-                                   h,
-                                   ref.reflectedDirection,
-                                   intensity,
-                                   ref.sourceMedium,
-                                   atan2(ref.rs.y, ref.rs.x),
-                                   ref.reflectedWaveNormal);
+            real reflPhase = atan2(ref.rs.y, ref.rs.x); // pi for external reflection (n1 < n2)
+            Ray reflRay =
+                spawnRay(r, h, ref.reflectedDirection, intensity, ref.sourceMedium, reflPhase, ref.reflectedWaveNormal);
 
             if (isnan(reflectance)) {
                 // Mueller reflection transformation for Stokes vector
