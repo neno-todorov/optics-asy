@@ -225,7 +225,6 @@ pair intersection(path a, path b) {
     return (infinity, infinity);
 }
 
-// =============================================================================
 // ============================================================================
 // Polarization (Pure Stokes Representation)
 // ============================================================================
@@ -290,7 +289,6 @@ struct Polarization {
     // ========================================================================
     // Static Factories
     // ========================================================================
-
     // 1. Unpolarized light
     static Polarization unpolarized(real intensity = 1.0) {
         Polarization p = new Polarization;
@@ -322,29 +320,7 @@ struct Polarization {
         return p;
     }
 
-    // 4. Elliptical polarization via semi-axes (a, b), phase shift, and tilt
-    static Polarization elliptical(real a = 1.0, real b = 0.5, real phase_deg = 90.0, real theta_deg = 0.0) {
-        Polarization p = new Polarization;
-        real delta = radians(phase_deg);
-        real theta = radians(theta_deg);
-
-        real s0 = a * a + b * b;
-        real s1 = a * a - b * b;
-        real s2 = 2.0 * a * b * cos(delta);
-        real s3 = 2.0 * a * b * sin(delta);
-
-        // Rotate by tilt angle theta
-        real c2 = cos(2.0 * theta);
-        real s2_th = sin(2.0 * theta);
-
-        p.S0 = s0;
-        p.S1 = s1 * c2 - s2 * s2_th;
-        p.S2 = s1 * s2_th + s2 * c2;
-        p.S3 = s3;
-        return p;
-    }
-
-    // 5. Elliptical polarization via Poincaré angles (psi, chi)
+    // 4. Elliptical polarization via Poincaré angles (psi, chi)
     static Polarization fromAngles(real psi_deg, real chi_deg, real intensity = 1.0) {
         Polarization p = new Polarization;
         real psi = radians(psi_deg);
@@ -353,6 +329,59 @@ struct Polarization {
         p.S1 = intensity * cos(2.0 * chi) * cos(2.0 * psi);
         p.S2 = intensity * cos(2.0 * chi) * sin(2.0 * psi);
         p.S3 = intensity * sin(2.0 * chi);
+        return p;
+    }
+
+    // 5. Elliptical polarization via semi-axes (a, b), phase shift, and tilt
+    static Polarization elliptical(real a = nan,
+                                   real b = nan,
+                                   real phase_deg = 90.0,
+                                   real theta_deg = 0.0,
+                                   real azimuth = nan,
+                                   real ellipticity = nan,
+                                   real intensity = 1.0,
+                                   real amplitude = 1.0) {
+        // 1. If explicit azimuth / ellipticity are given:
+        if (!isnan(azimuth) && !isnan(ellipticity)) {
+            real I = (!isnan(intensity) && intensity != 1.0) ? intensity : (amplitude * amplitude);
+            return fromAngles(azimuth, ellipticity, I);
+        }
+
+        // 2. Safeguard: If first two positional args are large (likely azimuth & ellipticity passed positionally):
+        if (!isnan(a) && !isnan(b) && (abs(a) > 2.0 || abs(b) > 2.0)) {
+            real I = (!isnan(intensity) && intensity != 1.0) ? intensity : 1.0;
+            return fromAngles(a, b, I);
+        }
+
+        // 3. Otherwise: semi-axes (a, b) with phase and tilt
+        real a_val = isnan(a) ? 1.0 : a;
+        real b_val = isnan(b) ? 0.5 : b;
+        real delta = radians(phase_deg);
+        real theta = radians(theta_deg);
+
+        real s0 = a_val * a_val + b_val * b_val;
+        real s1 = a_val * a_val - b_val * b_val;
+        real s2 = 2.0 * a_val * b_val * cos(delta);
+        real s3 = 2.0 * a_val * b_val * sin(delta);
+
+        real c2 = cos(2.0 * theta);
+        real s2_th = sin(2.0 * theta);
+
+        Polarization p = new Polarization;
+        p.S0 = s0;
+        p.S1 = s1 * c2 - s2 * s2_th;
+        p.S2 = s1 * s2_th + s2 * c2;
+        p.S3 = s3;
+        return p;
+    }
+
+    // Convenient direct Stokes constructor:
+    static Polarization stokes(real s0, real s1, real s2 = 0.0, real s3 = 0.0) {
+        Polarization p = new Polarization;
+        p.S0 = s0;
+        p.S1 = s1;
+        p.S2 = s2;
+        p.S3 = s3;
         return p;
     }
 };
@@ -397,7 +426,6 @@ Polarization operator*(Polarization a, real scalar) { return scalar * a; }
 void applyPolarizationRotation(Polarization pol, real theta) {
     if (pol != null) pol.applyRotation(theta);
 }
-// =============================================================================
 
 // Applies the 4x4 Mueller Diattenuation Matrix (with optional complex cross-coupling / retardance C)
 // from a source Stokes vector to a target Stokes vector (or in-place when target == src),
@@ -3987,8 +4015,13 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
         if (r.intensity() * ref.R > config.physics.minIntensity &&
             (ref.totalInternalReflection || config.physics.traceReflections || config.rendering.drawReflections)) {
             real intensity = r.intensity() * ref.R;
-            Ray reflRay =
-                spawnRay(r, h, ref.reflectedDirection, intensity, ref.sourceMedium, 0, ref.reflectedWaveNormal);
+            Ray reflRay = spawnRay(r,
+                                   h,
+                                   ref.reflectedDirection,
+                                   intensity,
+                                   ref.sourceMedium,
+                                   atan2(ref.rs.y, ref.rs.x),
+                                   ref.reflectedWaveNormal);
 
             if (isnan(reflectance)) {
                 // Mueller reflection transformation for Stokes vector
@@ -5639,7 +5672,7 @@ Inset PolarizationInset(Polarization pol,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 20.0,
-                        real refAmplitude = 1.0,
+                        real refAmplitude = nan, // <-- FIXED: default to nan
                         string title = "",
                         string tag = "",
                         pen p = currentpen,
@@ -5669,9 +5702,8 @@ Inset PolarizationInset(Polarization pol,
     real localI = pol.intensity();
     real orbitR = 0.75 * r;
 
-    // Scale normalization directly from Stokes intensity S0
-    real scaleNorm = (!isnan(refAmplitude) && refAmplitude > 0) ? refAmplitude : sqrt(max(0.0, localI));
-    if (scaleNorm <= config.math.eps) scaleNorm = 1.0;
+    // Guaranteed auto-scale: if refAmplitude is nan, scale by sqrt(localI)
+    real scaleNorm = (!isnan(refAmplitude) && refAmplitude > 0) ? refAmplitude : sqrt(max(config.math.eps, localI));
     real displayFactor = orbitR / scaleNorm;
 
     real dop = pol.dop();
