@@ -1292,7 +1292,7 @@ struct Refraction {
 }
 
 Refraction
-snell(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan);
+fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan);
 
 private
 pair thinLensRefractDir(Ray r, Hit h, real f) {
@@ -1667,7 +1667,7 @@ interfaceFrame = new InterfaceFrame(Medium m1, Medium m2, Ray r, Hit h, mediumRe
 };
 
 private
-PhaseMatch solveBoundaryPhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair p, real lambda) {
+PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair p, real lambda) {
     PhaseMatch pm = new PhaseMatch;
     real localN = m.n(p, forward, lambda);
     pm.n = localN;
@@ -1726,7 +1726,7 @@ struct AnisotropicFresnelResult {
 
 private
 AnisotropicFresnelResult
-solveUniaxialInterface(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
+fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
     AnisotropicFresnelResult res;
 
     // 1. Establish orthonormal interface frame
@@ -1740,14 +1740,14 @@ solveUniaxialInterface(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e,
     real kn_in = abs(n1 * dot(incWaveNormal, N));
 
     // Reflected wave kinematics
-    PhaseMatch reflMatch = solveBoundaryPhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
+    PhaseMatch reflMatch = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
     res.reflectedDir = reflMatch.groupDirection;
     res.reflectedWaveNormal = reflMatch.waveNormal;
 
     // 2. Transmitted Kinematics using existing functional boundary matcher
     pair intoMed = -N; // Normal pointing into crystal
-    PhaseMatch trans_o = solveBoundaryPhaseMatch(med_o, N, T, kt, intoMed, h.p, r.lambda);
-    PhaseMatch trans_e = solveBoundaryPhaseMatch(med_e, N, T, kt, intoMed, h.p, r.lambda);
+    PhaseMatch trans_o = solvePhaseMatch(med_o, N, T, kt, intoMed, h.p, r.lambda);
+    PhaseMatch trans_e = solvePhaseMatch(med_e, N, T, kt, intoMed, h.p, r.lambda);
 
     res.d_o = trans_o.groupDirection;
     res.waveNormal_o = trans_o.waveNormal;
@@ -1809,7 +1809,7 @@ solveUniaxialInterface(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e,
     return res;
 }
 
-snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
+fresnelIsotropic = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
     Refraction b = new Refraction;
     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
     pair N = f.normal;
@@ -1819,8 +1819,8 @@ snell = new Refraction(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolv
     real kt = n1 * dot(incWaveNormal, T);
 
     // Unified Transmitted & Reflected Modes
-    PhaseMatch trans = solveBoundaryPhaseMatch(f.targetMedium, N, T, kt, -N, h.p, r.lambda);
-    PhaseMatch refl = solveBoundaryPhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
+    PhaseMatch trans = solvePhaseMatch(f.targetMedium, N, T, kt, -N, h.p, r.lambda);
+    PhaseMatch refl = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
     real n2 = max(config.physics.minRefractiveIndex, trans.n);
 
     b.normal = f.normal;
@@ -4094,7 +4094,7 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
     p.name = "Refract";
 
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        Refraction ref = snell(inside, ambient, r, h, resolve, reflectance);
+        Refraction ref = fresnelIsotropic(inside, ambient, r, h, resolve, reflectance);
         Ray[] rays;
 
         // 1. Transmitted Ray
@@ -4326,7 +4326,7 @@ Property PolarizingSplit(Medium med_o, Medium med_e, Medium ambient = null) {
             real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
             real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
 
-            AnisotropicFresnelResult b = solveUniaxialInterface(r, h, f.sourceMedium, med_o, med_e, resolve);
+            AnisotropicFresnelResult b = fresnelUniaxial(r, h, f.sourceMedium, med_o, med_e, resolve);
 
             // 1. Ordinary Ray (Pure S-polarization in med_o)
             if (!b.tir_o) {
@@ -4373,7 +4373,7 @@ Property PolarizingSplit(Medium med_o, Medium med_e, Medium ambient = null) {
             // CASE 2: EXITING CRYSTAL (Ray is already in med_o or med_e)
             // =================================================================
             Medium srcMed = (r.medium != null) ? r.medium : med_o;
-            Refraction ref = snell(srcMed, ambient, r, h, resolve, nan);
+            Refraction ref = fresnelIsotropic(srcMed, ambient, r, h, resolve, nan);
 
             if (!ref.totalInternalReflection) {
                 real I_trans = r.intensity() * ref.T;
