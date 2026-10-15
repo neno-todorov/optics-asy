@@ -96,7 +96,7 @@ h_int.normal = (-1.0, 0.0);
 h_int.tangent = (0.0, 1.0);
 h_int.t = 1.0;
 h_int.entering = true;
-Refraction ref1 = fresnelIsotropic(Materials.VACUUM, glass_15, r_inc, h_int, testResolveIsotropic);
+FresnelResult ref1 = fresnelIsotropic(Materials.VACUUM, glass_15, r_inc, h_int, testResolveIsotropic);
 real sin_theta_t = (n1 / n2) * sin(theta_i_rad);
 real cos_theta_t = sqrt(1.0 - sin_theta_t ^ 2);
 real expected_theta_t = degrees(asin(sin_theta_t));
@@ -126,7 +126,7 @@ real theta_tir_deg = 50.0;
 real theta_tir_rad = radians(theta_tir_deg);
 Ray r_tir = Ray(p = (-1.0, 0.0), d = (cos(theta_tir_rad), sin(theta_tir_rad)), medium = glass_15);
 r_tir.pol = Polarization.unpolarized();
-Refraction ref2 = fresnelIsotropic(glass_15, Materials.VACUUM, r_tir, h_int, testResolveTIR);
+FresnelResult ref2 = fresnelIsotropic(glass_15, Materials.VACUUM, r_tir, h_int, testResolveTIR);
 pair expected_refl_dir = (-cos(theta_tir_rad), sin(theta_tir_rad));
 
 assert_bool("TIR flag", ref2.totalInternalReflection, true);
@@ -308,8 +308,8 @@ mediumResolver resolveDispersion = new Medium(pair p, Ray r, Medium m1, Medium m
     return (p.x > 0) ? dispersiveGlass : Materials.VACUUM;
 };
 
-Refraction ref_red = fresnelIsotropic(Materials.VACUUM, dispersiveGlass, ray_red, h_int, resolveDispersion);
-Refraction ref_blue = fresnelIsotropic(Materials.VACUUM, dispersiveGlass, ray_blue, h_int, resolveDispersion);
+FresnelResult ref_red = fresnelIsotropic(Materials.VACUUM, dispersiveGlass, ray_red, h_int, resolveDispersion);
+FresnelResult ref_blue = fresnelIsotropic(Materials.VACUUM, dispersiveGlass, ray_blue, h_int, resolveDispersion);
 
 real expected_theta_red = degrees(asin(sin(pi / 4) / expected_n_red));
 real expected_theta_blue = degrees(asin(sin(pi / 4) / expected_n_blue));
@@ -940,8 +940,8 @@ Hit h_planar;
 h_planar.valid = true;
 h_planar.normal = (-1, 0);
 
-Refraction ref_below = fresnelIsotropic(flint, water_m, ray_below_crit, h_planar, resFlintWater);
-Refraction ref_above = fresnelIsotropic(flint, water_m, ray_above_crit, h_planar, resFlintWater);
+FresnelResult ref_below = fresnelIsotropic(flint, water_m, ray_below_crit, h_planar, resFlintWater);
+FresnelResult ref_above = fresnelIsotropic(flint, water_m, ray_above_crit, h_planar, resFlintWater);
 
 assert_bool("TIR below critical angle is false", ref_below.totalInternalReflection, false);
 assert_bool("TIR above critical angle is true", ref_above.totalInternalReflection, true);
@@ -1376,7 +1376,8 @@ write("");
 write("Test Case 46: Normal-incidence Fresnel boundary conditions");
 Ray extraNormalRay = Ray(p = (-1.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
 extraNormalRay.pol = Polarization.unpolarized();
-Refraction extraNormalRef = fresnelIsotropic(Materials.VACUUM, glass_15, extraNormalRay, h_int, testResolveIsotropic);
+FresnelResult extraNormalRef =
+    fresnelIsotropic(Materials.VACUUM, glass_15, extraNormalRay, h_int, testResolveIsotropic);
 real extraNormalR = ((n2 - n1) / (n2 + n1)) ^ 2;
 
 assert_bool("Normal incidence is not total internal reflection", extraNormalRef.totalInternalReflection, false);
