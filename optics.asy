@@ -422,11 +422,6 @@ Polarization operator*(real scalar, Polarization a) {
 
 Polarization operator*(Polarization a, real scalar) { return scalar * a; }
 
-// Compatibility wrapper for polarization rotation
-void applyPolarizationRotation(Polarization pol, real theta) {
-    if (pol != null) pol.applyRotation(theta);
-}
-
 // Applies the 4x4 Mueller Diattenuation Matrix (with optional complex cross-coupling / retardance C)
 // from a source Stokes vector to a target Stokes vector (or in-place when target == src),
 // given orthogonal intensity transmittances/reflectances T1 and T2 (e.g. Ts, Tp or Rs, Rp).
@@ -461,22 +456,6 @@ void applyDiattenuation(Polarization target, Polarization src, pair js, pair jp)
     pair cross = (js.x * jp.x + js.y * jp.y, js.y * jp.x - js.x * jp.y);
 
     applyDiattenuation(target, src, T1, T2, cross);
-}
-
-// Applies a physical polarization angle rotation 'theta' (in radians)
-// to both the coherent Jones field amplitudes and the Mueller Stokes vector.
-void applyPolarizationRotation(Polarization pol, real theta) {
-    if (pol == null) return;
-
-    // Rotate Stokes vector (S1, S2) by 2 * theta (Mueller Rotator Matrix)
-    real c = cos(2.0 * theta);
-    real s = sin(2.0 * theta);
-
-    real newS1 = pol.S1 * c - pol.S2 * s;
-    real newS2 = pol.S1 * s + pol.S2 * c;
-
-    pol.S1 = newS1;
-    pol.S2 = newS2;
 }
 
 // Volume Properties (Medium Components)
@@ -660,7 +639,7 @@ VolumeProperty OpticalActivity(real rot_deg_per_unit) {
         Polarization out = copy(inPol);
 
         real theta = radians(rot_deg_per_unit * ds);
-        applyPolarizationRotation(out, theta);
+        out.applyRotation(theta);
 
         return out;
     };
@@ -677,7 +656,7 @@ VolumeProperty FaradayRotator(real V, pair B = (1, 0)) {
         Polarization out = copy(inPol);
 
         real theta = radians(V * dot(B, d) * ds);
-        applyPolarizationRotation(out, theta);
+        out.applyRotation(theta);
 
         return out;
     };
