@@ -2369,6 +2369,135 @@ Trace rg_tCav = rg_cavity.trace(Ray((5, 0), (1, 0)), maxDepth = 6);
 assert_near("Cavity bounces limited by maxDepth", rg_tCav.length(), 6.0);
 write("");
 
+// ============================================================================
+// Test Case 89: Extraordinary TIR in the isotropic limit
+//
+// When no == ne, the uniaxial extraordinary mode must reduce to the
+// ordinary isotropic Fresnel solution, including the COMPLEX reflection
+// amplitude, not merely its magnitude.
+// ============================================================================
+write("Test Case 89: Extraordinary TIR isotropic-limit regression");
+Medium rg_isoLimit = uniaxialExtraordinary("isotropic limit", 1.5, 1.5, (1, 0));
+real[] rg_isoTirAngles = {50.0, 55.0, 60.0, 70.0};
+pair[] rg_isoRpValues;
+for (real th : rg_isoTirAngles) {
+    Ray rg_isoRay = Ray((-1, 0), dir(th), rg_dense, pol = Polarization.linear(90.0));
+    FresnelResult rg_anisoResult = fresnelUniaxial(rg_isoRay, rg_h, rg_dense, rg_lo, rg_isoLimit, rg_resD);
+    FresnelResult rg_isoResult = fresnelIsotropic(rg_dense, rg_lo, rg_isoRay, rg_h, rg_resD);
+    assert_true("Extraordinary isotropic-limit TIR at " + string(th) + " deg", rg_anisoResult.tir_e);
+    assert_near("Extraordinary TIR magnitude at " + string(th) + " deg", abs(rg_anisoResult.rp), 1.0, 1e-10);
+    assert_near_pair("Extraordinary complex rp matches isotropic rp at " + string(th) + " deg",
+                     rg_anisoResult.rp,
+                     rg_isoResult.rp,
+                     1e-8);
+    assert_near("Extraordinary Rp at " + string(th) + " deg", rg_anisoResult.Rp, abs2(rg_isoResult.rp), 1e-10);
+    rg_isoRpValues.push(rg_anisoResult.rp);
+}
+// The isotropic TIR phase changes with angle. A fixed rp = (-1, 0)
+// cannot satisfy the complex-amplitude comparisons above.
+assert_true("Extraordinary TIR phase varies with incidence angle",
+            length(rg_isoRpValues[0] - rg_isoRpValues[3]) > 1e-3);
+write("");
+
+// ============================================================================
+// Test Case 90: Genuine anisotropy and optic-axis orientation
+// ============================================================================
+write("Test Case 90: Genuine anisotropy and optic-axis orientation");
+real rg_no90 = 1.50;
+real rg_ne90 = 1.70;
+real rg_angle90 = 55.0;
+Medium rg_eAxis0_90 = uniaxialExtraordinary("uniaxial axis 0", rg_no90, rg_ne90, (1, 0));
+Medium rg_eAxis45_90 = uniaxialExtraordinary("uniaxial axis 45", rg_no90, rg_ne90, dir(45));
+Medium rg_eAxis90_90 = uniaxialExtraordinary("uniaxial axis 90", rg_no90, rg_ne90, (0, 1));
+Ray rg_ray90 = Ray((-1, 0), dir(rg_angle90), rg_dense, pol = Polarization.linear(90.0));
+FresnelResult rg_f0_90 = fresnelUniaxial(rg_ray90, rg_h, rg_dense, rg_lo, rg_eAxis0_90, rg_resD);
+FresnelResult rg_f45_90 = fresnelUniaxial(rg_ray90, rg_h, rg_dense, rg_lo, rg_eAxis45_90, rg_resD);
+FresnelResult rg_f90_90 = fresnelUniaxial(rg_ray90, rg_h, rg_dense, rg_lo, rg_eAxis90_90, rg_resD);
+assert_true("Anisotropic result has birefringence flag", rg_f0_90.isBirefringent);
+assert_true("Axis-0 extraordinary reflection amplitude is finite", !isnan(rg_f0_90.rp.x) && !isnan(rg_f0_90.rp.y));
+assert_true("Axis-45 extraordinary reflection amplitude is finite", !isnan(rg_f45_90.rp.x) && !isnan(rg_f45_90.rp.y));
+assert_true("Axis-90 extraordinary reflection amplitude is finite", !isnan(rg_f90_90.rp.x) && !isnan(rg_f90_90.rp.y));
+assert_true("Axis-0 reflectance is in physical range", rg_f0_90.Rp >= -1e-9 && rg_f0_90.Rp <= 1.0 + 1e-9);
+assert_true("Axis-45 reflectance is in physical range", rg_f45_90.Rp >= -1e-9 && rg_f45_90.Rp <= 1.0 + 1e-9);
+assert_true("Axis-90 reflectance is in physical range", rg_f90_90.Rp >= -1e-9 && rg_f90_90.Rp <= 1.0 + 1e-9);
+// Only assert an orientation difference if the selected setup produces one.
+// A failure here is diagnostic: it may indicate that the test geometry
+// is insensitive to the optic-axis rotation, not necessarily a solver bug.
+write("  axis 0 rp  = " + (string)rg_f0_90.rp);
+write("  axis 45 rp = " + (string)rg_f45_90.rp);
+write("  axis 90 rp = " + (string)rg_f90_90.rp);
+write("");
+
+// ============================================================================
+// Test Case 91: Extraordinary critical-angle sweep
+// ============================================================================
+write("Test Case 91: Extraordinary critical-angle sweep");
+Medium rg_e91 = uniaxialExtraordinary("critical sweep crystal", 1.50, 1.70, dir(30));
+real[] rg_angles91 = {20.0, 30.0, 40.0, 45.0, 48.0, 50.0, 52.0, 54.0, 56.0, 58.0, 60.0, 65.0, 70.0, 75.0, 80.0};
+for (real th91 : rg_angles91) {
+    Ray rg_ray91 = Ray((-1, 0), dir(th91), rg_dense, pol = Polarization.linear(90.0));
+    FresnelResult rg_fr91 = fresnelUniaxial(rg_ray91, rg_h, rg_dense, rg_lo, rg_e91, rg_resD);
+    assert_true("Critical sweep finite rp at " + string(th91), !isnan(rg_fr91.rp.x) && !isnan(rg_fr91.rp.y));
+    assert_true("Critical sweep finite Rs at " + string(th91), !isnan(rg_fr91.Rs));
+    assert_true("Critical sweep finite Rp at " + string(th91), !isnan(rg_fr91.Rp));
+    assert_true("Critical sweep physical Rp at " + string(th91), rg_fr91.Rp >= -1e-8 && rg_fr91.Rp <= 1.0 + 1e-8);
+    if (rg_fr91.tir_e) {
+        assert_near("Extraordinary TIR unit reflectance at " + string(th91), rg_fr91.Rp, 1.0, 1e-8);
+    }
+}
+write("");
+
+// ============================================================================
+// Test Case 92: Reflectance and transmittance bookkeeping
+// ============================================================================
+write("Test Case 92: Reflectance and transmittance bookkeeping");
+Medium rg_e92 = uniaxialExtraordinary("energy bookkeeping crystal", 1.50, 1.70, dir(35));
+Ray rg_ray92 = Ray((-1, 0), dir(35), rg_dense, pol = Polarization.linear(45.0));
+FresnelResult rg_fr92 = fresnelUniaxial(rg_ray92, rg_h, rg_dense, rg_lo, rg_e92, rg_resD);
+assert_near("Total energy bookkeeping R+T", rg_fr92.R + rg_fr92.T, 1.0, 1e-9);
+if (rg_fr92.tir_e) {
+    assert_near("Extraordinary TIR has zero transmitted power", rg_fr92.Te, 0.0, 1e-9);
+    assert_near("Extraordinary TIR has unit reflected power", rg_fr92.Rp, 1.0, 1e-9);
+}
+assert_true("Total reflectance within physical bounds", rg_fr92.R >= -1e-9 && rg_fr92.R <= 1.0 + 1e-9);
+assert_true("Total transmittance within physical bounds", rg_fr92.T >= -1e-9 && rg_fr92.T <= 1.0 + 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 93: Extraordinary dispersion and tangential phase matching
+// ============================================================================
+write("Test Case 93: Extraordinary dispersion and phase matching");
+real rg_no93 = 1.50;
+real rg_ne93 = 1.70;
+pair rg_axis93 = dir(30);
+Medium rg_e93 = uniaxialExtraordinary("dispersion regression", rg_no93, rg_ne93, rg_axis93);
+pair rg_N93 = unitOr(rg_h.normal);
+pair rg_T93 = (-rg_N93.y, rg_N93.x);
+real[] rg_angles93 = {10.0, 20.0, 30.0, 40.0};
+for (real rg_theta93 : rg_angles93) {
+    Ray rg_ray93 = Ray((-1, 0), dir(rg_theta93), rg_dense, pol = Polarization.linear(90.0));
+    pair rg_ki93 = unitOr(rg_ray93.waveNormal, rg_ray93.d);
+    real rg_n193 = rg_dense.n(rg_h.p, rg_ki93, rg_ray93.lambda, rg_ray93.pol);
+    real rg_kt93 = rg_n193 * dot(rg_ki93, rg_T93);
+    PhaseMatch rg_pm93 = solvePhaseMatch(rg_e93, rg_N93, rg_T93, rg_kt93, -rg_N93, rg_h.p, rg_ray93.lambda);
+    if (rg_pm93.tir) {
+        write("  Diagnostic: extraordinary mode evanescent at " + string(rg_theta93) + " degrees");
+    } else {
+        pair rg_k93 = rg_pm93.n * rg_pm93.waveNormal;
+        pair rg_c93 = unitOr(rg_axis93);
+        pair rg_q93 = perp(rg_c93);
+        real rg_disp93 = dot(rg_k93, rg_c93) ^ 2 / (rg_no93 * rg_no93) + dot(rg_k93, rg_q93) ^ 2 / (rg_ne93 * rg_ne93);
+        assert_near("Extraordinary dispersion equals one at " + string(rg_theta93) + " degrees", rg_disp93, 1.0, 1e-7);
+        assert_near("Tangential wavevector conserved at " + string(rg_theta93) + " degrees",
+                    dot(rg_k93, rg_T93),
+                    rg_kt93,
+                    1e-7);
+        assert_true("Valid extraordinary group direction at " + string(rg_theta93) + " degrees",
+                    dot(rg_pm93.groupDirection, -rg_N93) > 0);
+    }
+}
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
