@@ -4382,9 +4382,9 @@ Property Absorb() {
 
 // Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
 // modes. This is deliberately not presented as a general anisotropic solver.
-Property PolarizingSplit(Medium med_o, Medium med_e, Medium ambient = null) {
+Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
     Property p = new Property;
-    p.name = "PolarizingSplit";
+    p.name = "DoubleRefraction";
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
         Ray[] rays;
 
@@ -4973,7 +4973,7 @@ Element Crystal(path boundary,
                 pen stroke = black,
                 pen fill = nullpen,
                 string name = "Crystal") {
-    Property[] props = {PolarizingSplit(med_o, med_e, ambient)};
+    Property[] props = {DoubleRefraction(med_o, med_e, ambient)};
     return element(boundary,
                    props,
                    stroke,
