@@ -1,5 +1,5 @@
-// test_opticas.asy
-// physical verification and unit tests for optics.asy
+// optics_test.asy
+// Physical verification and unit tests for optics.asy
 
 import optics;
 
@@ -238,7 +238,9 @@ write("");
 // ============================================================================
 write("Test Case 7: Uniaxial Crystal Double Refraction & Eigenmode Polarization Purity");
 Medium calcite_o = medium("Calcite Ordinary", 1.658);
-Medium calcite_e = medium("Calcite Extraordinary", 1.486).add(UniaxialExtraordinary(1.658, 1.486, (1.0, 0.0)));
+// The extraordinary index comes from the uniaxial solver alone: Medium.n()
+// multiplies index factors, so adding a scalar 1.486 would square the index.
+Medium calcite_e = uniaxialExtraordinary("Calcite Extraordinary", 1.658, 1.486, (1.0, 0.0));
 Element crystal = Crystal(box((0.0, -10.0), (20.0, 10.0)), calcite_o, calcite_e, Materials.VACUUM);
 OpticalSystem crystalSys = system(crystal, Materials.VACUUM);
 
@@ -259,6 +261,8 @@ assert_near("Ordinary ray S-polarization S3", o_ray.pol.S3, 0.0, 1e-5);
 assert_near("Extraordinary ray P-polarization purity (S1 == -S0)", e_ray.pol.S1, -e_ray.pol.S0, 1e-5);
 assert_near("Extraordinary ray P-polarization S2", e_ray.pol.S2, 0.0, 1e-5);
 assert_near("Extraordinary ray P-polarization S3", e_ray.pol.S3, 0.0, 1e-5);
+real e_index = e_ray.medium.n((0, 0), e_ray.waveNormal);
+assert_true("Extraordinary phase index lies between ne and no", e_index >= 1.486 - 1e-9 && e_index <= 1.658 + 1e-9);
 write("");
 
 // ============================================================================
@@ -862,9 +866,9 @@ assert_bool("Volume-property priority determines evaluation order",
 write("");
 
 // ============================================================================
-// Test Case 29: Diverging and Parallel Beam Generator Factories
+// Test Case 29b: Diverging and Parallel Beam Generator Factories
 // ============================================================================
-write("Test Case 29: Diverging and Parallel Beam Generator Factories");
+write("Test Case 29b: Diverging and Parallel Beam Generator Factories");
 Ray[] pBeam = Beam.parallel(start = (0.0, -4.0), step = (0.0, 2.0), count = 5, d = (1.0, 0.0));
 assert_near("Parallel beam ray count", pBeam.length, 5.0);
 assert_near_pair("Parallel beam Ray 0 start point", pBeam[0].p, (0.0, -4.0));
@@ -880,9 +884,9 @@ assert_near("Diverging beam Ray 2 angle (+15 deg)", degrees(atan2(dBeam[2].d.y, 
 write("");
 
 // ============================================================================
-// Test Case 30: Biconcave Lens Beam Divergence & Virtual Focus
+// Test Case 30b: Biconcave Lens Beam Divergence & Virtual Focus
 // ============================================================================
-write("Test Case 30: Biconcave Lens Beam Divergence & Virtual Focus");
+write("Test Case 30b: Biconcave Lens Beam Divergence & Virtual Focus");
 Element biconcaveLens = Lens.thin(center = (100.0, 0.0), angle = 0.0, f = -50.0, diameter = 40.0);
 OpticalSystem sysConcave = system(biconcaveLens, Materials.VACUUM);
 
@@ -1055,6 +1059,9 @@ Ray ray_out = t_refl.reflected(0);
 
 assert_near("Reflected ray intensity conserved", ray_out.intensity(), I_in, 1e-6);
 assert_near("Single reflection phase shift is exactly pi", ray_out.phase, pi, 1e-6);
+// Ideal mirror Mueller matrix diag(1, 1, -1, -1) (same convention as
+// dielectric reflection): linear 45 deg maps to linear -45 deg.
+assert_near("Mirror maps S2 -> -S2 (linear 45 -> -45)", ray_out.pol.S2, -1.0, 1e-6);
 assert_stokes_physical("Reflected ray physical state", ray_out.pol);
 write("");
 
@@ -1661,12 +1668,18 @@ Element rhomb = Interface(
 OpticalSystem rhombSys = Materials.VACUUM + rhomb;
 Ray r_unpol_rhomb = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.unpolarized(1.0));
 Trace t_unpol_rhomb = rhombSys.trace(r_unpol_rhomb);
-Ray r_exit_unpol = t_unpol_rhomb.transmitted(0);
+Ray r_exit_unpol = t_unpol_rhomb.last(); // after both TIR bounces and the exit face
 
 assert_near("Unpolarized exit S1 is 0", r_exit_unpol.pol.S1, 0.0, 1e-5);
 assert_near("Unpolarized exit S2 is 0", r_exit_unpol.pol.S2, 0.0, 1e-5);
 assert_near("Unpolarized exit S3 is 0", r_exit_unpol.pol.S3, 0.0, 1e-5);
 assert_near("Unpolarized exit DOP remains 0", r_exit_unpol.pol.dop(), 0.0, 1e-5);
+real rhombT0 = 1.0 - ((n_bk7 - 1.0) / (n_bk7 + 1.0)) ^ 2;
+assert_near("Unpolarized exit intensity = two normal-incidence Fresnel transmissions",
+            r_exit_unpol.intensity(),
+            rhombT0 ^ 2,
+            1e-6);
+assert_near("Rhomb exit ray is parallel to the input", r_exit_unpol.d.x, 1.0, 1e-6);
 write("");
 
 // ============================================================================
@@ -1719,6 +1732,13 @@ assert_near("PBS S-channel DOP", out_s.dop(), 1.0, 1e-5);
 assert_near("PBS P-channel intensity", out_p.S0, 1.0, 1e-5);
 assert_near("PBS P-channel S1", out_p.S1, -1.0, 1e-5);
 assert_near("PBS P-channel DOP", out_p.dop(), 1.0, 1e-5);
+// Same split performed by the engine: ideal linear polarizers at 0 and 90 deg.
+Trace t_lp0 = system(Polarizer.LP((10, 0), 0.0, 10.0)).trace(Ray((0, 0), (1, 0), pol = copy(inUnpol)));
+Trace t_lp90 = system(Polarizer.LP((10, 0), 90.0, 10.0)).trace(Ray((0, 0), (1, 0), pol = copy(inUnpol)));
+assert_near("LP(0) transmits the S half of unpolarized light", t_lp0.last().pol.S0, Is, 1e-6);
+assert_near("LP(0) output is pure S (S1 = S0)", t_lp0.last().pol.S1, t_lp0.last().pol.S0, 1e-6);
+assert_near("LP(90) transmits the P half of unpolarized light", t_lp90.last().pol.S0, Ip, 1e-6);
+assert_near("LP(90) output is pure P (S1 = -S0)", t_lp90.last().pol.S1, -t_lp90.last().pol.S0, 1e-6);
 write("");
 
 // ============================================================================
@@ -1831,7 +1851,7 @@ write("Test Case 64: Anisotropic Maxwell Boundary Solver - Isotropic Limit");
 real n_test = 1.55;
 Medium m_iso = medium("Glass_Iso", n_test);
 Medium m_uni_o = medium("Uni_O", n_test);
-Medium m_uni_e = medium("Uni_E", n_test).add(UniaxialExtraordinary(n_test, n_test, (1.0, 0.0)));
+Medium m_uni_e = uniaxialExtraordinary("Uni_E", n_test, n_test, (1.0, 0.0));
 
 Element crystal_iso = Crystal(box((0.0, -20.0), (20.0, 20.0)), m_uni_o, m_uni_e, Materials.VACUUM);
 OpticalSystem sys = system(crystal_iso, Materials.VACUUM);
@@ -1864,7 +1884,7 @@ write("Test Case 65: Anisotropic Maxwell Boundary Solver - Energy Conservation")
 real no_cal = 1.658, ne_cal = 1.486;
 pair c_axis = unit((1.0, 1.0)); // 45 deg tilted optic axis
 Medium calcite_o = medium("Calcite_O", no_cal);
-Medium calcite_e = medium("Calcite_E", ne_cal).add(UniaxialExtraordinary(no_cal, ne_cal, c_axis));
+Medium calcite_e = uniaxialExtraordinary("Calcite_E", no_cal, ne_cal, c_axis);
 
 Element crystal = Crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e, Materials.VACUUM);
 OpticalSystem sys_energy = system(crystal, Materials.VACUUM);
@@ -1884,6 +1904,469 @@ real total_power_out = power_o + power_e + power_refl;
 // Strict Maxwell Poynting flux conservation: R + To + Te == 1.0
 assert_near("Strict energy conservation across anisotropic boundary (R + To + Te = 1)", total_power_out, 1.0, 1e-5);
 assert_true("Extraordinary ray walks off from ordinary ray", abs(ix.transmitted[0].d.y - ix.transmitted[1].d.y) > 0.01);
+write("");
+
+// ============================================================================
+// REGRESSION, INVARIANT, EDGE-CASE AND CONVERGENCE TESTS
+// Each "Regression" case failed against the original optics.asy.
+// ============================================================================
+
+// ============================================================================
+// Test Case 66 (Regression): Beer-Lambert absorption preserves the degree of
+// polarization (the whole Stokes vector decays, not only S0)
+// ============================================================================
+write("Test Case 66: Absorption preserves degree of polarization");
+Medium rg_absMed = medium("rg absorber", 1.0, alpha = 0.5);
+Polarization rg_absOut = rg_absMed.stepPolarization(Polarization.linear(0.0, 1.0), (0, 0), (1, 0), 633.0, 2.0);
+assert_near("Absorbed S0 = exp(-alpha L)", rg_absOut.S0, exp(-1.0), 1e-9);
+assert_near("Absorbed S1 decays with S0", rg_absOut.S1, exp(-1.0), 1e-9);
+assert_stokes_physical("Absorbed linear state", rg_absOut, 1e-12);
+
+Polarization rg_ell = Polarization.fromAngles(20.0, 10.0, 1.0);
+Polarization rg_ellOut = rg_absMed.stepPolarization(rg_ell, (0, 0), (1, 0), 633.0, 3.0);
+assert_near("Absorbed elliptical state keeps DoP = 1",
+            sqrt(rg_ellOut.S1 ^ 2 + rg_ellOut.S2 ^ 2 + rg_ellOut.S3 ^ 2) / rg_ellOut.S0,
+            1.0,
+            1e-9);
+assert_near("Absorbed elliptical state keeps azimuth", rg_ellOut.psi(), rg_ell.psi(), 1e-9);
+
+// Through the tracer: linearly polarized ray across an absorbing, index-matched slab
+Element rg_absSlab = Interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
+Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(30.0, 1.0)), far = 20).last();
+assert_near("Traced absorbed ray intensity", rg_absEnd.intensity(), exp(-0.5 * 10.0), 1e-9);
+assert_near("Traced absorbed ray DoP", rg_absEnd.pol.dop(), 1.0, 1e-9);
+assert_near("Traced absorbed ray azimuth (30 deg)", degrees(rg_absEnd.pol.psi()), 30.0, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 67 (Regression): transforming an Element keeps its focal length
+// ============================================================================
+write("Test Case 67: Element transform preserves focal-length metadata");
+Element rg_thin = Lens.thin((0, 0), 0, 42.0, 10.0);
+Element rg_thinMoved = shift(5, 3) * rotate(10) * rg_thin;
+assert_near("Focal length survives transform", rg_thinMoved.focalLength, 42.0, 1e-12);
+assert_near("Focal length survives copy", copy(rg_thin).focalLength, 42.0, 1e-12);
+Element rg_aligned = align(Lens.thin((50, 0), 0, -30.0, 10.0), (0, 0), (100, 10));
+assert_near("Focal length survives align()", rg_aligned.focalLength, -30.0, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 68 (Regression): extraordinary ray through a parallel calcite
+// slab exits parallel to the incident ray (tangential k conservation); the
+// boundary seed ray must keep its wave normal
+// ============================================================================
+write("Test Case 68: Birefringent slab exit directions and lateral walk-off");
+Medium rg_co = medium("rg calcite o", 1.658);
+Medium rg_ce = uniaxialExtraordinary("rg calcite e", 1.658, 1.486, unit((1, 1)));
+Element rg_slab = Crystal(box((0, -50), (10, 50)), rg_co, rg_ce, Materials.VACUUM);
+OpticalSystem rg_slabSys = system(rg_slab);
+pair rg_dIn = dir(20);
+Trace rg_tE = rg_slabSys.trace(Ray((-10, 0), rg_dIn, pol = Polarization.linear(90.0, 1.0)), far = 20);
+Trace rg_tO = rg_slabSys.trace(Ray((-10, 0), rg_dIn, pol = Polarization.linear(0.0, 1.0)), far = 20);
+Ray rg_eExit = rg_tE.transmitted(1);
+Ray rg_oExit = rg_tO.transmitted(1);
+assert_near_pair("e-ray exits parallel to incidence", rg_eExit.d, rg_dIn, 1e-9);
+assert_near_pair("o-ray exits parallel to incidence", rg_oExit.d, rg_dIn, 1e-9);
+assert_true("e and o rays are laterally displaced (walk-off)", abs(rg_eExit.p.y - rg_oExit.p.y) > 0.1);
+assert_near("Exit wave normal equals exit ray direction (isotropic ambient)",
+            length(rg_eExit.waveNormal - rg_eExit.d),
+            0.0,
+            1e-9);
+write("");
+
+// ============================================================================
+// Test Case 69 (Regression): optical path length of an extraordinary ray is
+// k.dr = n_phase cos(walk-off) L, checked against an independent solution of
+// the index ellipse
+// ============================================================================
+write("Test Case 69: Extraordinary-ray optical path length");
+real rg_no = 1.658, rg_ne = 1.486, rg_t = 10.0;
+Medium rg_ceX = uniaxialExtraordinary("rg e (axis x)", rg_no, rg_ne, (1, 0));
+Element rg_slabX = Crystal(box((0, -50), (rg_t, 50)), medium("rg o", rg_no), rg_ceX, Materials.VACUUM);
+real rg_thIn = 30.0;
+Trace rg_tX = system(rg_slabX).trace(Ray((0, 0) - 5 * dir(rg_thIn), dir(rg_thIn), pol = Polarization.linear(90.0, 1.0)),
+                                     far = 20);
+// Rays stored in the trace carry the cumulative OPL at the *end* of their
+// segment, so incident(k).opl is the OPL at interface k.
+Ray rg_eIn = rg_tX.transmitted(0);
+real rg_oplMeasured = rg_tX.incident(1).opl - rg_tX.incident(0).opl;
+// Independent solution: optic axis along x (= slab normal)
+real rg_ky = sin(radians(rg_thIn));
+real rg_kx = rg_no * sqrt(1.0 - rg_ky ^ 2 / rg_ne ^ 2);
+pair rg_g = unit((rg_kx / rg_no ^ 2, rg_ky / rg_ne ^ 2));
+real rg_oplInside = rg_kx * rg_t + rg_ky * rg_t * rg_g.y / rg_g.x;
+assert_near_pair("e-ray group direction matches index-ellipse normal", rg_eIn.d, rg_g, 1e-9);
+assert_near("e-ray OPL across slab = k . dr", rg_oplMeasured, rg_oplInside, 1e-7);
+real rg_geomLen = rg_t / rg_g.x;
+assert_true("e-ray OPL differs from naive n_phase * L",
+            abs(rg_oplMeasured - rg_eIn.medium.n((0, 0), rg_eIn.waveNormal) * rg_geomLen) > 1e-3);
+// Isotropic limit: OPL reduces to n * L
+Element rg_slabIso = Crystal(box((0, -50), (rg_t, 50)),
+                             medium("o", 1.6),
+                             uniaxialExtraordinary("e", 1.6, 1.6, (1, 0)),
+                             Materials.VACUUM);
+Trace rg_tIso = system(rg_slabIso).trace(Ray((-5, 0), (1, 0), pol = Polarization.linear(90.0, 1.0)), far = 20);
+assert_near("Isotropic-limit e-ray OPL = n t", rg_tIso.incident(1).opl - rg_tIso.incident(0).opl, 1.6 * rg_t, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 70 (Regression): R + T = 1 at every lossless interface, even when
+// the arriving ray was attenuated in the bulk
+// ============================================================================
+write("Test Case 70: Interface energy balance after bulk absorption");
+Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 0.2);
+Trace rg_tAbs = system(Interface(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
+Interaction rg_exitIx = rg_tAbs.interaction(1);
+assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
+assert_near("Exit-face R matches normal-incidence Fresnel", rg_exitIx.R, (0.5 / 2.5) ^ 2, 1e-9);
+assert_near("Arriving intensity reported at the exit face",
+            rg_exitIx.incident.intensity(),
+            (1 - 0.04) * exp(-2.0),
+            1e-9);
+write("");
+
+// ============================================================================
+// Test Case 71 (Regression): GRIN + absorption uses the full curved arc length
+// ============================================================================
+write("Test Case 71: Absorbing GRIN medium attenuation along curved path");
+indexProfile rg_gp = new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.01 * p.y ^ 2); };
+gradientProfile rg_gg = new pair(pair p, real lambda) { return (0, -1.5 * 0.01 * p.y); };
+Medium rg_gm = medium("rg absorbing GRIN").add(GRIN(rg_gp, rg_gg)).add(Absorption(0.05));
+Trace rg_tg =
+    system(Interface(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
+real rg_arc = arclength(rg_tg.segments()[0].traj);
+Interaction rg_gix = rg_tg.interaction(0);
+assert_true("GRIN trajectory is curved (arc length > 9.5)", rg_arc > 9.5);
+assert_near("GRIN arrival intensity uses the full arc (~exp(-0.05 * 9.5))",
+            rg_gix.incident.intensity(),
+            exp(-0.05 * 9.5),
+            2e-3);
+assert_near("Trace.last() before the boundary agrees with arrival intensity",
+            rg_tg.last().intensity() / rg_gix.T,
+            rg_gix.incident.intensity(),
+            1e-6);
+assert_near("GRIN exit-face R + T = 1", rg_gix.R + rg_gix.T, 1.0, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 72 (Regression): ideal mirror reverses circular handedness,
+// consistent with the dielectric reflection convention; two mirrors restore it
+// ============================================================================
+write("Test Case 72: Mirror polarization handedness");
+Trace rg_tm = system(Mirror.flat((10, 0), 180, 10)).trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
+Trace rg_tdi = system(Interface((10, -10) -- (10, 10), Materials.VACUUM, medium("g", 1.5)))
+                          .trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
+assert_near("Mirror: RCP -> LCP (S3 = -1)", rg_tm.reflected(0).pol.S3, -1.0, 1e-9);
+assert_near("Mirror agrees with dielectric normal-incidence handedness flip",
+            rg_tm.reflected(0).pol.S3,
+            rg_tdi.reflected(0).pol.S3 / rg_tdi.reflected(0).pol.S0,
+            1e-9);
+Trace rg_tRetro =
+    system(new Element[]{Mirror.flat((25, 0), 90, 50), Mirror.flat((0, 25), 0, 50)})
+        .trace(Ray((40, 30), (-cos(radians(37)), -sin(radians(37))), pol = Polarization.fromAngles(15, 20)));
+Polarization rg_retroIn = Polarization.fromAngles(15, 20);
+Polarization rg_retroOut = rg_tRetro.reflected(1).pol;
+assert_near("Two reflections restore S2", rg_retroOut.S2, rg_retroIn.S2, 1e-9);
+assert_near("Two reflections restore S3", rg_retroOut.S3, rg_retroIn.S3, 1e-9);
+Trace rg_tIdeal =
+    system(Mirror.idealSpherical((100, 0), 180, 50, 40)).trace(Ray((0, 5), (1, 0), pol = Polarization.circular()));
+assert_near("Ideal spherical mirror also flips handedness", rg_tIdeal.reflected(0).pol.S3, -1.0, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 73 (Regression): linear polarizer transmission axis is honored
+// ============================================================================
+write("Test Case 73: Linear polarizer axis (Malus's law)");
+real[] rg_axes = {0.0, 30.0, 60.0, 90.0, 135.0};
+for (real ax : rg_axes) {
+    Ray rg_lpOut =
+        system(Polarizer.LP((10, 0), ax, 10.0)).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(0.0, 1.0))).last();
+    assert_near("LP(" + string(ax) + ") on linear 0: I = cos^2", rg_lpOut.intensity(), Cos(ax) ^ 2, 1e-6);
+    if (rg_lpOut.intensity() > 1e-3)
+        assert_near("LP(" + string(ax) + ") output azimuth: cos 2(psi - axis) = 1",
+                    Cos(2 * (degrees(rg_lpOut.pol.psi()) - ax)),
+                    1.0,
+                    1e-8);
+}
+Ray rg_lpTilt = system(Polarizer.LP((10, 0), 45.0, 10.0, angle = 20))
+                    .trace(Ray((0, 0), (1, 0), pol = Polarization.linear(45.0)))
+                    .last();
+assert_near("Tilted LP plate passes its own axis without Fresnel loss", rg_lpTilt.intensity(), 1.0, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 74 (Regression): waveplate geometry is independent of its fast
+// axis; QWP/HWP Jones-calculus results
+// ============================================================================
+write("Test Case 74: Waveplates");
+Trace rg_tq = system(Polarizer.QWP((10, 0), 0.0, 20.0)).trace(Ray((0, 5), (1, 0), pol = Polarization.linear(45.0)));
+assert_near("QWP(fast 0) is hit by an off-axis horizontal ray", rg_tq.length(), 1.0);
+assert_near("QWP: linear 45 -> circular (|S3| = 1)", abs(rg_tq.last().pol.S3), 1.0, 1e-9);
+assert_near_pair("QWP leaves the ray direction unchanged", rg_tq.last().d, (1, 0), 1e-12);
+Trace rg_tq2 = (Polarizer.QWP((10, 0), 0.0, 20.0) + Polarizer.QWP((20, 0), 0.0, 20.0))
+                   .trace(Ray((0, 5), (1, 0), pol = Polarization.linear(45.0)));
+assert_near("Two QWPs = HWP: linear 45 -> linear -45 (S2 = -1)", rg_tq2.last().pol.S2, -1.0, 1e-9);
+Ray rg_hwp =
+    system(Polarizer.HWP((10, 0), 22.5, 20.0)).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(0.0))).last();
+assert_near("HWP(22.5): linear 0 -> linear 45 (S2 = 1)", rg_hwp.pol.S2, 1.0, 1e-9);
+assert_near("HWP preserves intensity", rg_hwp.intensity(), 1.0, 1e-12);
+OpticalSystem rg_waterSys = system(Polarizer.QWP((10, 0), 0, 20), Materials.WATER);
+Trace rg_tqw = rg_waterSys.trace(Ray((0, 0), (1, 0)));
+assert_true("Waveplate in water does not switch the ray into vacuum", rg_tqw.last().medium == Materials.WATER);
+write("");
+
+// ============================================================================
+// Test Case 75 (Regression): uniaxial Fresnel result keeps R + T = 1 and a
+// TIR phase convention consistent with fresnelIsotropic
+// ============================================================================
+write("Test Case 75: Uniaxial Fresnel bookkeeping and TIR phase convention");
+Hit rg_h;
+rg_h.valid = true;
+rg_h.p = (0, 0);
+rg_h.normal = (-1, 0);
+Medium rg_uo = medium("uo", 1.658);
+Medium rg_ue = uniaxialExtraordinary("ue", 1.658, 1.486, unit((1, 2)));
+mediumResolver rg_resU = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? rg_uo : Materials.VACUUM;
+};
+Ray rg_ru = Ray((-1, 0), dir(35), Materials.VACUUM, pol = Polarization.fromAngles(10, 5));
+FresnelResult rg_fu = fresnelUniaxial(rg_ru, rg_h, Materials.VACUUM, rg_uo, rg_ue, rg_resU);
+assert_near("Uniaxial R + T = 1", rg_fu.R + rg_fu.T, 1.0, 1e-12);
+assert_near("Uniaxial T = incident-weighted To/Te",
+            rg_fu.T,
+            (rg_fu.To * rg_ru.pol.sPower() + rg_fu.Te * rg_ru.pol.pPower()) / rg_ru.intensity(),
+            1e-12);
+
+// Dense isotropic glass -> crystal beyond the ordinary critical angle
+Medium rg_dense = medium("dense", 2.0);
+Medium rg_lo = medium("lo", 1.5);
+Medium rg_le = uniaxialExtraordinary("le", 1.5, 1.5, (1, 0));
+mediumResolver rg_resD = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? rg_lo : rg_dense;
+};
+Ray rg_rd = Ray((-1, 0), dir(60), rg_dense, pol = Polarization.unpolarized());
+FresnelResult rg_fuT = fresnelUniaxial(rg_rd, rg_h, rg_dense, rg_lo, rg_le, rg_resD);
+FresnelResult rg_fiT = fresnelIsotropic(rg_dense, rg_lo, rg_rd, rg_h, rg_resD);
+assert_bool("Ordinary mode is totally reflected", rg_fuT.tir_o, true);
+assert_near("Uniaxial TIR |rs| = 1", length(rg_fuT.rs), 1.0, 1e-12);
+assert_near_pair("Uniaxial TIR rs equals isotropic TIR rs (same phase convention)", rg_fuT.rs, rg_fiT.rs, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 76: TIR retardance matches the analytic Fresnel formula
+// tan(delta/2) = cos(t) sqrt(sin^2 t - n^2) / sin^2 t,  n = n2/n1
+// ============================================================================
+write("Test Case 76: TIR phase retardance");
+Medium rg_glass = medium("rg glass", 1.515);
+mediumResolver rg_resG = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? Materials.VACUUM : rg_glass;
+};
+real[] rg_tirAngles = {45.0, 50.0, 60.0, 75.0};
+for (real th : rg_tirAngles) {
+    FresnelResult rg_ft = fresnelIsotropic(rg_glass, Materials.VACUUM, Ray((-1, 0), dir(th), rg_glass), rg_h, rg_resG);
+    pair rg_cross = rg_ft.rs * conj(rg_ft.rp);
+    real rg_delta = abs(atan2(rg_cross.y, rg_cross.x));
+    real rg_nr = 1.0 / 1.515;
+    real rg_expect = 2.0 * atan(Cos(th) * sqrt(Sin(th) ^ 2 - rg_nr ^ 2) / Sin(th) ^ 2);
+    assert_near("TIR retardance at " + string(th) + " deg (rad)", rg_delta, rg_expect, 1e-12);
+    assert_near("TIR |rs| = |rp| = 1 at " + string(th) + " deg", length(rg_ft.rs) * length(rg_ft.rp), 1.0, 1e-12);
+}
+write("");
+
+// ============================================================================
+// Test Case 77: Fresnel transmission Mueller matrix: fully polarized light
+// stays fully polarized and Stokes power is conserved across the interface
+// ============================================================================
+write("Test Case 77: Fresnel Mueller transmission/reflection invariants");
+Element rg_iface = Interface((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
+real[] rg_incs = {0.0, 20.0, 50.0, 70.0, 85.0};
+for (real th : rg_incs) {
+    Polarization rg_pin = Polarization.fromAngles(30.0, 12.0, 1.0);
+    Trace rg_tf = system(rg_iface).trace(Ray((0, 0) - 10 * dir(th), dir(th), pol = rg_pin));
+    Interaction rg_fix = rg_tf.interaction(0);
+    Ray rg_tr = rg_fix.transmitted[0];
+    real rg_rI = (rg_fix.reflected.length > 0) ? rg_fix.reflected[0].intensity() : 0.0;
+    assert_near("Power conserved (R + T) at " + string(th) + " deg", rg_tr.intensity() + rg_rI, 1.0, 1e-9);
+    assert_near("Transmitted DoP = 1 at " + string(th) + " deg", rg_tr.pol.dop(), 1.0, 1e-9);
+    assert_stokes_physical("Transmitted state at " + string(th) + " deg", rg_tr.pol, 1e-9);
+    if (rg_fix.reflected.length > 0)
+        assert_stokes_physical("Reflected state at " + string(th) + " deg", rg_fix.reflected[0].pol, 1e-9);
+}
+// Partially polarized input stays inside the Stokes cone
+Polarization rg_partial = Polarization.stokes(1.0, 0.3, -0.2, 0.4);
+Trace rg_tp = system(rg_iface).trace(Ray((0, 0) - 10 * dir(60), dir(60), pol = rg_partial));
+assert_stokes_physical("Partially polarized transmitted state", rg_tp.transmitted(0).pol, 1e-12);
+assert_stokes_physical("Partially polarized reflected state", rg_tp.reflected(0).pol, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 78 (Regression): cardinal points use h / tan(u); exact for an
+// ideal thin lens even with a large probe height
+// ============================================================================
+write("Test Case 78: Cardinal-point focal length with large probe height");
+OpticalSystem rg_thinSys = system(Lens.thin((0, 0), 0, 100.0, 40.0));
+CardinalPoints rg_cpBig = cardinalPoints(rg_thinSys, paraxialH = 5.0);
+assert_near("Thin-lens EFL independent of probe height", rg_cpBig.f2, 100.0, 1e-9);
+assert_near("Thin-lens front focal length", rg_cpBig.f1, 100.0, 1e-9);
+assert_near_pair("Thin-lens principal point H2 at lens", rg_cpBig.H2, (0, 0), 1e-9);
+// Nodal points of a lens immersed in a single medium coincide with principal points
+OpticalSystem rg_wetSys = system(Lens.thin((0, 0), 0, 100.0, 40.0), Materials.WATER);
+CardinalPoints rg_cpWet = cardinalPoints(rg_wetSys);
+assert_near_pair("Immersed lens: N1 = H1", rg_cpWet.N1, rg_cpWet.H1, 1e-9);
+assert_near_pair("Immersed lens: N2 = H2", rg_cpWet.N2, rg_cpWet.H2, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 79 (Regression): GRIN boundary detection with very small steps
+// (chords shorter than the integration tolerance used to be skipped and the
+// ray tunnelled through the boundary)
+// ============================================================================
+write("Test Case 79: GRIN boundary detection with tiny fixed steps");
+indexProfile rg_lin = new real(pair p, real lambda) { return 1.5 + 0.01 * p.y; };
+gradientProfile rg_linG = new pair(pair p, real lambda) { return (0, 0.01); };
+Medium rg_gl = medium("rg linear GRIN").add(GRIN(rg_lin, rg_linG));
+OpticalSystem rg_thinGrin = system(Interface(box((0, -1), (0.02, 1)), rg_gl, Materials.VACUUM));
+config.physics.grinSolver = GRINSolverType.RK4;
+Trace rg_tTiny = rg_thinGrin.trace(Ray((0.01, 0), (1, 0), rg_gl), ds = 5e-5, far = 1.0);
+config.physics.grinSolver = GRINSolverType.RK45;
+assert_true("Ray stops at the GRIN boundary", rg_tTiny.length() >= 1);
+assert_near("Boundary hit at x = 0.02", rg_tTiny.hit(0).x, 0.02, 1e-9);
+assert_near("Ray continues in vacuum after the boundary", rg_tTiny.last().medium.n(), 1.0, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 80 (Regression): GRIN OPL over the final partial step to a
+// boundary uses the midpoint index (exact for a linear profile)
+// ============================================================================
+write("Test Case 80: GRIN OPL to a boundary (partial final step)");
+Medium rg_axial = medium("rg axial")
+                      .add(GRIN(
+                          new real(pair p, real lambda) { return 1.0 + p.x; },
+                          new pair(pair p, real lambda) { return (1.0, 0.0); }));
+Trace rg_tAx = system(Interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
+                   .trace(Ray((0, 0), (1, 0), rg_axial), ds = 0.05);
+assert_near("OPL = integral_0^0.73 (1 + x) dx", rg_tAx.interaction(0).incident.opl, 0.73 + 0.73 ^ 2 / 2, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 81: GRIN numerical convergence (RK4 global error order and RK45
+// tolerance control) against a fine-step reference
+// ============================================================================
+write("Test Case 81: GRIN solver convergence");
+OpticalSystem rg_grinOpen = system(new Element[]);
+Medium rg_par = medium("rg parabolic")
+                    .add(GRIN(
+                        new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.3 ^ 2 * p.y ^ 2); },
+                        new pair(pair p, real lambda) { return (0, -1.5 * 0.3 ^ 2 * p.y); }));
+Ray rg_r0 = Ray((0, 1.0), (1, 0), rg_par);
+config.physics.grinSolver = GRINSolverType.RK4;
+real rg_yRef = rg_grinOpen.trace(rg_r0, ds = 0.0025, far = 4.0).last().p.y;
+real rg_e1 = abs(rg_grinOpen.trace(rg_r0, ds = 0.07, far = 4.0).last().p.y - rg_yRef);
+real rg_e2 = abs(rg_grinOpen.trace(rg_r0, ds = 0.035, far = 4.0).last().p.y - rg_yRef);
+config.physics.grinSolver = GRINSolverType.RK45;
+write("  RK4 errors: ds=0.07 -> " + string(rg_e1) + ", ds=0.035 -> " + string(rg_e2));
+assert_true("RK4 error decreases >= 10x when ds halves (4th-order convergence)", rg_e2 < rg_e1 / 10.0);
+assert_true("RK4 coarse error is already small (< 1e-6)", rg_e1 < 1e-6);
+real rg_y45 = rg_grinOpen.trace(rg_r0, ds = 0.05, far = 4.0).last().p.y;
+assert_near("RK45 matches fine RK4 reference", rg_y45, rg_yRef, 1e-5);
+write("");
+
+// ============================================================================
+// Test Case 82: Sellmeier dispersion factory (homogeneous; no GRIN integration)
+// ============================================================================
+write("Test Case 82: Sellmeier factory");
+Medium rg_bk7 = medium("rg BK7").add(
+    Sellmeier(new real[]{1.03961212, 0.231792344, 1.01046945}, new real[]{0.00600069867, 0.0200179144, 103.560653}));
+assert_near("Sellmeier BK7 n_d (587.56 nm)", rg_bk7.n(lambda = 587.5618), 1.51680, 1e-4);
+assert_true("Normal dispersion: n_F(486.1) > n_C(656.3)", rg_bk7.n(lambda = 486.1) > rg_bk7.n(lambda = 656.3));
+Trace rg_tS = system(Interface(box((0, -10), (10, 10)), rg_bk7, Materials.VACUUM)).trace(Ray((-5, 0), dir(10)));
+assert_near("Ray in homogeneous Sellmeier glass is a single straight segment", length(rg_tS.segments()[1].traj), 1.0);
+write("");
+
+// ============================================================================
+// Test Case 83: GRIN profile scaled by a homogeneous index factor follows the
+// same ray (ray equation is invariant under n -> c n); exercises analytic
+// gradient composition with gradient-free factors
+// ============================================================================
+write("Test Case 83: Scaled GRIN profile ray invariance");
+Medium rg_parScaled = medium("rg scaled", 1.3)
+                          .add(GRIN(
+                              new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.3 ^ 2 * p.y ^ 2); },
+                              new pair(pair p, real lambda) { return (0, -1.5 * 0.3 ^ 2 * p.y); }));
+real rg_yScaled = rg_grinOpen.trace(Ray((0, 1.0), (1, 0), rg_parScaled), ds = 0.05, far = 4.0).last().p.y;
+assert_near("Scaled GRIN ray matches unscaled ray", rg_yScaled, rg_y45, 1e-6);
+real rg_oplScaled = rg_grinOpen.trace(Ray((0, 1.0), (1, 0), rg_parScaled), ds = 0.05, far = 4.0).opl();
+real rg_oplBase = rg_grinOpen.trace(Ray((0, 1.0), (1, 0), rg_par), ds = 0.05, far = 4.0).opl();
+assert_near("Scaled GRIN OPL scales by the factor", rg_oplScaled / rg_oplBase, 1.3, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 84 (Regression): Hit.entering reports entry into closed elements
+// ============================================================================
+write("Test Case 84: Hit.entering orientation");
+Element rg_box = Interface(box((0, -5), (10, 5)), medium("g", 1.5));
+Hit rg_hIn = rg_box.surfaces[0].intersect(Ray((-5, 0), (1, 0)));
+Hit rg_hOut = rg_box.surfaces[0].intersect(Ray((5, 0), (1, 0)));
+assert_bool("Ray from outside is entering", rg_hIn.entering, true);
+assert_bool("Ray from inside is exiting", rg_hOut.entering, false);
+write("");
+
+// ============================================================================
+// Test Case 85 (Regression): copy(Surface) keeps the precomputed inverse
+// ============================================================================
+write("Test Case 85: Surface copy keeps inverse transform");
+Element rg_shifted = shift(30, 7) * rotate(25) * Interface(box((0, -5), (10, 5)), medium("g", 1.5));
+Surface rg_flat = rg_shifted.flatten()[0];
+Surface rg_flatCopy = copy(rg_flat);
+Ray rg_probe = Ray((0, 7), (1, 0));
+assert_near_pair("Copied surface gives the same hit point",
+                 rg_flatCopy.intersect(rg_probe).p,
+                 rg_flat.intersect(rg_probe).p,
+                 1e-9);
+assert_true("Copied surface hit is valid", rg_flatCopy.intersect(rg_probe).valid);
+write("");
+
+// ============================================================================
+// Test Case 86 (Regression): beam factories inherit the medium at the source
+// ============================================================================
+write("Test Case 86: Beam rays resolve their starting medium");
+OpticalSystem rg_inGlass = system(Interface(box((-10, -10), (10, 10)), medium("g", 1.5)));
+Ray[] rg_beam = Beam.parallel((0, -2), (0, 2), 3, (1, 0));
+Trace rg_tb = rg_inGlass.trace(rg_beam[1]);
+assert_near("Beam ray launched inside glass starts in glass", rg_tb.first().medium.n(), 1.5, 1e-12);
+assert_near("No spurious entry interface (first hit is the exit face at x = 10)", rg_tb.hit(0).x, 10.0, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 87: Linear dichroism with a rotated axis
+// ============================================================================
+write("Test Case 87: Rotated dichroic axis");
+Medium rg_dich = medium("rg dichroic 30").add(Dichroic(0.0, 50.0, 30.0));
+Polarization rg_pass = rg_dich.stepPolarization(Polarization.linear(30.0), (0, 0), (1, 0), 633, 1.0);
+Polarization rg_block = rg_dich.stepPolarization(Polarization.linear(120.0), (0, 0), (1, 0), 633, 1.0);
+Polarization rg_mid = rg_dich.stepPolarization(Polarization.linear(75.0), (0, 0), (1, 0), 633, 1.0);
+assert_near("Light along the axis passes", rg_pass.intensity(), 1.0, 1e-9);
+assert_near("Light orthogonal to the axis is extinguished", rg_block.intensity(), 0.0, 1e-9);
+assert_near("Malus at 45 deg from the axis", rg_mid.intensity(), 0.5, 1e-9);
+assert_near("Output azimuth equals the axis", degrees(rg_mid.psi()), 30.0, 1e-6);
+write("");
+
+// ============================================================================
+// Test Case 88: Edge cases - grazing incidence, zero-intensity rays, maxDepth
+// ============================================================================
+write("Test Case 88: Edge cases");
+mediumResolver rg_resE = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? medium("g", 1.5) : Materials.VACUUM;
+};
+FresnelResult rg_graze = fresnelIsotropic(Materials.VACUUM, medium("g", 1.5), Ray((-1, 0), dir(89.99)), rg_h, rg_resE);
+assert_true("Grazing incidence: R finite and close to 1", rg_graze.R > 0.99 && rg_graze.R <= 1.0);
+assert_near("Grazing incidence: R + T = 1", rg_graze.R + rg_graze.T, 1.0, 1e-12);
+Trace rg_dark = system(Interface(box((0, -5), (10, 5)), medium("g", 1.5)))
+                    .trace(Ray((-5, 0), (1, 0), pol = Polarization.unpolarized(0.0)));
+assert_near("Zero-intensity ray spawns no children", rg_dark.length(), 0.0);
+OpticalSystem rg_cavity = system(new Element[]{Mirror.flat((0, 0), 0, 10), Mirror.flat((10, 0), 180, 10)});
+Trace rg_tCav = rg_cavity.trace(Ray((5, 0), (1, 0)), maxDepth = 6);
+assert_near("Cavity bounces limited by maxDepth", rg_tCav.length(), 6.0);
 write("");
 
 // Summary
