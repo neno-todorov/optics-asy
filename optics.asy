@@ -173,7 +173,7 @@ string UpperCase(string s) {
 // Geometric Math Utilities
 real clamp(real x, real a, real b) { return max(a, min(b, x)); }
 
-private
+// private
 pair unitOr(pair v, pair fallback = (1, 0)) {
     if (length(v) > config.math.eps) return unit(v);
     if (length(fallback) > config.math.eps) return unit(fallback);
@@ -1763,7 +1763,7 @@ interfaceFrame = new InterfaceFrame(Medium m1, Medium m2, Ray r, Hit h, mediumRe
     return f;
 };
 
-private
+// private
 PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair p, real lambda) {
     PhaseMatch pm = new PhaseMatch;
     real localN = m.n(p, forward, lambda);
@@ -1878,9 +1878,11 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         real dn = abs(dot(de, N));
         real we_dot_de = abs(dot(we, de));
 
-        // Exact Maxwell boundary surface impedance: Ze = dn / (we . de)
+        // Approximate extraordinary-mode impedance based on wavevector
+        // and group direction. General anisotropic boundary matching
+        // requires continuity of tangential electric and magnetic fields.
         real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
-        real Zi = kn_in / (n1 * n1); // Incident TM wave impedance
+        real Zi = kn_in / (n1 * n1);
 
         real denom_p = Zi + Ze;
         res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
@@ -1888,9 +1890,26 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         res.Rp = abs2(res.rp);
         res.Te = 1.0 - res.Rp;
     } else {
-        res.rp = (-1.0, 0.0);
+        // TODO: Implement general anisotropic extraordinary-mode TIR
+        // using the complex evanescent wavevector and electromagnetic
+        // boundary admittance. This branch currently handles the
+        // isotropic limit only.
+        real ne = med_e.n(h.p, incWaveNormal, r.lambda, r.pol);
+        real sin2t = (kt / ne) ^ 2;
+
+        if (sin2t > 1.0) {
+            real k_im = sqrt(sin2t - 1.0);
+            pair cosi = (f.cosi, 0.0);
+            pair cost = (0.0, -k_im);
+            pair denom_p = ne * cosi + n1 * cost;
+
+            res.rp = (abs(denom_p) > config.math.eps) ? (ne * cosi - n1 * cost) / denom_p : (1.0, 0.0);
+        } else {
+            res.rp = (-1.0, 0.0);
+        }
+
         res.tp = (0.0, 0.0);
-        res.Rp = 1.0;
+        res.Rp = abs2(res.rp);
         res.Te = 0.0;
     }
 
@@ -4264,6 +4283,108 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
     return p;
 }
 
+// Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
+// modes. This is deliberately not presented as a general anisotropic solver.
+Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
+    Property p = new Property;
+    p.name = "DoubleRefraction";
+    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+        Ray[] rays;
+
+        // Resolve interface frame
+        InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
+
+        // ---------------------------------------------------------------------
+        // Definitive test: If the ray is NOT already in med_o or med_e,
+        // it is ENTERING the crystal from the outside!
+        // ---------------------------------------------------------------------
+        bool isEntering = (r.medium != med_o && r.medium != med_e);
+
+        if (isEntering) {
+            // =================================================================
+            // CASE 1: ENTERING CRYSTAL (External Ray splits into O and E modes)
+            // =================================================================
+            real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
+            real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
+
+            FresnelResult b = fresnelUniaxial(r, h, f.sourceMedium, med_o, med_e, resolve);
+
+            // 1. Ordinary Ray (Pure S-polarization in med_o)
+            if (!b.tir_o) {
+                real I_o = Is_inc * b.To;
+                if (I_o > config.physics.minIntensity) {
+                    Ray oRay = spawnRay(r, h, b.d_o, I_o, med_o, 0, b.waveNormal_o);
+                    oRay.pol.S0 = I_o;
+                    oRay.pol.S1 = I_o;
+                    oRay.pol.S2 = 0.0;
+                    oRay.pol.S3 = 0.0;
+                    rays.push(oRay);
+                }
+            }
+
+            // 2. Extraordinary Ray (Pure P-polarization in med_e with walk-off)
+            if (!b.tir_e) {
+                real I_e = Ip_inc * b.Te;
+                if (I_e > config.physics.minIntensity) {
+                    Ray eRay = spawnRay(r, h, b.d_e, I_e, med_e, 0, b.waveNormal_e);
+                    eRay.pol.S0 = I_e;
+                    eRay.pol.S1 = -I_e;
+                    eRay.pol.S2 = 0.0;
+                    eRay.pol.S3 = 0.0;
+                    rays.push(eRay);
+                }
+            }
+
+            // 3. Reflected Ray (Reflecting back into source medium)
+            if (config.physics.traceReflections || config.rendering.drawReflections) {
+                real I_refl = b.Rs * Is_inc + b.Rp * Ip_inc;
+                if (I_refl > config.physics.minIntensity) {
+                    Ray reflRay =
+                        spawnRay(r, h, b.reflectedDirection, I_refl, f.sourceMedium, 0, b.reflectedWaveNormal);
+                    pair C = b.rs * conj(b.rp);
+
+                    reflRay.pol.S0 = I_refl;
+                    reflRay.pol.S1 = b.Rs * Is_inc - b.Rp * Ip_inc;
+                    reflRay.pol.S2 = C.x * r.pol.S2 - C.y * r.pol.S3;
+                    reflRay.pol.S3 = C.y * r.pol.S2 + C.x * r.pol.S3;
+                    rays.push(reflRay);
+                }
+            }
+        } else {
+            // =================================================================
+            // CASE 2: EXITING CRYSTAL (Ray is already in med_o or med_e)
+            // =================================================================
+            Medium srcMed = (r.medium != null) ? r.medium : med_o;
+            FresnelResult res = fresnelIsotropic(srcMed, ambient, r, h, resolve, nan);
+
+            if (!res.totalInternalReflection) {
+                real I_trans = r.intensity() * res.T;
+                if (I_trans > config.physics.minIntensity) {
+                    Ray transRay = spawnRay(r, h, res.d, I_trans, res.medium, 0, res.waveNormal);
+                    transRay.pol = copy(r.pol);
+                    transRay.pol.scaleTo(I_trans);
+                    rays.push(transRay);
+                }
+            }
+
+            // Internal reflection (e.g. TIR of ordinary ray in Nicol prism)
+            if (config.physics.traceReflections || config.rendering.drawReflections || res.totalInternalReflection) {
+                real I_refl = r.intensity() * res.R;
+                if (I_refl > config.physics.minIntensity) {
+                    Ray reflRay =
+                        spawnRay(r, h, res.reflectedDirection, I_refl, res.sourceMedium, 0, res.reflectedWaveNormal);
+                    reflRay.pol = copy(r.pol);
+                    reflRay.pol.scaleTo(I_refl);
+                    rays.push(reflRay);
+                }
+            }
+        }
+
+        return rays;
+    };
+    return p;
+}
+
 // Ideal (perfect-conductor) mirror in the Fresnel s/p convention used by
 // fresnelIsotropic: rs = -1, rp = +1, i.e. Mueller diag(1, 1, -1, -1).
 // This is the n2 -> infinity limit of dielectric reflection and reverses
@@ -4442,108 +4563,6 @@ Property Absorb() {
     Property p = new Property;
     p.name = "Absorb";
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) { return new Ray[]; };
-    return p;
-}
-
-// Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
-// modes. This is deliberately not presented as a general anisotropic solver.
-Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
-    Property p = new Property;
-    p.name = "DoubleRefraction";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        Ray[] rays;
-
-        // Resolve interface frame
-        InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
-
-        // ---------------------------------------------------------------------
-        // Definitive test: If the ray is NOT already in med_o or med_e,
-        // it is ENTERING the crystal from the outside!
-        // ---------------------------------------------------------------------
-        bool isEntering = (r.medium != med_o && r.medium != med_e);
-
-        if (isEntering) {
-            // =================================================================
-            // CASE 1: ENTERING CRYSTAL (External Ray splits into O and E modes)
-            // =================================================================
-            real Is_inc = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
-            real Ip_inc = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
-
-            FresnelResult b = fresnelUniaxial(r, h, f.sourceMedium, med_o, med_e, resolve);
-
-            // 1. Ordinary Ray (Pure S-polarization in med_o)
-            if (!b.tir_o) {
-                real I_o = Is_inc * b.To;
-                if (I_o > config.physics.minIntensity) {
-                    Ray oRay = spawnRay(r, h, b.d_o, I_o, med_o, 0, b.waveNormal_o);
-                    oRay.pol.S0 = I_o;
-                    oRay.pol.S1 = I_o;
-                    oRay.pol.S2 = 0.0;
-                    oRay.pol.S3 = 0.0;
-                    rays.push(oRay);
-                }
-            }
-
-            // 2. Extraordinary Ray (Pure P-polarization in med_e with walk-off)
-            if (!b.tir_e) {
-                real I_e = Ip_inc * b.Te;
-                if (I_e > config.physics.minIntensity) {
-                    Ray eRay = spawnRay(r, h, b.d_e, I_e, med_e, 0, b.waveNormal_e);
-                    eRay.pol.S0 = I_e;
-                    eRay.pol.S1 = -I_e;
-                    eRay.pol.S2 = 0.0;
-                    eRay.pol.S3 = 0.0;
-                    rays.push(eRay);
-                }
-            }
-
-            // 3. Reflected Ray (Reflecting back into source medium)
-            if (config.physics.traceReflections || config.rendering.drawReflections) {
-                real I_refl = b.Rs * Is_inc + b.Rp * Ip_inc;
-                if (I_refl > config.physics.minIntensity) {
-                    Ray reflRay =
-                        spawnRay(r, h, b.reflectedDirection, I_refl, f.sourceMedium, 0, b.reflectedWaveNormal);
-                    pair C = b.rs * conj(b.rp);
-
-                    reflRay.pol.S0 = I_refl;
-                    reflRay.pol.S1 = b.Rs * Is_inc - b.Rp * Ip_inc;
-                    reflRay.pol.S2 = C.x * r.pol.S2 - C.y * r.pol.S3;
-                    reflRay.pol.S3 = C.y * r.pol.S2 + C.x * r.pol.S3;
-                    rays.push(reflRay);
-                }
-            }
-        } else {
-            // =================================================================
-            // CASE 2: EXITING CRYSTAL (Ray is already in med_o or med_e)
-            // =================================================================
-            Medium srcMed = (r.medium != null) ? r.medium : med_o;
-            FresnelResult res = fresnelIsotropic(srcMed, ambient, r, h, resolve, nan);
-
-            if (!res.totalInternalReflection) {
-                real I_trans = r.intensity() * res.T;
-                if (I_trans > config.physics.minIntensity) {
-                    Ray transRay = spawnRay(r, h, res.d, I_trans, res.medium, 0, res.waveNormal);
-                    transRay.pol = copy(r.pol);
-                    transRay.pol.scaleTo(I_trans);
-                    rays.push(transRay);
-                }
-            }
-
-            // Internal reflection (e.g. TIR of ordinary ray in Nicol prism)
-            if (config.physics.traceReflections || config.rendering.drawReflections || res.totalInternalReflection) {
-                real I_refl = r.intensity() * res.R;
-                if (I_refl > config.physics.minIntensity) {
-                    Ray reflRay =
-                        spawnRay(r, h, res.reflectedDirection, I_refl, res.sourceMedium, 0, res.reflectedWaveNormal);
-                    reflRay.pol = copy(r.pol);
-                    reflRay.pol.scaleTo(I_refl);
-                    rays.push(reflRay);
-                }
-            }
-        }
-
-        return rays;
-    };
     return p;
 }
 
