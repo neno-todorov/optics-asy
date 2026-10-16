@@ -1,11 +1,14 @@
 // optics.asy
 //
-// An attempt at a 2D optical ray tracing engine
+// A 2D optical ray tracing engine for Asymptote (requires Asymptote >= 3.11
+// for the Trace subscript operator; older versions use Trace.get(i)).
 //
-// TODO:
-//   1. make it work
-//   2. make documentation
-//   3. make more tests
+// Units: geometric lengths in um (any consistent unit works for pure
+// geometry), wavelengths in nm at the public API.
+// Polarization: Stokes vectors referenced to the global s (= z, TE) and
+// p (in-plane, TM) basis.  Fresnel convention: rs = (n1 ci - n2 ct)/(...),
+// rp = (n2 ci - n1 ct)/(...); mirrors are the n2 -> infinity limit.
+// Run the test suite with:  asy -noV optics_test.asy
 
 import geometry;
 import graph;
@@ -238,6 +241,12 @@ struct Polarization {
     // --- State Queries ---
     real intensity() { return S0; }
 
+    // Power carried by the s (TE, out-of-plane) and p (TM, in-plane)
+    // components.  In this 2D engine the s axis is always the global z axis,
+    // so S1 is referenced to the same s/p basis at every interface.
+    real sPower() { return max(0.0, 0.5 * (S0 + S1)); }
+    real pPower() { return max(0.0, 0.5 * (S0 - S1)); }
+
     real dop() {
         if (S0 <= config.math.eps) return 0.0;
         return clamp(sqrt(S1 * S1 + S2 * S2 + S3 * S3) / S0, 0.0, 1.0);
@@ -264,6 +273,15 @@ struct Polarization {
         } else {
             this.S0 = newIntensity;
         }
+    }
+
+    // Polarization-independent attenuation/gain: scales the whole Stokes
+    // vector, so the degree of polarization is preserved.
+    void scale(real factor) {
+        this.S0 *= factor;
+        this.S1 *= factor;
+        this.S2 *= factor;
+        this.S3 *= factor;
     }
 
     // Phase retardance between p and s components (Fresnel Rhomb / Waveplates)
@@ -562,9 +580,12 @@ VolumeProperty Gain(real g) {
     return vp;
 }
 
-VolumeProperty Dichroic(real alpha_s, real alpha_p) {
+// Linear dichroism.  alpha_s acts on light polarized along `axis_deg`
+// (measured in the Stokes frame, 0 = s/TE), alpha_p on the orthogonal state.
+VolumeProperty Dichroic(real alpha_s, real alpha_p, real axis_deg = 0.0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Dichroic";
+    real axis = radians(axis_deg);
 
     vp.polarizationStep = new Polarization(Polarization inPol, pair p, pair d, real lambda, real ds) {
         if (inPol == null || ds <= 0) return inPol;
@@ -572,9 +593,28 @@ VolumeProperty Dichroic(real alpha_s, real alpha_p) {
         Polarization out = copy(inPol);
         real Ts = exp(-alpha_s * ds);
         real Tp = exp(-alpha_p * ds);
-        // Transform Stokes parameters using the Mueller diattenuation matrix
-        applyDiattenuation(out, inPol, Ts, Tp);
+        // Rotate into the dichroic eigenframe, apply the Mueller
+        // diattenuator, and rotate back.
+        if (axis != 0) out.applyRotation(-axis);
+        applyDiattenuation(out, out, Ts, Tp);
+        if (axis != 0) out.applyRotation(axis);
         return out;
+    };
+    return vp;
+}
+
+// Sellmeier dispersion n^2(lambda) = 1 + sum B_i lambda^2 / (lambda^2 - C_i),
+// with lambda in um and C_i in um^2.  Homogeneous: no GRIN integration.
+VolumeProperty Sellmeier(real[] B, real[] C) {
+    if (B.length != C.length) abort("Sellmeier: B and C must have equal length.");
+    VolumeProperty vp = new VolumeProperty;
+    vp.name = "Sellmeier";
+    real[] Bc = copy(B), Cc = copy(C);
+    vp.phaseIndex = new real(pair p, pair d, real lambda, Polarization pol) {
+        real l2 = wavelengthInUnits(lambda) ^ 2;
+        real n2 = 1.0;
+        for (int i = 0; i < Bc.length; ++i) n2 += Bc[i] * l2 / (l2 - Cc[i]);
+        return sqrt(max(0.0, n2));
     };
     return vp;
 }
@@ -712,7 +752,7 @@ struct Medium {
         return totalAlpha;
     }
     // Polarization & Loss Stepping (Chains all steps + Beer-Lambert decay)
-    // Evolves the (Es, Ep) Jones vector over a small distance ds (applying dichroism, optical activity/rotation, and
+    // Evolves the Stokes vector over a distance ds (applying dichroism, optical activity/rotation, and
     // continuous absorption decay).
     Polarization stepPolarization(Polarization inPol, pair p, pair d, real lambda, real ds) {
         if (inPol == null || ds <= 0) return inPol;
@@ -723,15 +763,9 @@ struct Medium {
             }
         }
         real a = absorption(p, d, lambda, inPol);
-        if (a != 0) {
-            // Field amplitudes scale as exp(-alpha*ds/2),
-            // so intensity scales as exp(-alpha*ds).
-            real decay = exp(-a * ds / 2.0);
-
-            // Keep Stokes intensity consistent with the field amplitudes.
-            // Unpolarized intensity() reads S0 directly.
-            currPol.S0 *= decay * decay;
-        }
+        // Beer-Lambert: isotropic loss/gain scales the whole Stokes vector
+        // by exp(-alpha*ds).  Scaling only S0 would leave |S_123| > S0.
+        if (a != 0) currPol.scale(exp(-a * ds));
 
         return currPol;
     }
@@ -920,6 +954,18 @@ pair point(Ray r, real t) {
     return r.point(t);
 }
 
+// Optical path per unit geometric length along the ray (group) direction:
+// k.d = n_phase * cos(walk-off).  Equals the phase index in isotropic media.
+real rayIndex(Medium m, pair p, pair waveNormal, pair d, real lambda, Polarization pol = null) {
+    if (m == null) return 1.0;
+    pair u = unitOr(waveNormal, d);
+    pair g = unitOr(d, u);
+    return m.n(p, u, lambda, pol) * max(0.0, dot(u, g));
+}
+
+real rayIndex(Ray r, pair p) { return rayIndex(r.medium, p, r.waveNormal, r.d, r.lambda, r.pol); }
+real rayIndex(Ray r) { return rayIndex(r, r.p); }
+
 pair projection(pair p, Ray r) { return r.p + dot(p - r.p, r.d) * unit(r.d); }
 pair projection(Ray r, pair p) { return projection(p, r); }
 
@@ -1033,7 +1079,12 @@ mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol =
         if (vp.phaseIndex == null) continue;
         real localIndex = vp.phaseIndex(p, d, lambda, pol);
         if (vp.phaseGradient == null) {
-            hasCompleteAnalyticGradient = false;
+            // Spatially homogeneous factors (dispersion, anisotropy) have
+            // zero spatial gradient: d(a*b) = b da when db = 0.
+            if (vp.spatialIndex)
+                hasCompleteAnalyticGradient = false;
+            else
+                gradient = localIndex * gradient;
         } else {
             // Product rule for Medium.n(), whose index profiles compose
             // multiplicatively: d(a*b) = b da + a db.
@@ -1053,9 +1104,6 @@ mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol =
     res.grad = (dx, dy);
     return res;
 }
-
-private
-pair mediumGradient(Medium m, pair p, pair d, real lambda) { return mediumIndexAndGradient(m, p, d, lambda).grad; }
 
 private
 pair grinDirectionDerivative(Ray r, pair p, pair d) {
@@ -1322,13 +1370,20 @@ struct FresnelResult {
             this.waveNormal = this.waveNormal_o;
             this.medium = this.medium_o;
             this.totalInternalReflection = (this.tir_o && this.tir_e);
-            this.T = this.To + this.Te;
+            // To and Te are per-mode transmittances; the total transmittance
+            // is their incident-power-weighted mean, i.e. T = 1 - R (already
+            // set by the solver).  Summing To + Te would exceed unity.
         }
     }
 };
 
-// Refraction
-// fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan);
+// Incident-power-weighted reflectance for the global s/p basis.
+private
+real weightedReflectance(Polarization pol, real Rs, real Rp) {
+    real I = (pol != null) ? pol.intensity() : 0.0;
+    if (I > config.math.eps) return (Rs * pol.sPower() + Rp * pol.pPower()) / I;
+    return 0.5 * (Rs + Rp);
+}
 
 private
 pair thinLensRefractDir(Ray r, Hit h, real f) {
@@ -1454,7 +1509,9 @@ struct Surface {
         h.center = this.center;
         h.axis = this.axis;
         h.t = bestDistance;
-        h.entering = dot(r.d, h.normal) >= 0;
+        // Boundaries are CCW, so `normal` is the outward normal: the ray
+        // enters the enclosed region when it travels against it.
+        h.entering = dot(r.d, h.normal) < 0;
         return h;
     }
     // Ordered, composable interaction pipeline. Actions are stable-sorted by
@@ -1475,8 +1532,10 @@ struct Surface {
             ordered[j + 1] = key;
         }
 
-        // Seed the ray at the boundary:
-        Ray[] active = {spawnRay(r, h, r.d, r.intensity(), r.medium)};
+        // Seed the ray at the boundary.  The wave normal must be carried
+        // over explicitly: for extraordinary rays it differs from r.d and
+        // determines the conserved tangential wavevector.
+        Ray[] active = {spawnRay(r, h, r.d, r.intensity(), r.medium, 0.0, r.waveNormal)};
         for (Property p : ordered) {
             if (active.length == 0) break;
             if (p.generate == null) continue;
@@ -1503,6 +1562,7 @@ copy(Surface src) {
     s.name = src.name;
     s.props = copy(src.props);
     s.T = src.T;
+    s.invT = src.invT;
     s.p = src.p;
     s.stroke = src.stroke;
     s.fill = src.fill;
@@ -1583,6 +1643,7 @@ copy(Element src) {
     e.boundary = src.boundary;
     e.medium = src.medium;
     e.med_e = src.med_e;
+    e.focalLength = src.focalLength;
     e.customDraw = src.customDraw;
     for (Surface s : src.surfaces) {
         e.surfaces.push(copy(s));
@@ -1745,7 +1806,6 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
 // ============================================================================
 // Maxwell Boundary Solver for Isotropic <-> Uniaxial Planar Interfaces
 // ============================================================================
-private
 FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
     FresnelResult res;
     res.isBirefringent = true;
@@ -1794,17 +1854,16 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         real denom = kn_in + qo;
         res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
         res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
-        // res.to = res.ts;
         res.Rs = abs2(res.rs);
         res.To = 1.0 - res.Rs;
     } else {
         real no = med_o.n(h.p, incWaveNormal, r.lambda, r.pol);
         real qo2 = no * no - kt * kt;
         real qo_im = sqrt(max(0.0, -qo2));
-        pair denom = (kn_in, qo_im);
-        res.rs = (kn_in, -qo_im) / denom;
+        // Same evanescent convention as fresnelIsotropic (cos t = -i|q|/n):
+        // rs = (kn + i|q|) / (kn - i|q|), a pure phase.
+        res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
         res.ts = (0.0, 0.0);
-        // res.to = (0.0, 0.0);
         res.Rs = 1.0;
         res.To = 0.0;
     }
@@ -1826,26 +1885,17 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         real denom_p = Zi + Ze;
         res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
         res.tp = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
-        // res.te = res.tp;
         res.Rp = abs2(res.rp);
         res.Te = 1.0 - res.Rp;
     } else {
         res.rp = (-1.0, 0.0);
         res.tp = (0.0, 0.0);
-        // res.te = (0.0, 0.0);
         res.Rp = 1.0;
         res.Te = 0.0;
     }
 
     // Total incident-weighted reflectance
-    real I_in = r.intensity();
-    if (I_in > config.math.eps) {
-        real Is = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
-        real Ip = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
-        res.R = (res.Rs * Is + res.Rp * Ip) / I_in;
-    } else {
-        res.R = 0.5 * (res.Rs + res.Rp);
-    }
+    res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
 
     res.sync();
@@ -1895,8 +1945,6 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
         res.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (1, 0);
         res.ts = (0, 0);
         res.tp = (0, 0);
-        // res.to = (0, 0);
-        // res.te = (0, 0);
         res.Rs = 1.0;
         res.Rp = 1.0;
         res.R = 1.0;
@@ -1920,21 +1968,11 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     res.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (0, 0);
     res.ts = (abs(denom_s) > config.math.eps) ? (2 * n1 * cosi) / denom_s : (0, 0);
     res.tp = (abs(denom_p) > config.math.eps) ? (2 * n1 * cosi) / denom_p : (0, 0);
-    // res.to = res.ts;
-    // res.te = res.tp;
 
     res.Rs = abs2(res.rs);
     res.Rp = abs2(res.rp);
 
-    real I_in = r.intensity();
-    if (I_in > config.math.eps) {
-        real Is = max(0.0, 0.5 * (r.pol.S0 + r.pol.S1));
-        real Ip = max(0.0, 0.5 * (r.pol.S0 - r.pol.S1));
-        res.R = (res.Rs * Is + res.Rp * Ip) / I_in;
-    } else {
-        res.R = 0.5 * (res.Rs + res.Rp);
-    }
-
+    res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
     res.R = isnan(reflectance) ? clamp(res.R, 0.0, 1.0) : clamp(reflectance, 0.0, 1.0);
     res.T = 1.0 - res.R;
 
@@ -1978,7 +2016,7 @@ private FlatSurfaceRecord[] prepareFlatSurfaces(Element[] elements) {
         for (int j = 0; j < flat.length; ++j) {
             FlatSurfaceRecord rec = new FlatSurfaceRecord;
             rec.s = flat[j];
-            rec.invT = inverse(flat[j].T); // Inverted ONCE at setup!
+            rec.invT = flat[j].invT; // Already inverted once by transformedSurface()
             if (length(flat[j].p) > 0) {
                 path globalPath = flat[j].T * flat[j].p;
                 rec.minBound = min(globalPath);
@@ -2131,7 +2169,10 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
             real chordLength = length(chord);
             Hit h;
             bool hitValid = false;
-            if (chordLength > config.physics.epsIntegration) {
+            // Test every non-degenerate chord: skipping short chords (as an
+            // integration-tolerance threshold did) lets tiny adaptive steps
+            // tunnel through boundaries.
+            if (chordLength > config.geometry.eps) {
                 testRay.p = currRay.p;
                 testRay.d = chord / chordLength;
                 testRay.ignoredFlatIndices = copy(currRay.ignoredFlatIndices);
@@ -2141,7 +2182,14 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
             if (hitValid) {
                 real hitStep = step * (h.t / chordLength);
                 Ray incidentRay = solver.advance(currRay, min(step, hitStep)).ray;
-                incidentRay.opl = currRay.opl + hitStep * nCenter;
+                incidentRay.p = h.p;
+                // Midpoint-rule OPL over the partial step (same order as the
+                // interior steps); the index at the step start biased it.
+                real nHit = currRay.medium.n(0.5 * (currRay.p + h.p),
+                                             unitOr(currRay.d + incidentRay.d, currRay.d),
+                                             currRay.lambda,
+                                             currRay.pol);
+                incidentRay.opl = currRay.opl + hitStep * nHit;
                 applyAbsorption(incidentRay, hitStep);
                 traj = traj -- h.p;
                 return propagationResult(incidentRay, true, h, traj);
@@ -2159,7 +2207,9 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
         return propagationResult(currRay, false, null, traj);
     } else {
         Hit h = nearestIntersection(r, flatSurfaces, far);
-        real current_n = medium.n(r.p, r.d, r.lambda, r.pol);
+        // OPL accumulates k.dr along the group direction; for
+        // extraordinary rays this is n_phase * cos(walk-off), not n_phase.
+        real current_n = rayIndex(medium, r.p, r.waveNormal, r.d, r.lambda, r.pol);
         Ray nextRay = copy(r);
         if (!h.valid || h.t > far) {
             nextRay.opl += far * current_n;
@@ -2173,6 +2223,16 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
             return propagationResult(nextRay, true, h, r.p -- h.p);
         }
     }
+}
+
+// Geometric length a ray segment has travelled (arc length of its
+// trajectory, falling back to the straight hit distance).
+private
+real travelledLength(Ray r) {
+    if (r == null) return 0;
+    if (length(r.trajectory) > 0) return arclength(r.trajectory);
+    if (r.hit != null && r.hit.valid) return r.hit.t;
+    return 0;
 }
 
 // The "Navigator" Trace Facade & Ray Tree
@@ -2246,7 +2306,10 @@ struct Trace {
                 if (length(r.trajectory) > 0) {
                     ix.incident.d = dir(r.trajectory, length(r.trajectory));
                 }
-                real parentI = r.intensity();
+                // R and T are fractions of the power *arriving* at the
+                // surface, i.e. after bulk absorption/gain along the segment.
+                ix.incident.pol = resolvePolarizationAt(r, travelledLength(r));
+                real parentI = ix.incident.intensity();
                 pair N = ix.normal();
                 for (int cId : r.childrenIds) {
                     Ray cRay = rayTree[cId];
@@ -2322,7 +2385,9 @@ struct Trace {
         Ray r = copy(rayTree[branch[branch.length - 1]]);
         if (r.hit != null && r.hit.valid) {
             r.p = r.hit.p;
-            r.pol = resolvePolarizationAt(r, r.hit.t);
+            // hit.t is only the final chord for curved (GRIN) segments;
+            // attenuation must use the full travelled arc length.
+            r.pol = resolvePolarizationAt(r, travelledLength(r));
             // If the ray terminated at the collision (e.g. Absorber / Aperture screen):
             if (r.terminated || !r.alive) {
                 r.alive = false;
@@ -3474,9 +3539,8 @@ struct TracePoint {
 }
 
 // Robust OPL sampler along any ray trace
-private TracePoint pointAtOPL(Trace t, real targetOPL) {
+private TracePoint pointAtOPL(Segment[] segs, real targetOPL) {
     TracePoint tp;
-    Segment[] segs = t.segments();
     int nSegs = segs.length;
     if (nSegs == 0) return tp;
 
@@ -3484,7 +3548,7 @@ private TracePoint pointAtOPL(Trace t, real targetOPL) {
     for (int i = 0; i < nSegs; ++i) {
         Segment s = segs[i];
         real segLen = arclength(s.traj);
-        real n_med = (s.before.medium != null) ? s.before.medium.n(s.before.p, s.before.d, s.before.lambda) : 1.0;
+        real n_med = rayIndex(s.before);
         real seg_opl = segLen * n_med;
         real next_opl = cur_opl + seg_opl;
 
@@ -3524,6 +3588,11 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     pair d_in = unitOr(t0.first().d);
     real n_amb = (t0.first().medium != null) ? t0.first().medium.n() : 1.0;
 
+    // Segment lists are rebuilt on every Trace.segments() call; cache them
+    // once per trace instead of once per (contour, ray) pair.
+    Segment[][] segsOf = new Segment[N][];
+    for (int k = 0; k < N; ++k) segsOf[k] = traces[k].segments();
+
     // 2. Compute Global OPL Range Across All Rays
     real[] launchOffsets = new real[N];
     real minGlobalOPL = infinity;
@@ -3537,8 +3606,8 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
         launchOffsets[k] = offset;
 
         real traceTotalOPL = 0.0;
-        for (Segment s : t.segments()) {
-            real n_med = (s.before.medium != null) ? s.before.medium.n(s.before.p, s.before.d, s.before.lambda) : 1.0;
+        for (Segment s : segsOf[k]) {
+            real n_med = rayIndex(s.before);
             traceTotalOPL += arclength(s.traj) * n_med;
         }
 
@@ -3570,7 +3639,7 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
 
         for (int k = 0; k < N; ++k) {
             real targetAlongRay = L_target - launchOffsets[k];
-            TracePoint tp = pointAtOPL(traces[k], targetAlongRay);
+            TracePoint tp = pointAtOPL(segsOf[k], targetAlongRay);
 
             if (!tp.valid) {
                 // Ray k has ended (or hasn't started):
@@ -3590,13 +3659,13 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
                 // Contiguous adjacent rays both active:
                 // Check if crossing between air and glass:
                 if (tp.segIdx != prevTP.segIdx) {
-                    Trace t_curr = traces[k];
-                    Trace t_prev = traces[prevK];
+                    Segment[] s_curr = segsOf[k];
+                    Segment[] s_prev = segsOf[prevK];
                     int transSeg = min(tp.segIdx, prevTP.segIdx);
 
-                    if (transSeg < t_curr.segments().length && transSeg < t_prev.segments().length) {
-                        pair S_hit_curr = t_curr.segments()[transSeg].b;
-                        pair S_hit_prev = t_prev.segments()[transSeg].b;
+                    if (transSeg < s_curr.length && transSeg < s_prev.length) {
+                        pair S_hit_curr = s_curr[transSeg].b;
+                        pair S_hit_prev = s_prev[transSeg].b;
 
                         real opl_hit_curr = launchOffsets[k] + (tp.segIdx > transSeg ? tp.segOPLStart : tp.segOPLEnd);
                         real opl_hit_prev =
@@ -3651,7 +3720,10 @@ void drawBundleInterference(picture pic = currentpicture, Trace t1, Trace t2, Ra
     if (dot(u_axis, t1.first().d) < 0) u_axis = -u_axis;
 
     // Resolve wavelength from wf.spacing or ray lambda
-    real lam = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : (t1.first().lambda > 0 ? t1.first().lambda : 8.0);
+    // Ray wavelengths are in nm; geometry is in um.
+    real lam = (!isnan(wf.spacing) && wf.spacing > 0)
+                   ? wf.spacing
+                   : (t1.first().lambda > 0 ? wavelengthInUnits(t1.first().lambda) : 8.0);
 
     int maxOrderPossible = floor(d / lam);
     int ordersToDraw = min(wf.maxOrders, maxOrderPossible);
@@ -3728,7 +3800,6 @@ void drawRaySegment(picture pic = currentpicture,
         if (baseAlpha == 0) baseAlpha = 1.0;
         linePen = p + opacity(baseAlpha * startI);
     }
-    real arrowSz = isnan(arrow.size) ? config.rendering.arrowSize : arrow.size;
     arrowbar ab = (arrow.visible && L_traj >= config.rendering.minPolarizationSegmentLength) ? (arrowbar)arrow : None;
 
     drawWavefront(pic, r, traj, segmentIdx, totalSegments, p, wavefronts);
@@ -4114,7 +4185,7 @@ struct Beam {
                           pair step,
                           int count,
                           pair d,
-                          Medium medium = Materials.VACUUM,
+                          Medium medium = null, // null: resolved at the start point by the tracer
                           real lambda = config.physics.lambda,
                           Polarization pol = Polarization.unpolarized(),
                           real phase = 0) {
@@ -4128,7 +4199,7 @@ struct Beam {
                            pair d,
                            real angle,
                            int count,
-                           Medium medium = Materials.VACUUM,
+                           Medium medium = null, // null: resolved at the source by the tracer
                            real lambda = config.physics.lambda,
                            Polarization pol = Polarization.unpolarized(),
                            real phase = 0) {
@@ -4160,13 +4231,14 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
             Ray transRay = spawnRay(r, h, res.d, intensity, res.medium, 0, res.waveNormal);
 
             if (isnan(reflectance)) {
-                real sqrtFactor = res.cosi > config.math.eps ? sqrt((res.n2 * res.cost) / (res.n1 * res.cosi)) : 0.0;
-
-                // Mueller transmission transformation for Stokes vector
-                real Ts = 1.0 - abs2(res.rs);
-                real Tp = 1.0 - abs2(res.rp);
-                pair C_T = res.ts * conj(res.tp) * sqrtFactor;
-                applyDiattenuation(transRay.pol, r.pol, Ts, Tp);
+                // Mueller transmission matrix.  Power transmittances carry the
+                // flux factor eta = n2 cos(t) / (n1 cos(i)):  T_j = eta |t_j|^2,
+                // and the coherent cross term is eta * ts * conj(tp).
+                real eta = (res.n1 * res.cosi > config.math.eps) ? (res.n2 * res.cost) / (res.n1 * res.cosi) : 0.0;
+                real Ts = eta * abs2(res.ts);
+                real Tp = eta * abs2(res.tp);
+                pair C_T = eta * res.ts * conj(res.tp);
+                applyDiattenuation(transRay.pol, r.pol, Ts, Tp, C_T);
             }
             rays.push(transRay);
         }
@@ -4192,6 +4264,16 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
     return p;
 }
 
+// Ideal (perfect-conductor) mirror in the Fresnel s/p convention used by
+// fresnelIsotropic: rs = -1, rp = +1, i.e. Mueller diag(1, 1, -1, -1).
+// This is the n2 -> infinity limit of dielectric reflection and reverses
+// the handedness of circular light.
+void applyMirrorPolarization(Polarization pol) {
+    if (pol == null) return;
+    pol.S2 = -pol.S2;
+    pol.S3 = -pol.S3;
+}
+
 Property Reflect(real phaseShift = pi) {
     Property p = new Property;
     p.name = "Reflect";
@@ -4199,7 +4281,9 @@ Property Reflect(real phaseShift = pi) {
         pair N = phaseGradientNormal(r, h);
         pair reflectedWaveNormal = unitOr(r.waveNormal - 2 * dot(r.waveNormal, N) * N, r.d);
         pair reflected = r.medium.groupDirection(reflectedWaveNormal);
-        return new Ray[]{spawnRay(r, h, reflected, r.intensity(), r.medium, phaseShift, reflectedWaveNormal)};
+        Ray out = spawnRay(r, h, reflected, r.intensity(), r.medium, phaseShift, reflectedWaveNormal);
+        applyMirrorPolarization(out.pol);
+        return new Ray[]{out};
     };
     // Specular Reflection alignment: Bisector normal!
     p.align = new pair(pair inDir, pair targetDir, real lambda, int orderIndex) { return targetDir - inDir; };
@@ -4219,7 +4303,9 @@ Property IdealReflect(real f, real phaseShift = pi) {
         pair N_ideal = unitOr(-A - u_F, A);
         // Exact specular reflection across the ideal normal
         pair vOut = unitOr(r.d - 2.0 * dot(r.d, N_ideal) * N_ideal, r.d);
-        return new Ray[]{spawnRay(r, h, vOut, r.intensity(), r.medium, phaseShift)};
+        Ray out = spawnRay(r, h, vOut, r.intensity(), r.medium, phaseShift);
+        applyMirrorPolarization(out.pol);
+        return new Ray[]{out};
     };
     p.align = new pair(pair inDir, pair targetDir, real lambda, int orderIndex) { return targetDir - inDir; };
     return p;
@@ -4844,51 +4930,66 @@ struct BeamSplitter {
     }
 }
 
+// Thin polarization optics.  `axis_deg` / `fastAxis_deg` are angles in the
+// Stokes (s/p) frame of the transmitted light; `angle` is the direction of
+// the plate's optical axis (its surface normal) in the drawing plane.  The
+// two are independent: rotating a waveplate's fast axis does not tilt the
+// plate.
+// General linear retarder: retardance delta (rad), fast axis at fastAxis_deg.
+Property Retard(real delta, real fastAxis_deg = 0.0) {
+    real ax = radians(fastAxis_deg);
+    return property(
+        "Retarder",
+        new Ray[](Ray r, Hit h, mediumResolver res) {
+            r.pol.applyRotation(-ax);
+            r.pol.applyRetardance(delta);
+            r.pol.applyRotation(ax);
+            return new Ray[]{r};
+        },
+        PropertyStage.Interact);
+}
+
 struct Polarizer {
-    // 1. Ideal Linear Polarizer Plate
-    static Element LP(pair center, real angle_deg = 0.0, real diameter = 30.0) {
-        Medium polMed = medium("Polarizer").add(Dichroic(0.0, 1000.0));
-        // Rotated to angle_deg
-        return Interface(box(center - (1.0, diameter / 2), center + (1.0, diameter / 2)), polMed, Materials.VACUUM);
+    // 1. Ideal Linear Polarizer Plate (transmits linear light at axis_deg)
+    static Element LP(pair center,
+                      real axis_deg = 0.0,
+                      real diameter = 30.0,
+                      real angle = 0.0,
+                      real thickness = 2.0,
+                      real extinction = 1000.0) {
+        // Index-free dichroic medium: no Fresnel loss, only diattenuation.
+        Medium polMed = medium("Polarizer").add(Dichroic(0.0, extinction, axis_deg));
+        path plate = box((-thickness / 2, -diameter / 2), (thickness / 2, diameter / 2));
+        Element e = Interface(shift(center) * rotate(angle) * plate, polMed);
+        e.name = "Linear Polarizer";
+        e.center = center;
+        e.axis = dir(angle);
+        e.surfaces[0].center = center;
+        e.surfaces[0].axis = dir(angle);
+        return e;
+    }
+
+    // Ideal zero-thickness retarder plate (no Fresnel loss, no medium change).
+    static Element retarder(pair center,
+                            real delta,
+                            real fastAxis_deg = 0.0,
+                            real diameter = 30.0,
+                            real angle = 0.0,
+                            pen stroke = black,
+                            string name = "Retarder") {
+        pair A = dir(angle);
+        Property[] props = {Retard(delta, fastAxis_deg)};
+        return element(linearBoundary(center, A, diameter), props, stroke, nullpen, name, center, A);
     }
 
     // 2. Quarter-Wave Plate (QWP) - Retardance = pi/2
-    static Element QWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0) {
-        // Retardance property delta = pi/2 rotated by fastAxis_deg
-        Property qwp = property(
-            "QWP",
-            new Ray[](Ray r, Hit h, mediumResolver res) {
-                r.pol.applyRotation(radians(-fastAxis_deg));
-                r.pol.applyRetardance(pi / 2.0);
-                r.pol.applyRotation(radians(fastAxis_deg));
-                return new Ray[]{r};
-            },
-            PropertyStage.Interact);
-
-        Element plate = Interface(
-            linearBoundary(center, (cos(radians(fastAxis_deg + 90)), sin(radians(fastAxis_deg + 90))), diameter),
-            Materials.VACUUM);
-        plate.surfaces[0].add(qwp);
-        return plate;
+    static Element QWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0, real angle = 0.0) {
+        return retarder(center, pi / 2.0, fastAxis_deg, diameter, angle, name = "QWP");
     }
 
     // 3. Half-Wave Plate (HWP) - Retardance = pi (Rotates linear polarization by 2*theta)
-    static Element HWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0) {
-        Property hwp = property(
-            "HWP",
-            new Ray[](Ray r, Hit h, mediumResolver res) {
-                r.pol.applyRotation(radians(-fastAxis_deg));
-                r.pol.applyRetardance(pi);
-                r.pol.applyRotation(radians(fastAxis_deg));
-                return new Ray[]{r};
-            },
-            PropertyStage.Interact);
-
-        Element plate = Interface(
-            linearBoundary(center, (cos(radians(fastAxis_deg + 90)), sin(radians(fastAxis_deg + 90))), diameter),
-            Materials.VACUUM);
-        plate.surfaces[0].add(hwp);
-        return plate;
+    static Element HWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0, real angle = 0.0) {
+        return retarder(center, pi, fastAxis_deg, diameter, angle, name = "HWP");
     }
 }
 
@@ -5449,7 +5550,9 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     cp.F2 = lineIntersection(exit_fwd, axisOrigin, cp.axisDir);
 
     if (abs(cp.F2.x) != infinity) {
-        real slope_exit = dot(exit_fwd.d, cp.axisNorm);
+        // Principal plane = where the extended input and output rays meet,
+        // so f = h / tan(u) (not h / sin(u)).
+        real slope_exit = dot(exit_fwd.d, cp.axisNorm) / dot(exit_fwd.d, cp.axisDir);
         cp.f2 = -paraxialH / slope_exit;
         cp.H2 = cp.F2 - cp.f2 * cp.axisDir;
     } else {
@@ -5470,7 +5573,7 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     cp.F1 = lineIntersection(exit_bwd, axisOrigin, -cp.axisDir);
 
     if (abs(cp.F1.x) != infinity) {
-        real slope_bwd = dot(exit_bwd.d, cp.axisNorm);
+        real slope_bwd = dot(exit_bwd.d, cp.axisNorm) / abs(dot(exit_bwd.d, cp.axisDir));
         cp.f1 = -paraxialH / slope_bwd;
         cp.H1 = cp.F1 + cp.f1 * cp.axisDir;
     } else {
@@ -5484,7 +5587,10 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     // -------------------------------------------------------------------------
     // In Gaussian optics: N1 = H1 + (1 - n1/n2) * f2 * axisDir
     // When immersed in the same medium on both sides (n1 == n2): N1 == H1, N2 == H2
-    real n_obj = (r_fwd.medium != null) ? r_fwd.medium.n() : 1.0;
+    // Object-space medium as resolved by the tracer (the launch ray itself
+    // carries medium == null until traced).
+    Ray launched = t_fwd.first();
+    real n_obj = (launched != null && launched.medium != null) ? launched.medium.n() : 1.0;
     real n_img = (exit_fwd.medium != null) ? exit_fwd.medium.n() : 1.0;
     real nodalShift = (abs(n_img) > config.math.eps) ? (1.0 - n_obj / n_img) * cp.f2 : 0.0;
 
@@ -6304,16 +6410,8 @@ OpticalSystem operator+(Element e, OpticalSystem sys) {
 OpticalSystem operator+(Medium ambient, Element e) { return system(e, ambient); }
 OpticalSystem operator+(Medium ambient, Element[] es) { return system(es, ambient); }
 
-// 3. Transformation Operator (*)
+// 3. Transformation Operator (*) is defined next to OpticalSystem:
 // Usage: OpticalSystem shiftedSys = shift(10, 0) * rotate(45) * sys;
-OpticalSystem operator*(transform t, OpticalSystem sys) {
-    OpticalSystem out = new OpticalSystem;
-    out.ambient = sys.ambient;
-    for (int i = 0; i < sys.elements.length; ++i) {
-        out.add(t * sys.elements[i]);
-    }
-    return out;
-}
 
 // 4. Angle-to-Polarization Cast Operator
 // Usage: Ray r = Ray(p, d, pol = 45); // Automatically creates linear polarization at 45 degrees
