@@ -496,7 +496,10 @@ struct PhaseMatch {
 
 // Function signatures
 typedef real indexProfile(pair p, real lambda);
+// Defines a base index generator: n = f(p, d, lambda, pol)
 typedef real volumeIndexFunc(pair p, pair d, real lambda, Polarization pol);
+// NEW: Defines an index modifier/transform: n_out = T(n_base, p, d, lambda, pol)
+typedef real volumeModifierFunc(real n_base, pair p, pair d, real lambda, Polarization pol);
 typedef real volumeAbsorptionFunc(pair p, pair d, real lambda, Polarization pol);
 typedef pair gradientProfile(pair p, real lambda);
 typedef pair volumeGradientFunc(pair p, pair d, real lambda);
@@ -510,7 +513,8 @@ struct VolumeProperty {
     // Lower values run first; equal priorities retain add() order.
     int priority = 0;
     bool spatialIndex = false;
-    volumeIndexFunc phaseIndex = null;
+    volumeIndexFunc phaseIndex = null;       // Set for base models
+    volumeModifierFunc phaseModifier = null; // Set for modifiers/perturbations
     volumeGradientFunc phaseGradient = null;
     volumeAbsorptionFunc attenuation = null;
     volumeStepFunc polarizationStep = null;
@@ -556,13 +560,19 @@ RefractiveIndex(real A = 1.0, real B = 0.0, indexProfile nProfile = null, gradie
 }
 
 VolumeProperty GRIN(indexProfile nProfile, gradientProfile gradProfile = null) {
-    VolumeProperty vp = new VolumeProperty;
-    vp.name = "GRIN";
+    VolumeProperty vp = volumeProperty("GRIN", 10);
     vp.spatialIndex = true;
-    vp.phaseIndex = new real(pair p, pair d, real lambda, Polarization pol) { return nProfile(p, lambda); };
+    vp.phaseModifier = new real(real n0, pair p, pair d, real lambda, Polarization pol) {
+        return (nProfile != null) ? (n0 * nProfile(p, lambda)) : n0;
+    };
+
+    // Adapt the 2-argument gradientProfile(p, lambda) to the 3-argument volumeGradFunc(p, d, lambda)
     if (gradProfile != null) {
         vp.phaseGradient = new pair(pair p, pair d, real lambda) { return gradProfile(p, lambda); };
+    } else {
+        vp.phaseGradient = null;
     }
+
     return vp;
 }
 
@@ -711,11 +721,20 @@ VolumeProperty FaradayRotator(real V, pair B = (1, 0)) {
 // Constitutive Relation (k <-> S)     -->  groupDirection(), waveNormalFromGroup()
 struct Medium {
     string name = "";
+    VolumeProperty baseIndex = null;
     VolumeProperty[] props;
+
     Medium add(VolumeProperty prop) {
-        props.push(prop);
+        if (prop == null) return this;
+        this.props.push(prop); // Always retain in props for orderedProperties()
+
+        // Track the first base index property as the primary base model
+        if (prop.phaseIndex != null && this.baseIndex == null) {
+            this.baseIndex = prop;
+        }
         return this;
     }
+
     VolumeProperty[] orderedProperties() {
         VolumeProperty[] ordered = copy(this.props);
         for (int i = 1; i < ordered.length; ++i) {
@@ -728,20 +747,27 @@ struct Medium {
         }
         return ordered;
     }
-    // Refractive-index profiles multiply in stage/priority/declaration order.
-    // This models a base material with dimensionless spatial perturbations.
+
     real n(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
         real val = 1.0;
-        bool hasCustom = false;
+        bool hasIndex = false;
+
         for (VolumeProperty vp : orderedProperties()) {
+            // Absolute index generators compose multiplicatively in priority order
             if (vp.phaseIndex != null) {
                 real curN = vp.phaseIndex(p, d, lambda, pol);
-                val = hasCustom ? (val * curN) : curN;
-                hasCustom = true;
+                val = hasIndex ? (val * curN) : curN;
+                hasIndex = true;
+            }
+            // Modifiers scale/perturb the current running index
+            if (vp.phaseModifier != null) {
+                val = vp.phaseModifier(val, p, d, lambda, pol);
+                hasIndex = true;
             }
         }
         return val;
     }
+
     // Cumulative Absorption/Gain
     // The Beer–Lambert absorption coefficient alpha.
     real absorption(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
@@ -1066,42 +1092,56 @@ struct IndexAndGradient {
 private IndexAndGradient
 mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol = null) {
     IndexAndGradient res = new IndexAndGradient;
-    if (m == null) {
-        res.n = 1.0;
-        res.grad = (0, 0);
-        return res;
-    }
-    real indexProduct = 1.0;
+    if (m == null) return res;
+
+    real currentN = 1.0;
     pair gradient = (0, 0);
     bool hasIndex = false;
     bool hasCompleteAnalyticGradient = true;
+
     for (VolumeProperty vp : m.orderedProperties()) {
-        if (vp.phaseIndex == null) continue;
-        real localIndex = vp.phaseIndex(p, d, lambda, pol);
-        if (vp.phaseGradient == null) {
-            // Spatially homogeneous factors (dispersion, anisotropy) have
-            // zero spatial gradient: d(a*b) = b da when db = 0.
-            if (vp.spatialIndex)
-                hasCompleteAnalyticGradient = false;
-            else
-                gradient = localIndex * gradient;
-        } else {
-            // Product rule for Medium.n(), whose index profiles compose
-            // multiplicatively: d(a*b) = b da + a db.
-            gradient = localIndex * gradient + indexProduct * vp.phaseGradient(p, d, lambda);
+        if (vp.phaseIndex != null) {
+            real localIndex = vp.phaseIndex(p, d, lambda, pol);
+            if (vp.phaseGradient == null) {
+                if (vp.spatialIndex)
+                    hasCompleteAnalyticGradient = false;
+                else
+                    gradient = localIndex * gradient;
+            } else {
+                gradient = localIndex * gradient + currentN * vp.phaseGradient(p, d, lambda);
+            }
+            currentN = hasIndex ? (currentN * localIndex) : localIndex;
+            hasIndex = true;
         }
-        indexProduct *= localIndex;
-        hasIndex = true;
+
+        if (vp.phaseModifier != null) {
+            real modN = vp.phaseModifier(currentN, p, d, lambda, pol);
+            real factor = (currentN > config.math.eps) ? (modN / currentN) : 1.0;
+
+            if (vp.phaseGradient != null) {
+                gradient = factor * gradient + currentN * vp.phaseGradient(p, d, lambda);
+            } else {
+                if (vp.spatialIndex)
+                    hasCompleteAnalyticGradient = false;
+                else
+                    gradient = factor * gradient;
+            }
+            currentN = modN;
+            hasIndex = true;
+        }
     }
-    res.n = hasIndex ? indexProduct : m.n(p, d, lambda, pol);
-    if (hasIndex && hasCompleteAnalyticGradient) {
+
+    res.n = hasIndex ? currentN : m.n(p, d, lambda, pol);
+
+    if (!hasCompleteAnalyticGradient) {
+        real eps = config.physics.epsIntegration;
+        real dx = (m.n(p + (eps, 0), d, lambda, pol) - m.n(p - (eps, 0), d, lambda, pol)) / (2.0 * eps);
+        real dy = (m.n(p + (0, eps), d, lambda, pol) - m.n(p - (0, eps), d, lambda, pol)) / (2.0 * eps);
+        res.grad = (dx, dy);
+    } else {
         res.grad = gradient;
-        return res;
     }
-    real eps = config.physics.epsIntegration;
-    real dx = (m.n(p + (eps, 0), d, lambda, pol) - m.n(p - (eps, 0), d, lambda, pol)) / (2 * eps);
-    real dy = (m.n(p + (0, eps), d, lambda, pol) - m.n(p - (0, eps), d, lambda, pol)) / (2 * eps);
-    res.grad = (dx, dy);
+
     return res;
 }
 
