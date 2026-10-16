@@ -1340,28 +1340,28 @@ write("");
 // ============================================================================
 write("Test Case 45-1: Polarization Rotation Consistency");
 Polarization rot = Polarization.linear(0.0, 1.0);
-applyPolarizationRotation(rot, radians(45.0));
+rot.applyRotation(radians(45.0));
 
 assert_near("Rotation 45: S0 preserved", rot.S0, 1.0, 1e-5);
 assert_near("Rotation 45: S1 becomes zero", rot.S1, 0.0, 1e-5);
 assert_near("Rotation 45: S2 becomes one", rot.S2, 1.0, 1e-5);
 assert_near("Rotation 45: S3 remains zero", rot.S3, 0.0, 1e-5);
 
-applyPolarizationRotation(rot, radians(-45.0));
+rot.applyRotation(radians(-45.0));
 
 assert_near("Inverse rotation: S1 restored", rot.S1, 1.0, 1e-5);
 assert_near("Inverse rotation: S2 restored", rot.S2, 0.0, 1e-5);
 
 Polarization circ = Polarization.circular();
 real s3_before = circ.S3;
-applyPolarizationRotation(circ, radians(23.0));
+circ.applyRotation(radians(23.0));
 
 assert_near("Circular rotation: S0 preserved", circ.S0, 1.0, 1e-5);
 assert_near("Circular rotation: S3 preserved", circ.S3, s3_before, 1e-5);
 assert_near("Circular rotation: degree of polarization preserved", circ.dop(), 1.0, 1e-5);
 
 Polarization unpolRot = Polarization.unpolarized(2.0);
-applyPolarizationRotation(unpolRot, radians(37.0));
+unpolRot.applyRotation(radians(37.0));
 
 assert_near("Unpolarized rotation: S0 preserved", unpolRot.S0, 2.0, 1e-5);
 assert_near("Unpolarized rotation: S1 remains zero", unpolRot.S1, 0.0, 1e-5);
@@ -1694,7 +1694,7 @@ write("");
 // ============================================================================
 write("Test Case 60: Optical Rotation Invariance for Unpolarized Light");
 Polarization unpol_rot = Polarization.unpolarized(1.0);
-applyPolarizationRotation(unpol_rot, radians(45.0));
+unpol_rot.applyRotation(radians(45.0));
 
 assert_near("Rotated unpolarized S0", unpol_rot.S0, 1.0, 1e-5);
 assert_near("Rotated unpolarized S1", unpol_rot.S1, 0.0, 1e-5);
