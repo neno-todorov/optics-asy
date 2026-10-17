@@ -895,6 +895,8 @@ struct FresnelResult {
     pair rp = (0, 0);
     real Rs = 0.0;
     real Rp = 0.0;
+    real Ts = 0.0;
+    real Tp = 0.0;
 
     // -------------------------------------------------------------------------
     // Mode-Specific Fields (For Anisotropic Crystals / Birefringence)
@@ -917,9 +919,6 @@ struct FresnelResult {
     bool tir_e = false;
     Medium medium_e;
 
-    real Ts() { return 1.0 - Rs; }
-    real Tp() { return 1.0 - Rp; }
-
     // -------------------------------------------------------------------------
     // Synchronizer: Call at the end of solver to guarantee all aliases match
     // -------------------------------------------------------------------------
@@ -932,8 +931,8 @@ struct FresnelResult {
             this.waveNormal_e = this.waveNormal;
             this.medium_o = this.medium;
             this.medium_e = this.medium;
-            this.To = this.Ts();
-            this.Te = this.Tp();
+            this.To = this.Ts;
+            this.Te = this.Tp;
             this.tir_o = this.tir;
             this.tir_e = this.tir;
         } else {
@@ -987,6 +986,9 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair incWaveNormal, pair
 
     res.Rs = abs2(res.rs);
     res.Rp = abs2(res.rp);
+    real fluxRatio = (n2 * cost.x) / max(config.math.eps, kn1);
+    res.Ts = res.tir ? 0.0 : fluxRatio * abs2(res.ts);
+    res.Tp = res.tir ? 0.0 : fluxRatio * abs2(res.tp);
 
     // Reflected and transmitted ray directions:
     res.reflectedDirection = unit(sini * T_surf - cosi * N_into2);
@@ -4297,14 +4299,8 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
             Ray transRay = spawnRay(r, h, res.d, intensity, res.medium, 0, res.waveNormal);
 
             if (isnan(reflectance)) {
-                // Mueller transmission matrix.  Power transmittances carry the
-                // flux factor eta = n2 cos(t) / (n1 cos(i)):  T_j = eta |t_j|^2,
-                // and the coherent cross term is eta * ts * conj(tp).
                 real eta = (res.n1 * res.cosi > config.math.eps) ? (res.n2 * res.cost) / (res.n1 * res.cosi) : 0.0;
-                real Ts = eta * abs2(res.ts);
-                real Tp = eta * abs2(res.tp);
-                pair C_T = eta * res.ts * conj(res.tp);
-                applyDiattenuation(transRay.pol, r.pol, Ts, Tp, C_T);
+                applyDiattenuation(transRay.pol, r.pol, res.Ts, res.Tp, eta * res.ts * conj(res.tp));
             }
             rays.push(transRay);
         }
