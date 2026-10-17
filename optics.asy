@@ -483,8 +483,6 @@ struct AnisotropicTransmission {
     pair waveNormal;
     pair groupDirection;
     real phaseIndex;
-    real cosNormal;
-    pair Ze;
 }
 
 struct PhaseMatch {
@@ -492,8 +490,6 @@ struct PhaseMatch {
     pair waveNormal;
     pair groupDirection;
     real n;
-    real cosTheta;
-    pair Ze;
 }
 
 // Function signatures
@@ -656,8 +652,8 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
         real inv_no2 = 1.0 / (no * no);
         real inv_ne2 = 1.0 / (ne * ne);
 
-        real eta_tt = dot(T, c_axis) ^ 2 * inv_no2 + dot(T, q_axis) ^ 2 * inv_ne2;
-        real eta_nn = dot(N, c_axis) ^ 2 * inv_no2 + dot(N, q_axis) ^ 2 * inv_ne2;
+        real eta_tt = dot(T, c_axis) * dot(T, c_axis) * inv_no2 + dot(T, q_axis) * dot(T, q_axis) * inv_ne2;
+        real eta_nn = dot(N, c_axis) * dot(N, c_axis) * inv_no2 + dot(N, q_axis) * dot(N, q_axis) * inv_ne2;
         real eta_tn = (dot(N, c_axis) * dot(T, c_axis)) * inv_no2 + (dot(N, q_axis) * dot(T, q_axis)) * inv_ne2;
 
         real a = eta_nn;
@@ -670,8 +666,6 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
         // Phase 4: Exact Anisotropic TIR (no isotropic fallback!)
         if (discriminant < -config.math.eps) {
             out.valid = false;
-            real kn_im = sqrt(-discriminant) / (2.0 * a);
-            out.Ze = (0.0, -eta_tt * kn_im);
             return out;
         }
 
@@ -694,12 +688,9 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
                 out.waveNormal = waveNormal;
                 out.groupDirection = group;
                 out.phaseIndex = length(k);
-                out.cosNormal = abs(dot(waveNormal, N));
             }
         }
 
-        // Exact Maxwell surface wave impedance: Ze = eta_tt * kn - eta_tn * kt
-        out.Ze = (eta_tt * bestKn - eta_tn * kt, 0.0);
         return out;
     };
     return vp;
@@ -746,17 +737,10 @@ VolumeProperty FaradayRotator(real V, pair B = (1, 0)) {
 // Constitutive Relation (k <-> S)     -->  groupDirection(), waveNormalFromGroup()
 struct Medium {
     string name = "";
-    VolumeProperty baseIndex = null;
     VolumeProperty[] props;
 
     Medium add(VolumeProperty prop) {
-        if (prop == null) return this;
-        this.props.push(prop); // Always retain in props for orderedProperties()
-
-        // Track the first base index property as the primary base model
-        if (prop.phaseIndex != null && this.baseIndex == null) {
-            this.baseIndex = prop;
-        }
+        if (prop != null) this.props.push(prop);
         return this;
     }
 
@@ -941,6 +925,8 @@ struct FresnelResult {
             this.waveNormal = this.waveNormal_o;
             this.medium = this.medium_o;
             this.tir = (this.tir_o && this.tir_e);
+            this.Ts = this.To;
+            this.Tp = this.Te;
             // To and Te are per-mode transmittances; the total transmittance
             // is their incident-power-weighted mean, i.e. T = 1 - R (already
             // set by the solver).  Summing To + Te would exceed unity.
@@ -963,44 +949,46 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair incWaveNormal, pair
     res.n1 = n1;
     res.n2 = n2;
 
-    real sin2_t = (kt / n2) ^ 2;
+    real sint_val = kt / n2;
+    real sin2_t = sint_val * sint_val;
     res.tir = (sin2_t > 1.0);
-    res.tir = res.tir;
-
-    pair cost = res.tir ? (0.0, -sqrt(sin2_t - 1.0)) : (sqrt(1.0 - sin2_t), 0.0);
-    res.cost = cost.x;
-
-    // Maxwell boundary conditions:
-    pair n1_ci = (kn1, 0.0);
-    pair n2_ct = n2 * cost;
-    pair n2_ci = (n2 * cosi, 0.0);
-    pair n1_ct = n1 * cost;
-
-    pair denom_s = n1_ci + n2_ct;
-    pair denom_p = n2_ci + n1_ct;
-
-    res.rs = (n1_ci - n2_ct) / denom_s;
-    res.rp = (n2_ci - n1_ct) / denom_p;
-    res.ts = res.tir ? (0, 0) : (2.0 * n1_ci) / denom_s;
-    res.tp = res.tir ? (0, 0) : (2.0 * n1_ci) / denom_p;
-
-    res.Rs = abs2(res.rs);
-    res.Rp = abs2(res.rp);
-    real fluxRatio = (n2 * cost.x) / max(config.math.eps, kn1);
-    res.Ts = res.tir ? 0.0 : fluxRatio * abs2(res.ts);
-    res.Tp = res.tir ? 0.0 : fluxRatio * abs2(res.tp);
 
     // Reflected and transmitted ray directions:
     res.reflectedDirection = unit(sini * T_surf - cosi * N_into2);
     res.reflectedWaveNormal = res.reflectedDirection;
 
     if (res.tir) {
+        real k_im = sqrt(sin2_t - 1.0);
+        res.cost = 0.0;
+        pair denom_s = (kn1, -n2 * k_im);
+        pair denom_p = (n2 * cosi, -n1 * k_im);
+        res.rs = (kn1, n2 * k_im) / denom_s;
+        res.rp = (n2 * cosi, n1 * k_im) / denom_p;
+        res.ts = (0.0, 0.0);
+        res.tp = (0.0, 0.0);
+        res.Rs = 1.0;
+        res.Rp = 1.0;
+        res.Ts = 0.0;
+        res.Tp = 0.0;
         res.d = res.reflectedDirection;
         res.waveNormal = res.reflectedWaveNormal;
         res.R = 1.0;
         res.T = 0.0;
     } else {
-        res.d = unit((kt / n2) * T_surf + cost.x * N_into2);
+        real cost_val = sqrt(max(0.0, 1.0 - sin2_t));
+        res.cost = cost_val;
+        real denom_s = kn1 + n2 * cost_val;
+        real denom_p = n2 * cosi + n1 * cost_val;
+        res.rs = ((kn1 - n2 * cost_val) / denom_s, 0.0);
+        res.rp = ((n2 * cosi - n1 * cost_val) / denom_p, 0.0);
+        res.ts = ((2.0 * kn1) / denom_s, 0.0);
+        res.tp = ((2.0 * kn1) / denom_p, 0.0);
+        res.Rs = res.rs.x * res.rs.x;
+        res.Rp = res.rp.x * res.rp.x;
+        real fluxRatio = (n2 * cost_val) / max(config.math.eps, kn1);
+        res.Ts = fluxRatio * (res.ts.x * res.ts.x);
+        res.Tp = fluxRatio * (res.tp.x * res.tp.x);
+        res.d = unit(sint_val * T_surf + cost_val * N_into2);
         res.waveNormal = res.d;
         real R_unpol = 0.5 * (res.Rs + res.Rp);
         res.R = R_unpol;
@@ -1490,9 +1478,7 @@ pair phaseGradientNormal(Ray r, Hit h) {
 private
 struct InterfaceFrame {
     pair normal;
-    real cosForward;
     real cosi;
-    bool fromMedium1;
     Medium sourceMedium;
     Medium targetMedium;
 }
@@ -1875,9 +1861,7 @@ interfaceFrame = new InterfaceFrame(Medium m1, Medium m2, Ray r, Hit h, mediumRe
     real cosForward = dot(r.d, N);
     bool fromM1 = cosForward >= 0;
     f.normal = fromM1 ? -N : N;
-    f.cosForward = cosForward;
     f.cosi = abs(dot(unitOr(r.waveNormal, r.d), N));
-    f.fromMedium1 = fromM1;
     // Source medium is ALWAYS the ray's current physical medium
     f.sourceMedium = (r.medium != null) ? r.medium : Materials.VACUUM;
     // Target medium is resolved spatially in transmission direction
@@ -1909,15 +1893,12 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
         pm.waveNormal = at.waveNormal;
         pm.groupDirection = at.groupDirection;
         pm.n = (at.phaseIndex > 0) ? at.phaseIndex : localN;
-        pm.cosTheta = at.cosNormal;
-        pm.Ze = at.Ze; // Forward exact wave impedance
         return pm;
     }
     // Isotropic dispersion sphere
     real kn2 = localN * localN - kt * kt;
     if (kn2 < 0) {
         pm.tir = true;
-        pm.cosTheta = 0;
         return pm;
     }
     real kn = sqrt(max(0.0, kn2));
@@ -1926,7 +1907,6 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
     pm.tir = false;
     pm.waveNormal = unitOr(kVec, forward);
     pm.groupDirection = pm.waveNormal;
-    pm.cosTheta = (localN > config.math.eps) ? (kn / localN) : 0.0;
     return pm;
 }
 
@@ -1992,9 +1972,10 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
 
     if (!res.tir_o) {
         real qo = abs(trans_o.n * dot(trans_o.waveNormal, N));
-        res.rs = ((kn_in - qo) / (kn_in + qo), 0.0);
-        res.ts = ((2.0 * kn_in) / (kn_in + qo), 0.0);
-        res.Rs = abs2(res.rs);
+        real denom_s = kn_in + qo;
+        res.rs = ((kn_in - qo) / denom_s, 0.0);
+        res.ts = ((2.0 * kn_in) / denom_s, 0.0);
+        res.Rs = res.rs.x * res.rs.x;
         res.To = 1.0 - res.Rs;
     } else {
         real no = med_o.n(h.p, incWaveNormal, r.lambda, r.pol);
@@ -2020,11 +2001,12 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         real denom_p = Zi + Ze;
         res.rp = (denom_p > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
         res.tp = (denom_p > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
-        res.Rp = abs2(res.rp);
+        res.Rp = res.rp.x * res.rp.x;
         res.Te = 1.0 - res.Rp;
     } else {
         real ne = med_e.n(h.p, incWaveNormal, r.lambda, r.pol);
-        real sin2t = (kt / ne) ^ 2;
+        real sint_e = kt / ne;
+        real sin2t = sint_e * sint_e;
 
         if (sin2t > 1.0) {
             real k_im = sqrt(sin2t - 1.0);
@@ -2037,7 +2019,7 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         }
 
         res.tp = (0.0, 0.0);
-        res.Rp = abs2(res.rp);
+        res.Rp = 1.0;
         res.Te = 0.0;
     }
 
@@ -4299,8 +4281,7 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
             Ray transRay = spawnRay(r, h, res.d, intensity, res.medium, 0, res.waveNormal);
 
             if (isnan(reflectance)) {
-                real eta = (res.n1 * res.cosi > config.math.eps) ? (res.n2 * res.cost) / (res.n1 * res.cosi) : 0.0;
-                applyDiattenuation(transRay.pol, r.pol, res.Ts, res.Tp, eta * res.ts * conj(res.tp));
+                applyDiattenuation(transRay.pol, r.pol, res.Ts, res.Tp);
             }
             rays.push(transRay);
         }
