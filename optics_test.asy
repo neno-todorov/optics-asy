@@ -2498,6 +2498,68 @@ for (real rg_theta93 : rg_angles93) {
 }
 write("");
 
+// ============================================================================
+// Test Case 94: Independent Energy Flux Conservation (Isotropic)
+// ============================================================================
+write("Test Case 94: Independent Energy Flux Conservation (Isotropic)");
+real n_in = 1.0, n_out = 1.5;
+real th_deg = 45.0;
+real th_rad = radians(th_deg);
+real sin_t = (n_in / n_out) * sin(th_rad);
+real cos_t = sqrt(1.0 - sin_t ^ 2);
+real cos_i = cos(th_rad);
+// Field amplitudes from Maxwell boundary conditions
+pair rs_test = (n_in * cos_i - n_out * cos_t) / (n_in * cos_i + n_out * cos_t);
+pair rp_test = (n_out * cos_i - n_in * cos_t) / (n_out * cos_i + n_in * cos_t);
+pair ts_test = (2.0 * n_in * cos_i) / (n_in * cos_i + n_out * cos_t);
+pair tp_test = (2.0 * n_in * cos_i) / (n_out * cos_i + n_in * cos_t);
+// Independent power flux: T = (n2*cos_t)/(n1*cos_i) * |t|^2
+real flux_factor = (n_out * cos_t) / (n_in * cos_i);
+real Rs_flux = rs_test.x * rs_test.x + rs_test.y * rs_test.y;
+real Rp_flux = rp_test.x * rp_test.x + rp_test.y * rp_test.y;
+real Ts_flux = flux_factor * (ts_test.x * ts_test.x + ts_test.y * ts_test.y);
+real Tp_flux = flux_factor * (tp_test.x * tp_test.x + tp_test.y * tp_test.y);
+assert_near("TE/s-polarization energy conservation (Rs + Ts == 1.0)", Rs_flux + Ts_flux, 1.0, 1e-9);
+assert_near("TM/p-polarization energy conservation (Rp + Tp == 1.0)", Rp_flux + Tp_flux, 1.0, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 95: Complex TIR Retardance (Exact Fresnel Rhomb Quarter-Wave Angle)
+// ============================================================================
+write("Test Case 95: Complex TIR Retardance (Exact Fresnel Rhomb Quarter-Wave Angle)");
+// 1. Fetch exact material indices from predefined library
+real n_glass = Materials.BK7.n();
+real n_air = Materials.AIR.n();
+real n_rel = n_air / n_glass;
+// 2. Solve analytically for the exact angle that gives delta = pi / 4 (45 degrees)
+real T = sqrt(2.0) - 1.0; // tan(pi / 8)
+real A = 1.0 + T * T;
+real B = -(1.0 + n_rel * n_rel);
+real C = n_rel * n_rel;
+real disc = B * B - 4.0 * A * C;
+// The larger root gives the standard rhomb apex angle (~55 deg)
+real u = (-B + sqrt(disc)) / (2.0 * A); // u = sin^2(theta)
+real th_rad = asin(sqrt(u));
+real s_i = sin(th_rad);
+real c_i = cos(th_rad);
+// 3. Run the standalone interface solver
+pair k_inc = n_glass * (s_i, c_i);
+pair N_into2 = (0, 1);
+pair T_surf = (1, 0);
+EMInterfaceResult em_tir = solveIsotropicInterface(n_glass, n_air, k_inc, N_into2, T_surf);
+real delta_s = atan2(em_tir.rs.y, em_tir.rs.x);
+real delta_p = atan2(em_tir.rp.y, em_tir.rp.x);
+real delta = abs(delta_s - delta_p);
+// 4. Assertions: exact 45.0 deg per bounce -> exact 90.0 deg for two bounces
+assert_bool("Solver flags TIR correctly", em_tir.tir, true);
+assert_near("TIR Rs magnitude == 1.0", em_tir.Rs, 1.0, 1e-9);
+assert_near("TIR Rp magnitude == 1.0", em_tir.Rp, 1.0, 1e-9);
+assert_near("TIR Ts flux == 0.0", em_tir.Ts, 0.0, 1e-9);
+assert_near("TIR Tp flux == 0.0", em_tir.Tp, 0.0, 1e-9);
+assert_near("Single bounce retardance is exactly pi/4 (rad)", delta, pi / 4.0, 1e-8);
+assert_near("Fresnel Rhomb: two bounces yield exactly 90.0 deg", 2.0 * degrees(delta), 90.0, 1e-7);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
