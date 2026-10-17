@@ -2560,6 +2560,98 @@ assert_near("Single bounce retardance is exactly pi/4 (rad)", delta, pi / 4.0, 1
 assert_near("Fresnel Rhomb: two bounces yield exactly 90.0 deg", 2.0 * degrees(delta), 90.0, 1e-7);
 write("");
 
+// ============================================================================
+// Test Case 96: Independent Poynting Flux Conservation in Birefringent Crystal
+// ============================================================================
+write("Test Case 96: Independent Poynting Flux Conservation in Birefringent Crystal");
+// Calcite crystal with optic axis tilted at 35 degrees
+real no_calc = 1.658, ne_calc = 1.486;
+pair c_tilted = dir(35.0);
+Medium cal_o = medium("Calcite O", no_calc);
+Medium cal_e = medium("Calcite E").add(UniaxialExtraordinary(no_calc, ne_calc, c_tilted));
+// Oblique incidence from vacuum at 30 degrees
+real th_inc_deg = 30.0;
+Ray r_oblique = Ray.angle(p = (-2, 0), angle = th_inc_deg, medium = Materials.VACUUM);
+Hit h_cryst;
+h_cryst.valid = true;
+h_cryst.p = (0, 0);
+h_cryst.normal = (-1, 0);
+h_cryst.tangent = (0, 1);
+mediumResolver resCryst = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? cal_o : Materials.VACUUM;
+};
+FresnelResult res96 = fresnelUniaxial(r_oblique, h_cryst, Materials.VACUUM, cal_o, cal_e, resCryst);
+// 1. Both channels must be propagating
+assert_bool("Ordinary mode propagates", res96.tir_o, false);
+assert_bool("Extraordinary mode propagates", res96.tir_e, false);
+// 2. Poynting walk-off check: extraordinary group direction d_e != waveNormal_e
+real walkoff_dot = dot(res96.d_e, res96.waveNormal_e);
+assert_true("Poynting walk-off exists (d_e != k_e)", walkoff_dot < 0.9999 && walkoff_dot > 0.0);
+// 3. Strict Independent Power Conservation: Rs + To == 1.0 and Rp + Te == 1.0
+assert_near("Ordinary mode energy conservation (Rs + To == 1.0)", res96.Rs + res96.To, 1.0, 1e-8);
+assert_near("Extraordinary mode energy conservation (Rp + Te == 1.0)", res96.Rp + res96.Te, 1.0, 1e-8);
+write("");
+
+// ============================================================================
+// Test Case 97: Birefringent TIR Asymmetry (Glan-Prism Operating Regime)
+// ============================================================================
+write("Test Case 97: Birefringent TIR Asymmetry (Glan-Prism Operating Regime)");
+// Calcite has no = 1.658, ne = 1.486.
+// Critical angles into air:
+//   theta_c,o = asin(1 / 1.658) = 37.10 deg
+//   theta_c,e = asin(1 / ne(theta)) ~ 40.3 deg (for axis along surface)
+// At 38.0 degrees: ordinary mode undergoes TIR, while extraordinary mode transmits cleanly!
+Medium cal_o_dense = medium("Dense Calcite O", no_calc);
+Medium cal_e_dense = medium("Dense Calcite E").add(UniaxialExtraordinary(no_calc, ne_calc, (0, 1)));
+real th_glan_deg = 38.0;
+// 1. Launch ordinary ray (n = 1.658) hitting air interface
+Ray r_o_glan = Ray.angle(p = (-2, 0), angle = th_glan_deg, medium = cal_o_dense);
+mediumResolver resAir = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? Materials.AIR : cal_o_dense;
+};
+FresnelResult res_o = fresnelIsotropic(cal_o_dense, Materials.AIR, r_o_glan, h_cryst, resAir);
+// Ordinary wave must undergo TIR (kt = 1.021 > 1.0)
+assert_bool("Ordinary mode is totally reflected (TIR)", res_o.totalInternalReflection, true);
+assert_near("Ordinary Rs == 1.0", res_o.Rs, 1.0, 1e-8);
+assert_near("Ordinary T == 0.0", res_o.T, 0.0, 1e-8);
+// 2. Launch extraordinary ray (n_e ~ 1.545, pure TM/p-polarization) hitting air interface
+mediumResolver resAirE = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? Materials.AIR : cal_e_dense;
+};
+// Physical extraordinary eigenmode is pure p-polarized: S1 = -1
+Polarization p_pol = Polarization.stokes(1.0, -1.0, 0.0, 0.0);
+Ray r_e_glan = Ray.angle(p = (-2, 0), angle = th_glan_deg, medium = cal_e_dense, pol = p_pol);
+FresnelResult res_e = fresnelIsotropic(cal_e_dense, Materials.AIR, r_e_glan, h_cryst, resAirE);
+// Extraordinary wave transmits freely (kt = 0.951 < 1.0, Te = 94%)
+assert_bool("Extraordinary mode transmits freely", res_e.totalInternalReflection, false);
+assert_near("Extraordinary energy conservation (R + T == 1.0)", res_e.R + res_e.T, 1.0, 1e-8);
+assert_true("High extraordinary transmittance (T > 0.85)", res_e.T > 0.85);
+write("");
+
+// ============================================================================
+// Test Case 98: Dual-Mode Anisotropic TIR (Evanescent Field Phase Retardance)
+// ============================================================================
+write("Test Case 98: Dual-Mode Anisotropic TIR (Evanescent Field Phase Retardance)");
+// At 50 degrees, both modes exceed their critical angles into air
+real th_tir_both = 50.0;
+Ray r_tir_both = Ray.angle(p = (-2, 0), angle = th_tir_both, medium = cal_o_dense);
+FresnelResult res98 = fresnelUniaxial(r_tir_both, h_cryst, cal_o_dense, Materials.AIR, Materials.AIR, resAir);
+assert_bool("Both modes in TIR: o-mode", res98.tir_o, true);
+assert_bool("Both modes in TIR: e-mode", res98.tir_e, true);
+// Magnitudes must be identically unity
+assert_near("TIR Rs magnitude == 1.0", res98.Rs, 1.0, 1e-8);
+assert_near("TIR Rp magnitude == 1.0", res98.Rp, 1.0, 1e-8);
+assert_near("TIR To flux == 0.0", res98.To, 0.0, 1e-8);
+assert_near("TIR Te flux == 0.0", res98.Te, 0.0, 1e-8);
+// Complex amplitudes must have non-zero imaginary parts (differential phase retardance)
+assert_true("Evanescent rs has complex phase", abs(res98.rs.y) > 0.1);
+assert_true("Evanescent rp has complex phase", abs(res98.rp.y) > 0.1);
+real phase_s = atan2(res98.rs.y, res98.rs.x);
+real phase_p = atan2(res98.rp.y, res98.rp.x);
+real delta_aniso = abs(phase_p - phase_s);
+assert_true("Anisotropic TIR differential retardance is non-zero", delta_aniso > 0.05);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
