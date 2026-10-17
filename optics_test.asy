@@ -2652,6 +2652,98 @@ real delta_aniso = abs(phase_p - phase_s);
 assert_true("Anisotropic TIR differential retardance is non-zero", delta_aniso > 0.05);
 write("");
 
+// ============================================================================
+// Test Case 99: Isotropic Limit Verification (no == ne)
+// ============================================================================
+write("Test Case 99: Isotropic Limit Verification (no == ne)");
+// When a crystal has no = ne, fresnelUniaxial must match fresnelIsotropic identically
+real n_iso_val = 1.55;
+Medium med_iso_match = medium("Iso Match", n_iso_val);
+Medium med_crystal_limit_o = medium("Limit O", n_iso_val);
+Medium med_crystal_limit_e = medium("Limit E").add(UniaxialExtraordinary(n_iso_val, n_iso_val, dir(30)));
+Ray r_limit = Ray.angle(p = (-2, 0), angle = 40.0, medium = Materials.VACUUM);
+Hit h_limit;
+h_limit.valid = true;
+h_limit.p = (0, 0);
+h_limit.normal = (-1, 0);
+h_limit.tangent = (0, 1);
+mediumResolver resLimit = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fromM1) {
+    return (p.x > 0) ? med_crystal_limit_o : Materials.VACUUM;
+};
+FresnelResult res_iso_base = fresnelIsotropic(Materials.VACUUM, med_iso_match, r_limit, h_limit, resLimit);
+FresnelResult res_uni_limit =
+    fresnelUniaxial(r_limit, h_limit, Materials.VACUUM, med_crystal_limit_o, med_crystal_limit_e, resLimit);
+assert_near("Isotropic limit: Rs matches isotropic solver", res_uni_limit.Rs, res_iso_base.Rs, 1e-12);
+assert_near("Isotropic limit: Rp matches isotropic solver", res_uni_limit.Rp, res_iso_base.Rp, 1e-12);
+assert_near_pair("Isotropic limit: o-ray direction matches isotropic refraction",
+                 res_uni_limit.d_o,
+                 res_iso_base.d,
+                 1e-12);
+assert_near_pair("Isotropic limit: e-ray direction matches isotropic refraction",
+                 res_uni_limit.d_e,
+                 res_iso_base.d,
+                 1e-12);
+assert_near("Isotropic limit: zero walk-off between o and e modes",
+            dot(res_uni_limit.d_o, res_uni_limit.d_e),
+            1.0,
+            1e-12);
+write("");
+
+// ============================================================================
+// Test Case 100: Brewster Angle Reflection Extinction via Refract()
+// ============================================================================
+write("Test Case 100: Brewster Angle Reflection Extinction via Refract()");
+// Air (n=1) to Glass (n=1.5). Brewster angle: tan(theta_B) = 1.5 / 1.0 -> 56.3099 deg
+real n_glass_b = 1.5;
+Medium glass_brewster = medium("Brewster Glass", n_glass_b);
+real th_B_deg = degrees(atan(n_glass_b / 1.0));
+// Launch pure TM / p-polarized ray (S1 = -1) aimed directly at (0, 0)
+Polarization p_polarized = Polarization.stokes(1.0, -1.0, 0.0, 0.0);
+pair launch_dir = dir(th_B_deg);
+pair launch_pt = -5.0 * launch_dir;
+Ray r_brewster = Ray(p = launch_pt, d = launch_dir, medium = Materials.VACUUM, pol = p_polarized);
+Element brewsterSurface = Interface(linearBoundary((0, 0), (0, 1), 20), glass_brewster, Materials.VACUUM);
+Trace t_brewster = system(brewsterSurface).trace(r_brewster);
+// Transmitted ray must carry 100% of incident power (zero reflection)
+Ray trans_B = t_brewster.transmitted(0);
+assert_true("Transmitted ray exists", trans_B != null);
+assert_near("Transmitted intensity at Brewster angle is 100%", trans_B.intensity(), 1.0, 1e-7);
+assert_near("Brewster TM reflection is extinguished", t_brewster.interaction(0).R, 0.0, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 101: End-to-End Crystal Eigenmode Polarization Purity
+// ============================================================================
+write("Test Case 101: End-to-End Crystal Eigenmode Polarization Purity");
+// Launch unpolarized light into a Calcite Crystal slab
+Medium cal_o_slab = medium("Calcite Slab O", 1.658);
+Medium cal_e_slab = medium("Calcite Slab E").add(UniaxialExtraordinary(1.658, 1.486, dir(45)));
+Element crystalSlab = Crystal(box((-2, -5), (2, 5)), cal_o_slab, cal_e_slab, Materials.VACUUM);
+Ray unpol_ray = Ray.angle(p = (-5, 0), angle = 10.0, medium = Materials.VACUUM, pol = Polarization.unpolarized());
+Trace t_crystal = system(crystalSlab).trace(unpol_ray);
+// Entry interface must spawn 2 rays
+Interaction entry_step = t_crystal.interaction(0);
+assert_true("Entry splits unpolarized light into 2 modes", entry_step.transmitted.length == 2);
+Ray o_beam = entry_step.transmitted[0];
+Ray e_beam = entry_step.transmitted[1];
+// Ordinary beam must be pure S-polarization: S1 / S0 == +1.0, S2 == 0, S3 == 0
+assert_near("Ordinary mode pure S-polarization (S1/S0 == +1.0)", o_beam.pol.S1 / o_beam.pol.S0, 1.0, 1e-8);
+assert_near("Ordinary mode S2 == 0.0", o_beam.pol.S2, 0.0, 1e-8);
+assert_near("Ordinary mode S3 == 0.0", o_beam.pol.S3, 0.0, 1e-8);
+// Extraordinary beam must be pure P-polarization: S1 / S0 == -1.0, S2 == 0, S3 == 0
+assert_near("Extraordinary mode pure P-polarization (S1/S0 == -1.0)", e_beam.pol.S1 / e_beam.pol.S0, -1.0, 1e-8);
+assert_near("Extraordinary mode S2 == 0.0", e_beam.pol.S2, 0.0, 1e-8);
+assert_near("Extraordinary mode S3 == 0.0", e_beam.pol.S3, 0.0, 1e-8);
+// Both beams must conserve total energy at entrance: I_o + I_e + I_refl == 1.0
+real I_o_in = o_beam.intensity();
+real I_e_in = e_beam.intensity();
+real I_refl_in = (entry_step.reflected.length > 0) ? entry_step.reflected[0].intensity() : 0.0;
+assert_near("Total crystal entrance energy conserved (I_o + I_e + I_refl == 1.0)",
+            I_o_in + I_e_in + I_refl_in,
+            1.0,
+            1e-7);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
