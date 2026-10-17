@@ -109,7 +109,7 @@ real Rp_exact = rp_exact ^ 2;
 real R_exact = 0.5 * (Rs_exact + Rp_exact);
 real T_exact = 1.0 - R_exact;
 
-assert_bool("TIR flag", ref1.totalInternalReflection, false);
+assert_bool("TIR flag", ref1.tir, false);
 assert_near("Refraction angle theta_t (deg)", degrees(asin(ref1.d.y)), expected_theta_t);
 assert_near_pair("Refracted ray direction vector", ref1.d, expected_ref_d);
 assert_near("Fresnel R_s reflectivity", abs2(ref1.rs), Rs_exact);
@@ -129,7 +129,7 @@ r_tir.pol = Polarization.unpolarized();
 FresnelResult ref2 = fresnelIsotropic(glass_15, Materials.VACUUM, r_tir, h_int, testResolveTIR);
 pair expected_refl_dir = (-cos(theta_tir_rad), sin(theta_tir_rad));
 
-assert_bool("TIR flag", ref2.totalInternalReflection, true);
+assert_bool("TIR flag", ref2.tir, true);
 assert_near("Reflectivity R (TIR)", ref2.R, 1.0);
 assert_near("Transmittivity T (TIR)", ref2.T, 0.0);
 assert_near_pair("Reflected ray direction", ref2.d, expected_refl_dir);
@@ -947,8 +947,8 @@ h_planar.normal = (-1, 0);
 FresnelResult ref_below = fresnelIsotropic(flint, water_m, ray_below_crit, h_planar, resFlintWater);
 FresnelResult ref_above = fresnelIsotropic(flint, water_m, ray_above_crit, h_planar, resFlintWater);
 
-assert_bool("TIR below critical angle is false", ref_below.totalInternalReflection, false);
-assert_bool("TIR above critical angle is true", ref_above.totalInternalReflection, true);
+assert_bool("TIR below critical angle is false", ref_below.tir, false);
+assert_bool("TIR above critical angle is true", ref_above.tir, true);
 write("");
 
 // ============================================================================
@@ -1387,7 +1387,7 @@ FresnelResult extraNormalRef =
     fresnelIsotropic(Materials.VACUUM, glass_15, extraNormalRay, h_int, testResolveIsotropic);
 real extraNormalR = ((n2 - n1) / (n2 + n1)) ^ 2;
 
-assert_bool("Normal incidence is not total internal reflection", extraNormalRef.totalInternalReflection, false);
+assert_bool("Normal incidence is not total internal reflection", extraNormalRef.tir, false);
 assert_near_pair("Normal-incidence transmitted direction", extraNormalRef.d, (1.0, 0.0));
 assert_relative("Normal-incidence Fresnel reflectance", extraNormalRef.R, extraNormalR);
 assert_relative("Normal-incidence energy balance", extraNormalRef.R + extraNormalRef.T, 1.0);
@@ -2546,7 +2546,7 @@ real c_i = cos(th_rad);
 pair k_inc = n_glass * (s_i, c_i);
 pair N_into2 = (0, 1);
 pair T_surf = (1, 0);
-EMInterfaceResult em_tir = solveIsotropicInterface(n_glass, n_air, k_inc, N_into2, T_surf);
+FresnelResult em_tir = solveIsotropicInterface(n_glass, n_air, k_inc, N_into2, T_surf);
 real delta_s = atan2(em_tir.rs.y, em_tir.rs.x);
 real delta_p = atan2(em_tir.rp.y, em_tir.rp.x);
 real delta = abs(delta_s - delta_p);
@@ -2554,8 +2554,8 @@ real delta = abs(delta_s - delta_p);
 assert_bool("Solver flags TIR correctly", em_tir.tir, true);
 assert_near("TIR Rs magnitude == 1.0", em_tir.Rs, 1.0, 1e-9);
 assert_near("TIR Rp magnitude == 1.0", em_tir.Rp, 1.0, 1e-9);
-assert_near("TIR Ts flux == 0.0", em_tir.Ts, 0.0, 1e-9);
-assert_near("TIR Tp flux == 0.0", em_tir.Tp, 0.0, 1e-9);
+assert_near("TIR Ts flux == 0.0", em_tir.Ts(), 0.0, 1e-9);
+assert_near("TIR Tp flux == 0.0", em_tir.Tp(), 0.0, 1e-9);
 assert_near("Single bounce retardance is exactly pi/4 (rad)", delta, pi / 4.0, 1e-8);
 assert_near("Fresnel Rhomb: two bounces yield exactly 90.0 deg", 2.0 * degrees(delta), 90.0, 1e-7);
 write("");
@@ -2611,7 +2611,7 @@ mediumResolver resAir = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fro
 };
 FresnelResult res_o = fresnelIsotropic(cal_o_dense, Materials.AIR, r_o_glan, h_cryst, resAir);
 // Ordinary wave must undergo TIR (kt = 1.021 > 1.0)
-assert_bool("Ordinary mode is totally reflected (TIR)", res_o.totalInternalReflection, true);
+assert_bool("Ordinary mode is totally reflected (TIR)", res_o.tir, true);
 assert_near("Ordinary Rs == 1.0", res_o.Rs, 1.0, 1e-8);
 assert_near("Ordinary T == 0.0", res_o.T, 0.0, 1e-8);
 // 2. Launch extraordinary ray (n_e ~ 1.545, pure TM/p-polarization) hitting air interface
@@ -2623,7 +2623,7 @@ Polarization p_pol = Polarization.stokes(1.0, -1.0, 0.0, 0.0);
 Ray r_e_glan = Ray.angle(p = (-2, 0), angle = th_glan_deg, medium = cal_e_dense, pol = p_pol);
 FresnelResult res_e = fresnelIsotropic(cal_e_dense, Materials.AIR, r_e_glan, h_cryst, resAirE);
 // Extraordinary wave transmits freely (kt = 0.951 < 1.0, Te = 94%)
-assert_bool("Extraordinary mode transmits freely", res_e.totalInternalReflection, false);
+assert_bool("Extraordinary mode transmits freely", res_e.tir, false);
 assert_near("Extraordinary energy conservation (R + T == 1.0)", res_e.R + res_e.T, 1.0, 1e-8);
 assert_true("High extraordinary transmittance (T > 0.85)", res_e.T > 0.85);
 write("");
