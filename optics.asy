@@ -484,6 +484,7 @@ struct AnisotropicTransmission {
     pair groupDirection;
     real phaseIndex;
     real cosNormal;
+    pair Ze;
 }
 
 struct PhaseMatch {
@@ -492,6 +493,7 @@ struct PhaseMatch {
     pair groupDirection;
     real n;
     real cosTheta;
+    pair Ze;
 }
 
 // Function signatures
@@ -650,23 +652,44 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
     };
     vp.anisotropicSolver = new AnisotropicTransmission(pair N, pair T, real kt, pair forward, pair p, real lambda) {
         AnisotropicTransmission out = new AnisotropicTransmission;
-        real a = dot(N, c_axis) ^ 2 / (no * no) + dot(N, q_axis) ^ 2 / (ne * ne);
-        real b = 2 * kt * (dot(N, c_axis) * dot(T, c_axis) / (no * no) + dot(N, q_axis) * dot(T, q_axis) / (ne * ne));
-        real cc = kt * kt * (dot(T, c_axis) ^ 2 / (no * no) + dot(T, q_axis) ^ 2 / (ne * ne)) - 1;
-        real discriminant = b * b - 4 * a * cc;
-        if (a <= config.math.eps || discriminant < -config.math.eps) return out;
+
+        real inv_no2 = 1.0 / (no * no);
+        real inv_ne2 = 1.0 / (ne * ne);
+
+        real eta_tt = dot(T, c_axis) ^ 2 * inv_no2 + dot(T, q_axis) ^ 2 * inv_ne2;
+        real eta_nn = dot(N, c_axis) ^ 2 * inv_no2 + dot(N, q_axis) ^ 2 * inv_ne2;
+        real eta_tn = (dot(N, c_axis) * dot(T, c_axis)) * inv_no2 + (dot(N, q_axis) * dot(T, q_axis)) * inv_ne2;
+
+        real a = eta_nn;
+        real b = 2.0 * kt * eta_tn;
+        real cc = kt * kt * eta_tt - 1.0;
+        real discriminant = b * b - 4.0 * a * cc;
+
+        if (a <= config.math.eps) return out;
+
+        // Phase 4: Exact Anisotropic TIR (no isotropic fallback!)
+        if (discriminant < -config.math.eps) {
+            out.valid = false;
+            real kn_im = sqrt(-discriminant) / (2.0 * a);
+            out.Ze = (0.0, -eta_tt * kn_im);
+            return out;
+        }
+
+        // Phase 3: Propagating Extraordinary Mode
         real root = sqrt(max(0.0, discriminant));
-        real candidates[] = {(-b + root) / (2 * a), (-b - root) / (2 * a)};
+        real candidates[] = {(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)};
         real bestForward = -infinity;
+        real bestKn = candidates[0];
+
         for (real kn : candidates) {
             pair k = kn * N + kt * T;
             pair waveNormal = unitOr(k);
-            pair group =
-                unitOr(dot(waveNormal, c_axis) * c_axis / (no * no) + dot(waveNormal, q_axis) * q_axis / (ne * ne),
-                       waveNormal);
+            pair group = unitOr(dot(waveNormal, c_axis) * c_axis * inv_no2 + dot(waveNormal, q_axis) * q_axis * inv_ne2,
+                                waveNormal);
             real score = dot(group, forward);
             if (score > bestForward) {
                 bestForward = score;
+                bestKn = kn;
                 out.valid = (score > config.math.eps);
                 out.waveNormal = waveNormal;
                 out.groupDirection = group;
@@ -674,11 +697,13 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
                 out.cosNormal = abs(dot(waveNormal, N));
             }
         }
+
+        // Exact Maxwell surface wave impedance: Ze = eta_tt * kn - eta_tn * kt
+        out.Ze = (eta_tt * bestKn - eta_tn * kt, 0.0);
         return out;
     };
     return vp;
 }
-
 // Optical Activity / Natural Polarization Rotation
 VolumeProperty OpticalActivity(real rot_deg_per_unit) {
     VolumeProperty vp = new VolumeProperty;
@@ -967,6 +992,152 @@ EMInterfaceResult solveIsotropicInterface(real n1, real n2, pair d_inc, pair N_i
     } else {
         res.trans_s.evanescent = true;
         res.trans_p.evanescent = true;
+    }
+
+    return res;
+}
+
+struct EMUniaxialResult {
+    bool tir_o = false;
+    bool tir_e = false;
+
+    // Ordinary mode (TE / s)
+    pair rs = (0, 0);
+    pair ts = (0, 0);
+    real Rs = 0.0;
+    real To = 0.0;
+    pair k_o = (0, 0);
+    pair d_o = (0, 0);
+
+    // Extraordinary mode (TM / p)
+    pair rp = (0, 0);
+    pair tp = (0, 0);
+    real Rp = 0.0;
+    real Te = 0.0;
+    pair k_e = (0, 0);
+    pair d_e = (0, 0);
+
+    // Reflected mode
+    pair k_refl = (0, 0);
+    pair d_refl = (0, 0);
+}
+
+// Standalone Maxwell boundary condition solver for anisotropic (uniaxial) interfaces
+EMUniaxialResult solveUniaxialInterface(real n1,
+                                        real no,
+                                        real ne,
+                                        pair opticAxis,
+                                        pair incWaveNormal,
+                                        pair N_into_crystal,
+                                        pair T_surf) {
+    EMUniaxialResult res = new EMUniaxialResult;
+
+    pair u = unit(incWaveNormal);
+    real cosi = clamp(dot(u, N_into_crystal), 0.0, 1.0);
+    real sini = dot(u, T_surf);
+
+    real kt = n1 * sini;
+    real kn_in = n1 * cosi;
+
+    // Reflected wave kinematics
+    pair d_refl = unit(sini * T_surf - cosi * N_into_crystal);
+    res.k_refl = d_refl;
+    res.d_refl = d_refl;
+
+    // ========================================================================
+    // 1. Ordinary Mode (TE / s-polarization: strictly scalar index no)
+    // ========================================================================
+    real qo2 = no * no - kt * kt;
+    if (qo2 >= 0.0) {
+        real qo = sqrt(qo2);
+        res.tir_o = false;
+        real denom = kn_in + qo;
+        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
+        res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
+        res.Rs = res.rs.x * res.rs.x;
+        // Independent Poynting flux ratio:
+        res.To = (qo / max(config.math.eps, kn_in)) * (res.ts.x * res.ts.x);
+
+        pair k_o = unit(kt * T_surf + qo * N_into_crystal);
+        res.k_o = k_o;
+        res.d_o = k_o;
+    } else {
+        res.tir_o = true;
+        real qo_im = sqrt(-qo2);
+        // Evanescent branch cut matching engine convention
+        res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
+        res.ts = (0.0, 0.0);
+        res.Rs = 1.0;
+        res.To = 0.0;
+    }
+
+    // ========================================================================
+    // 2. Extraordinary Mode (TM / p-polarization: exact impermeability tensor eta)
+    // ========================================================================
+    pair c_axis = unitOr(opticAxis);
+    pair q_axis = perp(c_axis);
+    real inv_no2 = 1.0 / (no * no);
+    real inv_ne2 = 1.0 / (ne * ne);
+
+    // eta = epsilon^(-1) components in the (T, N_into) boundary basis:
+    real eta_tt = dot(T_surf, c_axis) ^ 2 * inv_no2 + dot(T_surf, q_axis) ^ 2 * inv_ne2;
+    real eta_nn = dot(N_into_crystal, c_axis) ^ 2 * inv_no2 + dot(N_into_crystal, q_axis) ^ 2 * inv_ne2;
+    real eta_tn = (dot(T_surf, c_axis) * dot(N_into_crystal, c_axis)) * inv_no2 +
+                  (dot(T_surf, q_axis) * dot(N_into_crystal, q_axis)) * inv_ne2;
+
+    // Dispersion relation: a * kn^2 + b * kn + cc = 0
+    real a = eta_nn;
+    real b = 2.0 * kt * eta_tn;
+    real cc = kt * kt * eta_tt - 1.0;
+    real disc = b * b - 4.0 * a * cc;
+
+    real Zi = kn_in / (n1 * n1);
+
+    if (disc >= 0.0 && a > config.math.eps) {
+        // Propagating extraordinary wave
+        res.tir_e = false;
+        real root = sqrt(disc);
+        // Choose root propagating forward into the crystal:
+        real kn_candidates[] = {(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)};
+        real bestForward = -infinity;
+        real kn_e = kn_candidates[0];
+
+        for (real kn : kn_candidates) {
+            pair k_vec = kt * T_surf + kn * N_into_crystal;
+            pair wNorm = unitOr(k_vec);
+            pair group = unitOr(dot(wNorm, c_axis) * c_axis * inv_no2 + dot(wNorm, q_axis) * q_axis * inv_ne2, wNorm);
+            real score = dot(group, N_into_crystal);
+            if (score > bestForward) {
+                bestForward = score;
+                kn_e = kn;
+                res.k_e = wNorm;
+                res.d_e = group;
+            }
+        }
+
+        // Exact Maxwell surface wave impedance: Ze = eta_tt * kn - eta_tn * kt
+        real Ze = eta_tt * kn_e - eta_tn * kt;
+        real denom_p = Zi + Ze;
+        res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
+        res.tp = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
+        res.Rp = res.rp.x * res.rp.x;
+        // Independent Poynting flux ratio:
+        res.Te = (Ze / max(config.math.eps, Zi)) * (res.tp.x * res.tp.x);
+    } else {
+        // Anisotropic Extraordinary TIR (Phase 4): exact complex wave impedance
+        res.tir_e = true;
+        real kn_im = sqrt(max(0.0, -disc)) / (2.0 * max(config.math.eps, a));
+        real Ze_im = eta_tt * kn_im;
+
+        // In TIR, Ze is purely imaginary (no normal Poynting flux transmitted):
+        pair Ze_c = (0.0, -Ze_im);
+        pair Zi_c = (Zi, 0.0);
+        pair denom_p = Zi_c + Ze_c;
+
+        res.rp = (abs(denom_p) > config.math.eps) ? (Zi_c - Ze_c) / denom_p : (1.0, 0.0);
+        res.tp = (0.0, 0.0);
+        res.Rp = 1.0;
+        res.Te = 0.0;
     }
 
     return res;
@@ -1953,6 +2124,7 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
         pm.groupDirection = at.groupDirection;
         pm.n = (at.phaseIndex > 0) ? at.phaseIndex : localN;
         pm.cosTheta = at.cosNormal;
+        pm.Ze = at.Ze; // Forward exact wave impedance
         return pm;
     }
     // Isotropic dispersion sphere
@@ -1975,199 +2147,6 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
 // ============================================================================
 // Maxwell Boundary Solver for Isotropic <-> Uniaxial Planar Interfaces
 // ============================================================================
-FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
-    FresnelResult res;
-    res.isBirefringent = true;
-
-    // 1. Establish orthonormal interface frame
-    InterfaceFrame f = interfaceFrame(med_iso, med_o, r, h, resolve);
-    pair N = f.normal;
-    pair T = (-N.y, N.x); // Unit tangent along surface
-
-    pair incWaveNormal = unitOr(r.waveNormal, r.d);
-    real n1 = f.sourceMedium.n(h.p, incWaveNormal, r.lambda, r.pol);
-    real kt = n1 * dot(incWaveNormal, T);
-    real kn_in = abs(n1 * dot(incWaveNormal, N));
-
-    // Boundary metadata
-    res.normal = f.normal;
-    res.sourceMedium = f.sourceMedium;
-    res.n1 = n1;
-    res.cosi = f.cosi;
-
-    // Reflected wave kinematics
-    PhaseMatch reflMatch = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
-    res.reflectedDirection = reflMatch.groupDirection;
-    res.reflectedWaveNormal = reflMatch.waveNormal;
-
-    // 2. Transmitted Kinematics using existing functional boundary matcher
-    pair intoMed = -N; // Normal pointing into crystal
-    PhaseMatch trans_o = solvePhaseMatch(med_o, N, T, kt, intoMed, h.p, r.lambda);
-    PhaseMatch trans_e = solvePhaseMatch(med_e, N, T, kt, intoMed, h.p, r.lambda);
-
-    res.d_o = trans_o.groupDirection;
-    res.waveNormal_o = trans_o.waveNormal;
-    res.tir_o = trans_o.tir;
-    res.medium_o = med_o;
-
-    res.d_e = trans_e.groupDirection; // Contains exact Poynting walk-off
-    res.waveNormal_e = trans_e.waveNormal;
-    res.tir_e = trans_e.tir;
-    res.medium_e = med_e;
-
-    // ========================================================================
-    // 3. Ordinary Mode (TE / S-Polarization)
-    // ========================================================================
-    if (!res.tir_o) {
-        real qo = abs(trans_o.n * dot(trans_o.waveNormal, N));
-        real denom = kn_in + qo;
-        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
-        res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
-        res.Rs = abs2(res.rs);
-        res.To = 1.0 - res.Rs;
-    } else {
-        real no = med_o.n(h.p, incWaveNormal, r.lambda, r.pol);
-        real qo2 = no * no - kt * kt;
-        real qo_im = sqrt(max(0.0, -qo2));
-        // Same evanescent convention as fresnelIsotropic (cos t = -i|q|/n):
-        // rs = (kn + i|q|) / (kn - i|q|), a pure phase.
-        res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
-        res.ts = (0.0, 0.0);
-        res.Rs = 1.0;
-        res.To = 0.0;
-    }
-
-    // ========================================================================
-    // 4. Extraordinary Mode (TM / P-Polarization via Kinematic Impedance)
-    // ========================================================================
-    if (!res.tir_e) {
-        pair we = trans_e.n * trans_e.waveNormal;
-        pair de = trans_e.groupDirection;
-
-        real dn = abs(dot(de, N));
-        real we_dot_de = abs(dot(we, de));
-
-        // Approximate extraordinary-mode impedance based on wavevector
-        // and group direction. General anisotropic boundary matching
-        // requires continuity of tangential electric and magnetic fields.
-        real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
-        real Zi = kn_in / (n1 * n1);
-
-        real denom_p = Zi + Ze;
-        res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
-        res.tp = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
-        res.Rp = abs2(res.rp);
-        res.Te = 1.0 - res.Rp;
-    } else {
-        // TODO: Implement general anisotropic extraordinary-mode TIR
-        // using the complex evanescent wavevector and electromagnetic
-        // boundary admittance. This branch currently handles the
-        // isotropic limit only.
-        real ne = med_e.n(h.p, incWaveNormal, r.lambda, r.pol);
-        real sin2t = (kt / ne) ^ 2;
-
-        if (sin2t > 1.0) {
-            real k_im = sqrt(sin2t - 1.0);
-            pair cosi = (f.cosi, 0.0);
-            pair cost = (0.0, -k_im);
-            pair denom_p = ne * cosi + n1 * cost;
-
-            res.rp = (abs(denom_p) > config.math.eps) ? (ne * cosi - n1 * cost) / denom_p : (1.0, 0.0);
-        } else {
-            res.rp = (-1.0, 0.0);
-        }
-
-        res.tp = (0.0, 0.0);
-        res.Rp = abs2(res.rp);
-        res.Te = 0.0;
-    }
-
-    // Total incident-weighted reflectance
-    res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
-    res.T = 1.0 - res.R;
-
-    res.sync();
-    return res;
-}
-
-// FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
-//     FresnelResult res;
-//     res.isBirefringent = false;
-
-//     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
-//     pair N = f.normal;
-//     pair T = (-N.y, N.x);
-//     pair incWaveNormal = unitOr(r.waveNormal, r.d);
-//     real n1 = f.sourceMedium.n(h.p, incWaveNormal, r.lambda, r.pol);
-//     real kt = n1 * dot(incWaveNormal, T);
-
-//     // Unified Transmitted & Reflected Modes
-//     PhaseMatch trans = solvePhaseMatch(f.targetMedium, N, T, kt, -N, h.p, r.lambda);
-//     PhaseMatch refl = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
-//     real n2 = max(config.physics.minRefractiveIndex, trans.n);
-
-//     res.normal = f.normal;
-//     res.sourceMedium = f.sourceMedium;
-//     res.n1 = n1;
-//     res.n2 = n2;
-//     res.cosi = f.cosi;
-//     res.reflectedWaveNormal = refl.waveNormal;
-//     res.reflectedDirection = refl.groupDirection;
-
-//     pair cosi = (f.cosi, 0);
-
-//     if (trans.tir) {
-//         // Total Internal Reflection (TIR)
-//         res.totalInternalReflection = true;
-//         res.d = refl.groupDirection;
-//         res.waveNormal = refl.waveNormal;
-//         res.medium = f.sourceMedium;
-
-//         // Exact complex evanescent wave normal: cost = -i * sqrt((kt/n2)^2 - 1)
-//         real k_im = (n2 > config.math.eps) ? sqrt(max(0.0, (kt / n2) ^ 2 - 1.0)) : 0.0;
-//         pair cost = (0, -k_im);
-//         pair denom_s = n1 * cosi + n2 * cost;
-//         pair denom_p = n2 * cosi + n1 * cost;
-
-//         res.rs = (abs(denom_s) > config.math.eps) ? (n1 * cosi - n2 * cost) / denom_s : (1, 0);
-//         res.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (1, 0);
-//         res.ts = (0, 0);
-//         res.tp = (0, 0);
-//         res.Rs = 1.0;
-//         res.Rp = 1.0;
-//         res.R = 1.0;
-//         res.T = 0.0;
-//         res.sync();
-//         return res;
-//     }
-
-//     // Standard Isotropic Refraction
-//     res.totalInternalReflection = false;
-//     res.cost = trans.cosTheta;
-//     res.waveNormal = trans.waveNormal;
-//     res.d = trans.groupDirection;
-//     res.medium = f.targetMedium;
-
-//     pair cost = (trans.cosTheta, 0);
-//     pair denom_s = n1 * cosi + n2 * cost;
-//     pair denom_p = n2 * cosi + n1 * cost;
-
-//     res.rs = (abs(denom_s) > config.math.eps) ? (n1 * cosi - n2 * cost) / denom_s : (0, 0);
-//     res.rp = (abs(denom_p) > config.math.eps) ? (n2 * cosi - n1 * cost) / denom_p : (0, 0);
-//     res.ts = (abs(denom_s) > config.math.eps) ? (2 * n1 * cosi) / denom_s : (0, 0);
-//     res.tp = (abs(denom_p) > config.math.eps) ? (2 * n1 * cosi) / denom_p : (0, 0);
-
-//     res.Rs = abs2(res.rs);
-//     res.Rp = abs2(res.rp);
-
-//     res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
-//     res.R = isnan(reflectance) ? clamp(res.R, 0.0, 1.0) : clamp(reflectance, 0.0, 1.0);
-//     res.T = 1.0 - res.R;
-
-//     res.sync();
-//     return res;
-// }
-
 FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
     FresnelResult res;
     res.isBirefringent = false;
@@ -2221,6 +2200,110 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
         res.R = isnan(reflectance) ? clamp(res.R, 0.0, 1.0) : clamp(reflectance, 0.0, 1.0);
         res.T = 1.0 - res.R;
     }
+
+    res.sync();
+    return res;
+}
+
+FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
+    FresnelResult res;
+    res.isBirefringent = true;
+
+    // 1. Establish orthonormal interface frame
+    InterfaceFrame f = interfaceFrame(med_iso, med_o, r, h, resolve);
+    pair N = f.normal;
+    pair T = (-N.y, N.x); // Unit tangent along surface
+
+    pair incWaveNormal = unitOr(r.waveNormal, r.d);
+    real n1 = f.sourceMedium.n(h.p, incWaveNormal, r.lambda, r.pol);
+    real kt = n1 * dot(incWaveNormal, T);
+    real kn_in = abs(n1 * dot(incWaveNormal, N));
+
+    // Boundary metadata
+    res.normal = f.normal;
+    res.sourceMedium = f.sourceMedium;
+    res.n1 = n1;
+    res.cosi = f.cosi;
+
+    // Reflected wave kinematics
+    PhaseMatch reflMatch = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
+    res.reflectedDirection = reflMatch.groupDirection;
+    res.reflectedWaveNormal = reflMatch.waveNormal;
+
+    // 2. Transmitted Kinematics via material constitutive solvers
+    pair intoMed = -N; // Normal pointing into crystal
+    PhaseMatch trans_o = solvePhaseMatch(med_o, N, T, kt, intoMed, h.p, r.lambda);
+    PhaseMatch trans_e = solvePhaseMatch(med_e, N, T, kt, intoMed, h.p, r.lambda);
+
+    // Ordinary Mode channel
+    res.d_o = trans_o.groupDirection;
+    res.waveNormal_o = trans_o.waveNormal;
+    res.tir_o = trans_o.tir;
+    res.medium_o = med_o;
+
+    if (!res.tir_o) {
+        real qo = abs(trans_o.n * dot(trans_o.waveNormal, N));
+        real denom = kn_in + qo;
+        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
+        res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
+        res.Rs = abs2(res.rs);
+        // Independent Poynting energy flux:
+        res.To = (qo / max(config.math.eps, kn_in)) * abs2(res.ts);
+    } else {
+        real no = med_o.n(h.p, incWaveNormal, r.lambda, r.pol);
+        real qo2 = no * no - kt * kt;
+        real qo_im = sqrt(max(0.0, -qo2));
+        res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
+        res.ts = (0.0, 0.0);
+        res.Rs = 1.0;
+        res.To = 0.0;
+    }
+
+    // Extraordinary Mode channel (exact walk-off and boundary impedance)
+    res.d_e = trans_e.groupDirection;
+    res.waveNormal_e = trans_e.waveNormal;
+    res.tir_e = trans_e.tir;
+    res.medium_e = med_e;
+
+    if (!res.tir_e) {
+        pair we = trans_e.n * trans_e.waveNormal;
+        pair de = trans_e.groupDirection;
+
+        real dn = abs(dot(de, N));
+        real we_dot_de = abs(dot(we, de));
+
+        real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
+        real Zi = kn_in / (n1 * n1);
+
+        real denom_p = Zi + Ze;
+        res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
+        res.tp = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
+        res.Rp = abs2(res.rp);
+        // Independent Poynting energy flux:
+        res.Te = (Ze / max(config.math.eps, Zi)) * abs2(res.tp);
+    } else {
+        real ne = med_e.n(h.p, incWaveNormal, r.lambda, r.pol);
+        real sin2t = (kt / ne) ^ 2;
+
+        if (sin2t > 1.0) {
+            real k_im = sqrt(sin2t - 1.0);
+            pair cosi = (f.cosi, 0.0);
+            pair cost = (0.0, -k_im);
+            pair denom_p = ne * cosi + n1 * cost;
+
+            res.rp = (abs(denom_p) > config.math.eps) ? (ne * cosi - n1 * cost) / denom_p : (1.0, 0.0);
+        } else {
+            res.rp = (-1.0, 0.0);
+        }
+
+        res.tp = (0.0, 0.0);
+        res.Rp = abs2(res.rp);
+        res.Te = 0.0;
+    }
+
+    // Total incident-weighted reflectance
+    res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
+    res.T = 1.0 - res.R;
 
     res.sync();
     return res;
