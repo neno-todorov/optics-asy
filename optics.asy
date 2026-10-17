@@ -868,52 +868,114 @@ struct Materials {
     static Medium SILICA = medium("silica", 1.4580, 0.00354);
 }
 
-// Standalone result of Maxwell boundary solving
-struct EMInterfaceResult {
+// private
+struct FresnelResult {
+    // -------------------------------------------------------------------------
+    // Backward-Compatible Primary Fields (Used by standard lenses, mirrors, tests)
+    // -------------------------------------------------------------------------
+    pair d;
+    pair waveNormal;
+    Medium medium;
+    real T = 1.0;
+    real R = 0.0;
     bool tir = false;
+
+    // Boundary Context
     pair normal;
-    pair tangent;
-    real kt = 0.0;
-    real cosi = 0.0;
-    pair cost = (0, 0);
+    Medium sourceMedium;
+    real n1 = 1.0;
+    real n2 = 1.0;
+    real cosi = 1.0;
+    real cost = 1.0;
 
-    // Complex field reflection and transmission coefficients
-    pair rs = (0, 0), rp = (0, 0);
-    pair ts = (0, 0), tp = (0, 0);
+    // Reflection
+    pair reflectedDirection;
+    pair reflectedWaveNormal;
+    pair rs = (0, 0);
+    pair rp = (0, 0);
+    real Rs = 0.0;
+    real Rp = 0.0;
 
-    // Independent Poynting energy fluxes
-    real Rs = 0.0, Rp = 0.0;
-    real Ts = 0.0, Tp = 0.0;
+    // -------------------------------------------------------------------------
+    // Mode-Specific Fields (For Anisotropic Crystals / Birefringence)
+    // -------------------------------------------------------------------------
+    bool isBirefringent = false;
 
-    // Kinematics
-    pair k_refl = (0, 0), d_refl = (0, 0);
-    pair k_trans = (0, 0), d_trans = (0, 0);
+    // Channel 1: Ordinary / TE / S
+    pair d_o;
+    pair waveNormal_o;
+    pair ts = (0, 0); // or 'to'
+    real To = 0.0;
+    bool tir_o = false;
+    Medium medium_o;
+
+    // Channel 2: Extraordinary / TM / P
+    pair d_e;
+    pair waveNormal_e;
+    pair tp = (0, 0); // or 'te'
+    real Te = 0.0;
+    bool tir_e = false;
+    Medium medium_e;
+
+    real Ts() { return 1.0 - Rs; }
+    real Tp() { return 1.0 - Rp; }
+
+    // -------------------------------------------------------------------------
+    // Synchronizer: Call at the end of solver to guarantee all aliases match
+    // -------------------------------------------------------------------------
+    void sync() {
+        if (!this.isBirefringent) {
+            // In isotropic media: both modes share the primary path
+            this.d_o = this.d;
+            this.d_e = this.d;
+            this.waveNormal_o = this.waveNormal;
+            this.waveNormal_e = this.waveNormal;
+            this.medium_o = this.medium;
+            this.medium_e = this.medium;
+            this.To = this.Ts();
+            this.Te = this.Tp();
+            this.tir_o = this.tir;
+            this.tir_e = this.tir;
+        } else {
+            // In crystals: primary aliases default to the ordinary mode
+            this.d = this.d_o;
+            this.waveNormal = this.waveNormal_o;
+            this.medium = this.medium_o;
+            this.tir = (this.tir_o && this.tir_e);
+            // To and Te are per-mode transmittances; the total transmittance
+            // is their incident-power-weighted mean, i.e. T = 1 - R (already
+            // set by the solver).  Summing To + Te would exceed unity.
+        }
+    }
 }
 
 // Standalone Maxwell boundary condition solver for isotropic interfaces
-EMInterfaceResult solveIsotropicInterface(real n1, real n2, pair d_inc, pair N_into2, pair T_surf) {
-    EMInterfaceResult res = new EMInterfaceResult;
-    res.normal = N_into2;
-    res.tangent = T_surf;
+FresnelResult solveIsotropicInterface(real n1, real n2, pair incWaveNormal, pair N_into2, pair T_surf) {
+    FresnelResult res = new FresnelResult;
+    res.isBirefringent = false;
 
-    pair u = unit(d_inc);
+    pair u = unit(incWaveNormal);
     real cosi = clamp(dot(u, N_into2), 0.0, 1.0);
     real sini = dot(u, T_surf);
 
     real kt = n1 * sini;
     real kn1 = n1 * cosi;
-    res.kt = kt;
     res.cosi = cosi;
+    res.n1 = n1;
+    res.n2 = n2;
 
     real sin2_t = (kt / n2) ^ 2;
     res.tir = (sin2_t > 1.0);
-    res.cost = res.tir ? (0.0, -sqrt(sin2_t - 1.0)) : (sqrt(1.0 - sin2_t), 0.0);
+    res.tir = res.tir;
 
-    // Maxwell boundary matching:
+    pair cost = res.tir ? (0.0, -sqrt(sin2_t - 1.0)) : (sqrt(1.0 - sin2_t), 0.0);
+    res.cost = cost.x;
+
+    // Maxwell boundary conditions:
     pair n1_ci = (kn1, 0.0);
-    pair n2_ct = n2 * res.cost;
+    pair n2_ct = n2 * cost;
     pair n2_ci = (n2 * cosi, 0.0);
-    pair n1_ct = n1 * res.cost;
+    pair n1_ct = n1 * cost;
 
     pair denom_s = n1_ci + n2_ct;
     pair denom_p = n2_ci + n1_ct;
@@ -926,164 +988,24 @@ EMInterfaceResult solveIsotropicInterface(real n1, real n2, pair d_inc, pair N_i
     res.Rs = abs2(res.rs);
     res.Rp = abs2(res.rp);
 
-    real fluxRatio = (n2 * res.cost.x) / max(config.math.eps, kn1);
-    res.Ts = res.tir ? 0.0 : fluxRatio * abs2(res.ts);
-    res.Tp = res.tir ? 0.0 : fluxRatio * abs2(res.tp);
+    // Reflected and transmitted ray directions:
+    res.reflectedDirection = unit(sini * T_surf - cosi * N_into2);
+    res.reflectedWaveNormal = res.reflectedDirection;
 
-    res.d_refl = unit(sini * T_surf - cosi * N_into2);
-    res.k_refl = res.d_refl;
-
-    if (!res.tir) {
-        res.d_trans = unit((kt / n2) * T_surf + res.cost.x * N_into2);
-        res.k_trans = res.d_trans;
-    }
-
-    return res;
-}
-
-struct EMUniaxialResult {
-    bool tir_o = false;
-    bool tir_e = false;
-
-    // Ordinary mode (TE / s)
-    pair rs = (0, 0);
-    pair ts = (0, 0);
-    real Rs = 0.0;
-    real To = 0.0;
-    pair k_o = (0, 0);
-    pair d_o = (0, 0);
-
-    // Extraordinary mode (TM / p)
-    pair rp = (0, 0);
-    pair tp = (0, 0);
-    real Rp = 0.0;
-    real Te = 0.0;
-    pair k_e = (0, 0);
-    pair d_e = (0, 0);
-
-    // Reflected mode
-    pair k_refl = (0, 0);
-    pair d_refl = (0, 0);
-}
-
-// Standalone Maxwell boundary condition solver for anisotropic (uniaxial) interfaces
-EMUniaxialResult solveUniaxialInterface(real n1,
-                                        real no,
-                                        real ne,
-                                        pair opticAxis,
-                                        pair incWaveNormal,
-                                        pair N_into_crystal,
-                                        pair T_surf) {
-    EMUniaxialResult res = new EMUniaxialResult;
-
-    pair u = unit(incWaveNormal);
-    real cosi = clamp(dot(u, N_into_crystal), 0.0, 1.0);
-    real sini = dot(u, T_surf);
-
-    real kt = n1 * sini;
-    real kn_in = n1 * cosi;
-
-    // Reflected wave kinematics
-    pair d_refl = unit(sini * T_surf - cosi * N_into_crystal);
-    res.k_refl = d_refl;
-    res.d_refl = d_refl;
-
-    // ========================================================================
-    // 1. Ordinary Mode (TE / s-polarization: strictly scalar index no)
-    // ========================================================================
-    real qo2 = no * no - kt * kt;
-    if (qo2 >= 0.0) {
-        real qo = sqrt(qo2);
-        res.tir_o = false;
-        real denom = kn_in + qo;
-        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
-        res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
-        res.Rs = res.rs.x * res.rs.x;
-        // Independent Poynting flux ratio:
-        res.To = (qo / max(config.math.eps, kn_in)) * (res.ts.x * res.ts.x);
-
-        pair k_o = unit(kt * T_surf + qo * N_into_crystal);
-        res.k_o = k_o;
-        res.d_o = k_o;
+    if (res.tir) {
+        res.d = res.reflectedDirection;
+        res.waveNormal = res.reflectedWaveNormal;
+        res.R = 1.0;
+        res.T = 0.0;
     } else {
-        res.tir_o = true;
-        real qo_im = sqrt(-qo2);
-        // Evanescent branch cut matching engine convention
-        res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
-        res.ts = (0.0, 0.0);
-        res.Rs = 1.0;
-        res.To = 0.0;
+        res.d = unit((kt / n2) * T_surf + cost.x * N_into2);
+        res.waveNormal = res.d;
+        real R_unpol = 0.5 * (res.Rs + res.Rp);
+        res.R = R_unpol;
+        res.T = 1.0 - R_unpol;
     }
 
-    // ========================================================================
-    // 2. Extraordinary Mode (TM / p-polarization: exact impermeability tensor eta)
-    // ========================================================================
-    pair c_axis = unitOr(opticAxis);
-    pair q_axis = perp(c_axis);
-    real inv_no2 = 1.0 / (no * no);
-    real inv_ne2 = 1.0 / (ne * ne);
-
-    // eta = epsilon^(-1) components in the (T, N_into) boundary basis:
-    real eta_tt = dot(T_surf, c_axis) ^ 2 * inv_no2 + dot(T_surf, q_axis) ^ 2 * inv_ne2;
-    real eta_nn = dot(N_into_crystal, c_axis) ^ 2 * inv_no2 + dot(N_into_crystal, q_axis) ^ 2 * inv_ne2;
-    real eta_tn = (dot(T_surf, c_axis) * dot(N_into_crystal, c_axis)) * inv_no2 +
-                  (dot(T_surf, q_axis) * dot(N_into_crystal, q_axis)) * inv_ne2;
-
-    // Dispersion relation: a * kn^2 + b * kn + cc = 0
-    real a = eta_nn;
-    real b = 2.0 * kt * eta_tn;
-    real cc = kt * kt * eta_tt - 1.0;
-    real disc = b * b - 4.0 * a * cc;
-
-    real Zi = kn_in / (n1 * n1);
-
-    if (disc >= 0.0 && a > config.math.eps) {
-        // Propagating extraordinary wave
-        res.tir_e = false;
-        real root = sqrt(disc);
-        // Choose root propagating forward into the crystal:
-        real kn_candidates[] = {(-b + root) / (2.0 * a), (-b - root) / (2.0 * a)};
-        real bestForward = -infinity;
-        real kn_e = kn_candidates[0];
-
-        for (real kn : kn_candidates) {
-            pair k_vec = kt * T_surf + kn * N_into_crystal;
-            pair wNorm = unitOr(k_vec);
-            pair group = unitOr(dot(wNorm, c_axis) * c_axis * inv_no2 + dot(wNorm, q_axis) * q_axis * inv_ne2, wNorm);
-            real score = dot(group, N_into_crystal);
-            if (score > bestForward) {
-                bestForward = score;
-                kn_e = kn;
-                res.k_e = wNorm;
-                res.d_e = group;
-            }
-        }
-
-        // Exact Maxwell surface wave impedance: Ze = eta_tt * kn - eta_tn * kt
-        real Ze = eta_tt * kn_e - eta_tn * kt;
-        real denom_p = Zi + Ze;
-        res.rp = (abs(denom_p) > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
-        res.tp = (abs(denom_p) > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
-        res.Rp = res.rp.x * res.rp.x;
-        // Independent Poynting flux ratio:
-        res.Te = (Ze / max(config.math.eps, Zi)) * (res.tp.x * res.tp.x);
-    } else {
-        // Anisotropic Extraordinary TIR (Phase 4): exact complex wave impedance
-        res.tir_e = true;
-        real kn_im = sqrt(max(0.0, -disc)) / (2.0 * max(config.math.eps, a));
-        real Ze_im = eta_tt * kn_im;
-
-        // In TIR, Ze is purely imaginary (no normal Poynting flux transmitted):
-        pair Ze_c = (0.0, -Ze_im);
-        pair Zi_c = (Zi, 0.0);
-        pair denom_p = Zi_c + Ze_c;
-
-        res.rp = (abs(denom_p) > config.math.eps) ? (Zi_c - Ze_c) / denom_p : (1.0, 0.0);
-        res.tp = (0.0, 0.0);
-        res.Rp = 1.0;
-        res.Te = 0.0;
-    }
-
+    res.sync();
     return res;
 }
 
@@ -1579,87 +1501,6 @@ mediumResolver(pair, Ray, Medium, Medium, bool);
 private
 InterfaceFrame interfaceFrame(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve);
 
-// private
-struct FresnelResult {
-    // -------------------------------------------------------------------------
-    // Backward-Compatible Primary Fields (Used by standard lenses, mirrors, tests)
-    // -------------------------------------------------------------------------
-    pair d;
-    pair waveNormal;
-    Medium medium;
-    real T = 1.0;
-    real R = 0.0;
-    bool totalInternalReflection = false;
-
-    // Boundary Context
-    pair normal;
-    Medium sourceMedium;
-    real n1 = 1.0;
-    real n2 = 1.0;
-    real cosi = 1.0;
-    real cost = 1.0;
-
-    // Reflection
-    pair reflectedDirection;
-    pair reflectedWaveNormal;
-    pair rs = (0, 0);
-    pair rp = (0, 0);
-    real Rs = 0.0;
-    real Rp = 0.0;
-
-    // -------------------------------------------------------------------------
-    // Mode-Specific Fields (For Anisotropic Crystals / Birefringence)
-    // -------------------------------------------------------------------------
-    bool isBirefringent = false;
-
-    // Channel 1: Ordinary / TE / S
-    pair d_o;
-    pair waveNormal_o;
-    pair ts = (0, 0); // or 'to'
-    real To = 0.0;
-    bool tir_o = false;
-    Medium medium_o;
-
-    // Channel 2: Extraordinary / TM / P
-    pair d_e;
-    pair waveNormal_e;
-    pair tp = (0, 0); // or 'te'
-    real Te = 0.0;
-    bool tir_e = false;
-    Medium medium_e;
-
-    real Ts() { return 1.0 - Rs; }
-    real Tp() { return 1.0 - Rp; }
-
-    // -------------------------------------------------------------------------
-    // Synchronizer: Call at the end of solver to guarantee all aliases match
-    // -------------------------------------------------------------------------
-    void sync() {
-        if (!this.isBirefringent) {
-            // In isotropic media: both modes share the primary path
-            this.d_o = this.d;
-            this.d_e = this.d;
-            this.waveNormal_o = this.waveNormal;
-            this.waveNormal_e = this.waveNormal;
-            this.medium_o = this.medium;
-            this.medium_e = this.medium;
-            this.To = this.Ts();
-            this.Te = this.Tp();
-            this.tir_o = this.totalInternalReflection;
-            this.tir_e = this.totalInternalReflection;
-        } else {
-            // In crystals: primary aliases default to the ordinary mode
-            this.d = this.d_o;
-            this.waveNormal = this.waveNormal_o;
-            this.medium = this.medium_o;
-            this.totalInternalReflection = (this.tir_o && this.tir_e);
-            // To and Te are per-mode transmittances; the total transmittance
-            // is their incident-power-weighted mean, i.e. T = 1 - R (already
-            // set by the solver).  Summing To + Te would exceed unity.
-        }
-    }
-};
-
 // Incident-power-weighted reflectance for the global s/p basis.
 private
 real weightedReflectance(Polarization pol, real Rs, real Rp) {
@@ -2091,9 +1932,6 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
 // Maxwell Boundary Solver for Isotropic <-> Uniaxial Planar Interfaces
 // ============================================================================
 FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
-    FresnelResult res;
-    res.isBirefringent = false;
-
     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
     pair incWaveNormal = unitOr(r.waveNormal, r.d);
 
@@ -2104,30 +1942,11 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     real n2 = max(config.physics.minRefractiveIndex,
                   (f.targetMedium != null) ? f.targetMedium.n(h.p, incWaveNormal, r.lambda, r.pol) : 1.0);
 
-    EMInterfaceResult em = solveIsotropicInterface(n1, n2, incWaveNormal, N_into2, T_surf);
+    FresnelResult res = solveIsotropicInterface(n1, n2, incWaveNormal, N_into2, T_surf);
 
     res.normal = f.normal;
     res.sourceMedium = f.sourceMedium;
-    res.n1 = n1;
-    res.n2 = n2;
-    res.cosi = f.cosi;
-    res.cost = em.cost.x;
-    res.totalInternalReflection = em.tir;
-
-    res.rs = em.rs;
-    res.rp = em.rp;
-    res.ts = em.ts;
-    res.tp = em.tp;
-    res.Rs = em.Rs;
-    res.Rp = em.Rp;
-
-    res.reflectedWaveNormal = em.k_refl;
-    res.reflectedDirection = em.d_refl;
-
-    // Compact mode assignment
-    res.d = em.tir ? em.d_refl : em.d_trans;
-    res.waveNormal = em.tir ? em.k_refl : em.k_trans;
-    res.medium = em.tir ? f.sourceMedium : f.targetMedium;
+    res.medium = res.tir ? f.sourceMedium : f.targetMedium;
 
     res.R = isnan(reflectance) ? weightedReflectance(r.pol, res.Rs, res.Rp) : clamp(reflectance, 0.0, 1.0);
     res.T = 1.0 - res.R;
@@ -2140,7 +1959,6 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     FresnelResult res;
     res.isBirefringent = true;
 
-    // 1. Establish orthonormal interface frame
     InterfaceFrame f = interfaceFrame(med_iso, med_o, r, h, resolve);
     pair N = f.normal;
     pair T = (-N.y, N.x);
@@ -2155,7 +1973,7 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     res.n1 = n1;
     res.cosi = f.cosi;
 
-    // Reflected wave kinematics
+    // Reflected kinematics
     PhaseMatch reflMatch = solvePhaseMatch(f.sourceMedium, N, T, kt, N, h.p, r.lambda);
     res.reflectedDirection = reflMatch.groupDirection;
     res.reflectedWaveNormal = reflMatch.waveNormal;
@@ -2172,9 +1990,8 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
 
     if (!res.tir_o) {
         real qo = abs(trans_o.n * dot(trans_o.waveNormal, N));
-        real denom = kn_in + qo;
-        res.rs = (denom > config.math.eps) ? ((kn_in - qo) / denom, 0.0) : (-1.0, 0.0);
-        res.ts = (denom > config.math.eps) ? ((2.0 * kn_in) / denom, 0.0) : (0.0, 0.0);
+        res.rs = ((kn_in - qo) / (kn_in + qo), 0.0);
+        res.ts = ((2.0 * kn_in) / (kn_in + qo), 0.0);
         res.Rs = abs2(res.rs);
         res.To = 1.0 - res.Rs;
     } else {
@@ -2193,12 +2010,8 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     res.medium_e = med_e;
 
     if (!res.tir_e) {
-        pair we = trans_e.n * trans_e.waveNormal;
-        pair de = trans_e.groupDirection;
-        real dn = abs(dot(de, N));
-        real we_dot_de = abs(dot(we, de));
-
-        // Exact surface wave impedance from field vectors:
+        real dn = abs(dot(trans_e.groupDirection, N));
+        real we_dot_de = abs(dot(trans_e.n * trans_e.waveNormal, trans_e.groupDirection));
         real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
         real Zi = kn_in / (n1 * n1);
 
@@ -4479,7 +4292,7 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
         Ray[] rays;
 
         // 1. Transmitted Ray
-        if (!res.totalInternalReflection && r.intensity() * res.T > config.physics.minIntensity) {
+        if (!res.tir && r.intensity() * res.T > config.physics.minIntensity) {
             real intensity = r.intensity() * res.T;
             Ray transRay = spawnRay(r, h, res.d, intensity, res.medium, 0, res.waveNormal);
 
@@ -4498,7 +4311,7 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
 
         // 2. Reflected Ray (handles TIR and specular reflection)
         if (r.intensity() * res.R > config.physics.minIntensity &&
-            (res.totalInternalReflection || config.physics.traceReflections || config.rendering.drawReflections)) {
+            (res.tir || config.physics.traceReflections || config.rendering.drawReflections)) {
             real intensity = r.intensity() * res.R;
             real reflPhase = atan2(res.rs.y, res.rs.x); // pi for external reflection (n1 < n2)
             Ray reflRay =
@@ -4591,7 +4404,7 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
             Medium srcMed = (r.medium != null) ? r.medium : med_o;
             FresnelResult res = fresnelIsotropic(srcMed, ambient, r, h, resolve, nan);
 
-            if (!res.totalInternalReflection) {
+            if (!res.tir) {
                 real I_trans = r.intensity() * res.T;
                 if (I_trans > config.physics.minIntensity) {
                     Ray transRay = spawnRay(r, h, res.d, I_trans, res.medium, 0, res.waveNormal);
@@ -4602,7 +4415,7 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
             }
 
             // Internal reflection (e.g. TIR of ordinary ray in Nicol prism)
-            if (config.physics.traceReflections || config.rendering.drawReflections || res.totalInternalReflection) {
+            if (config.physics.traceReflections || config.rendering.drawReflections || res.tir) {
                 real I_refl = r.intensity() * res.R;
                 if (I_refl > config.physics.minIntensity) {
                     Ray reflRay =
