@@ -2744,6 +2744,191 @@ assert_near("Total crystal entrance energy conserved (I_o + I_e + I_refl == 1.0)
             1e-7);
 write("");
 
+// ============================================================================
+// Test Case 102: Round-Trip Jones/Stokes Representation & Physicality
+// ============================================================================
+write("Test Case 102: Round-Trip Jones/Stokes Representation & Physicality");
+
+// 1. Pure S-polarization: Es = (2, 0), Ep = (0, 0)
+Polarization pol_s = Polarization.jones((2.0, 0.0), (0.0, 0.0));
+assert_bool("Pure S state is physical", pol_s.isPhysical(), true);
+assert_bool("Pure S state is pure", pol_s.isPure(), true);
+assert_near("Pure S state S0 == 4.0", pol_s.S0, 4.0, 1e-9);
+assert_near("Pure S state S1 == 4.0", pol_s.S1, 4.0, 1e-9);
+assert_near("Pure S state S2 == 0.0", pol_s.S2, 0.0, 1e-9);
+assert_near("Pure S state S3 == 0.0", pol_s.S3, 0.0, 1e-9);
+pair[] J_s = pol_s.toJones();
+assert_true("Pure S toJones has 2 components", J_s.length == 2);
+assert_near("Pure S toJones Es.x == 2.0", J_s[0].x, 2.0, 1e-9);
+assert_near("Pure S toJones Es.y == 0.0", J_s[0].y, 0.0, 1e-9);
+assert_near("Pure S toJones Ep.x == 0.0", J_s[1].x, 0.0, 1e-9);
+assert_near("Pure S toJones Ep.y == 0.0", J_s[1].y, 0.0, 1e-9);
+
+// 2. Pure P-polarization: Es = (0, 0), Ep = (3, 0)
+Polarization pol_p = Polarization.jones((0.0, 0.0), (3.0, 0.0));
+assert_bool("Pure P state is physical", pol_p.isPhysical(), true);
+assert_bool("Pure P state is pure", pol_p.isPure(), true);
+assert_near("Pure P state S0 == 9.0", pol_p.S0, 9.0, 1e-9);
+assert_near("Pure P state S1 == -9.0", pol_p.S1, -9.0, 1e-9);
+pair[] J_p = pol_p.toJones();
+assert_true("Pure P toJones has 2 components", J_p.length == 2);
+assert_near("Pure P toJones Es.x == 0.0", J_p[0].x, 0.0, 1e-9);
+assert_near("Pure P toJones Es.y == 0.0", J_p[0].y, 0.0, 1e-9);
+assert_near("Pure P toJones Ep.x == 3.0", J_p[1].x, 3.0, 1e-9);
+assert_near("Pure P toJones Ep.y == 0.0", J_p[1].y, 0.0, 1e-9);
+
+// 3. Circular RCP: Es = (1, 0), Ep = (0, 1)
+Polarization pol_rcp = Polarization.jones((1.0, 0.0), (0.0, 1.0));
+assert_near("RCP S0 == 2.0", pol_rcp.S0, 2.0, 1e-9);
+assert_near("RCP S1 == 0.0", pol_rcp.S1, 0.0, 1e-9);
+assert_near("RCP S2 == 0.0", pol_rcp.S2, 0.0, 1e-9);
+assert_near("RCP S3 == 2.0", pol_rcp.S3, 2.0, 1e-9);
+pair[] J_rcp = pol_rcp.toJones();
+assert_true("RCP toJones has 2 components", J_rcp.length == 2);
+assert_near("RCP toJones Es.x == 1.0", J_rcp[0].x, 1.0, 1e-9);
+assert_near("RCP toJones Es.y == 0.0", J_rcp[0].y, 0.0, 1e-9);
+assert_near("RCP toJones Ep.x == 0.0", J_rcp[1].x, 0.0, 1e-9);
+assert_near("RCP toJones Ep.y == 1.0", J_rcp[1].y, 1.0, 1e-9);
+
+// 4. Circular LCP: Es = (1, 0), Ep = (0, -1)
+Polarization pol_lcp = Polarization.jones((1.0, 0.0), (0.0, -1.0));
+assert_near("LCP S3 == -2.0", pol_lcp.S3, -2.0, 1e-9);
+pair[] J_lcp = pol_lcp.toJones();
+assert_near("LCP toJones Ep.y == -1.0", J_lcp[1].y, -1.0, 1e-9);
+
+// 5. Linear +45 deg: Es = (1, 0), Ep = (1, 0)
+Polarization pol_45 = Polarization.jones((1.0, 0.0), (1.0, 0.0));
+assert_near("Linear 45 S2 == 2.0", pol_45.S2, 2.0, 1e-9);
+pair[] J_45 = pol_45.toJones();
+assert_near("Linear 45 toJones Ep.x == 1.0", J_45[1].x, 1.0, 1e-9);
+
+// 6. Unpolarized rejection
+Polarization pol_unpol = Polarization.unpolarized(1.0);
+assert_bool("Unpolarized is not pure", pol_unpol.isPure(), false);
+pair[] J_unpol = pol_unpol.toJones();
+assert_true("Unpolarized toJones is empty", J_unpol.length == 0);
+
+// 7. Unphysical rejection
+Polarization pol_unphys = Polarization.stokes(1.0, 2.0, 0.0, 0.0);
+assert_bool("Unphysical state isPhysical is false", pol_unphys.isPhysical(), false);
+assert_bool("Unphysical state isPure is false", pol_unphys.isPure(), false);
+pair[] J_unphys = pol_unphys.toJones();
+assert_true("Unphysical toJones is empty", J_unphys.length == 0);
+write("");
+
+// ============================================================================
+// Test Case 103: Young 2-Slit & 3-Slit Coherent Superposition
+// ============================================================================
+write("Test Case 103: Young 2-Slit & 3-Slit Coherent Superposition");
+
+// 2-slit interference: two equal amplitude pure S rays (I0 = 1.0 each)
+Ray y_r1 = Ray(p = (0, 1), d = (1, 0), pol = Polarization.linear(0), phase = 0, coherenceId = 1);
+Ray y_r2_inphase = Ray(p = (0, -1), d = (1, 0), pol = Polarization.linear(0), phase = 0, coherenceId = 1);
+Ray y_r2_outphase = Ray(p = (0, -1), d = (1, 0), pol = Polarization.linear(0), phase = pi, coherenceId = 1);
+Ray y_r2_quad = Ray(p = (0, -1), d = (1, 0), pol = Polarization.linear(0), phase = 0.5 * pi, coherenceId = 1);
+
+assert_near("2-slit constructive peak (I == 4*I0)", interfere(y_r1, y_r2_inphase), 4.0, 1e-9);
+assert_near("2-slit destructive minimum (I == 0.0)", interfere(y_r1, y_r2_outphase), 0.0, 1e-9);
+assert_near("2-slit quadrature (I == 2*I0)", interfere(y_r1, y_r2_quad), 2.0, 1e-9);
+
+// 3-slit interference: three equal amplitude pure S rays
+Ray y_r3_inphase = Ray(p = (0, 0), d = (1, 0), pol = Polarization.linear(0), phase = 0, coherenceId = 1);
+assert_near("3-slit principal maximum (I == 9*I0)", interfere(new Ray[]{y_r1, y_r3_inphase, y_r2_inphase}), 9.0, 1e-9);
+
+// 3-slit minimum: phases 0, 2*pi/3, 4*pi/3 (phasor sum = 0)
+Ray y3_a = Ray(p = (0, 0), d = (1, 0), pol = Polarization.linear(0), phase = 0, coherenceId = 1);
+Ray y3_b = Ray(p = (0, 0), d = (1, 0), pol = Polarization.linear(0), phase = 2.0 * pi / 3.0, coherenceId = 1);
+Ray y3_c = Ray(p = (0, 0), d = (1, 0), pol = Polarization.linear(0), phase = 4.0 * pi / 3.0, coherenceId = 1);
+assert_near("3-slit first minimum (I == 0.0)", interfere(new Ray[]{y3_a, y3_b, y3_c}), 0.0, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 104: Mach–Zehnder Arm Delay & Phase Modulation
+// ============================================================================
+write("Test Case 104: Mach–Zehnder Arm Delay & Phase Modulation");
+
+real lambda_test = 500.0; // nm
+// 50:50 input splitter + 50:50 recombination -> 0.25 power in each interfering beam
+Ray arm1 = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherenceId = 10);
+arm1.pol.scaleTo(0.25);
+arm1.opl = 100.0;
+
+Ray arm2_0 = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherenceId = 10);
+arm2_0.pol.scaleTo(0.25);
+arm2_0.opl = 100.0; // Delta L = 0
+
+// Constructive interference at Delta L = 0 -> full input power 1.0
+assert_near("Mach-Zehnder zero-delay full transmission (I == 1.0)", interfere(arm1, arm2_0), 1.0, 1e-9);
+
+// Destructive interference at Delta L = lambda / 2
+real half_lambda_mm = wavelengthInUnits(lambda_test) / 2.0;
+Ray arm2_pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherenceId = 10);
+arm2_pi.pol.scaleTo(0.25);
+arm2_pi.opl = 100.0 + half_lambda_mm;
+assert_near("Mach-Zehnder half-wave delay extinction (I == 0.0)", interfere(arm1, arm2_pi), 0.0, 1e-9);
+
+// Constructive interference at Delta L = lambda
+real full_lambda_mm = wavelengthInUnits(lambda_test);
+Ray arm2_2pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherenceId = 10);
+arm2_2pi.pol.scaleTo(0.25);
+arm2_2pi.opl = 100.0 + full_lambda_mm;
+assert_near("Mach-Zehnder full-wave delay transmission (I == 1.0)", interfere(arm1, arm2_2pi), 1.0, 1e-9);
+
+// Quadrature interference at Delta L = lambda / 4
+real quarter_lambda_mm = wavelengthInUnits(lambda_test) / 4.0;
+Ray arm2_half_pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherenceId = 10);
+arm2_half_pi.pol.scaleTo(0.25);
+arm2_half_pi.opl = 100.0 + quarter_lambda_mm;
+assert_near("Mach-Zehnder quarter-wave delay 50% transmission (I == 0.5)", interfere(arm1, arm2_half_pi), 0.5, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 105: Fresnel–Arago Interference Laws
+// ============================================================================
+write("Test Case 105: Fresnel–Arago Interference Laws");
+
+// Orthogonal polarizations (S vs P) from same coherent source
+Ray fa_s = Ray((0, 0), (1, 0), pol = Polarization.linear(0), coherenceId = 42);  // Pure S (Es=1, Ep=0)
+Ray fa_p = Ray((0, 0), (1, 0), pol = Polarization.linear(90), coherenceId = 42); // Pure P (Es=0, Ep=1)
+
+// Fresnel-Arago 1st Law: Orthogonal states do not modulate irradiance
+assert_near("Fresnel-Arago: zero phase shift irradiance (I == 2.0)", interfere(fa_s, fa_p), 2.0, 1e-9);
+
+Ray fa_p_quad = copy(fa_p);
+fa_p_quad.phase = 0.5 * pi;
+assert_near("Fresnel-Arago: quarter-wave phase shift irradiance (I == 2.0)", interfere(fa_s, fa_p_quad), 2.0, 1e-9);
+
+Ray fa_p_out = copy(fa_p);
+fa_p_out.phase = pi;
+assert_near("Fresnel-Arago: half-wave phase shift irradiance (I == 2.0)", interfere(fa_s, fa_p_out), 2.0, 1e-9);
+
+// Resulting polarization states:
+// At Delta phi = 0: E_s + E_p = Linear +45 deg (S2 = 2.0, S3 = 0)
+Polarization state_0 = interfereState(fa_s, fa_p);
+assert_near("Fresnel-Arago 0 deg state S2 == 2.0", state_0.S2, 2.0, 1e-9);
+assert_near("Fresnel-Arago 0 deg state S3 == 0.0", state_0.S3, 0.0, 1e-9);
+
+// At Delta phi = pi/2: E_s + i*E_p = Circular RCP (S2 = 0, S3 = 2.0)
+Polarization state_quad = interfereState(fa_s, fa_p_quad);
+assert_near("Fresnel-Arago 90 deg state S2 == 0.0", state_quad.S2, 0.0, 1e-9);
+assert_near("Fresnel-Arago 90 deg state S3 == 2.0", state_quad.S3, 2.0, 1e-9);
+
+// At Delta phi = pi: E_s - E_p = Linear -45 deg (S2 = -2.0, S3 = 0)
+Polarization state_pi = interfereState(fa_s, fa_p_out);
+assert_near("Fresnel-Arago 180 deg state S2 == -2.0", state_pi.S2, -2.0, 1e-9);
+assert_near("Fresnel-Arago 180 deg state S3 == 0.0", state_pi.S3, 0.0, 1e-9);
+
+// Incoherent fallback: different coherence IDs
+Ray incoh_r1 = Ray((0, 0), (1, 0), pol = Polarization.linear(0), coherenceId = 100);
+Ray incoh_r2 = Ray((0, 0), (1, 0), pol = Polarization.linear(0), coherenceId = 200);
+assert_near("Incoherent sources do not interfere (I == 2.0)", interfere(incoh_r1, incoh_r2), 2.0, 1e-9);
+
+// Incoherent fallback: different wavelengths
+Ray diff_lam1 = Ray((0, 0), (1, 0), lambda = 500.0, pol = Polarization.linear(0), coherenceId = 100);
+Ray diff_lam2 = Ray((0, 0), (1, 0), lambda = 600.0, pol = Polarization.linear(0), coherenceId = 100);
+assert_near("Different wavelengths do not interfere (I == 2.0)", interfere(diff_lam1, diff_lam2), 2.0, 1e-9);
+write("");
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
