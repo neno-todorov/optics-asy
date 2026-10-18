@@ -252,6 +252,51 @@ struct Polarization {
         return clamp(sqrt(S1 * S1 + S2 * S2 + S3 * S3) / S0, 0.0, 1.0);
     }
 
+    // Physicality check: S0 >= 0 and S0^2 >= S1^2 + S2^2 + S3^2
+    bool isPhysical(real tol = config.math.eps) {
+        if (S0 < -tol) return false;
+        real p2 = S1 * S1 + S2 * S2 + S3 * S3;
+        real max_s0 = S0 * (1.0 + tol);
+        return p2 <= max_s0 * max_s0 + tol;
+    }
+
+    // Purity check based on Degree of Polarization (DOP)
+    bool isPure(real tol = config.math.eps) {
+        if (S0 <= config.math.eps) return false;
+        if (!isPhysical(tol)) return false;
+        return dop() >= 1.0 - tol;
+    }
+
+    // On-demand Jones vector extraction: returns [Es, Ep] (or empty array if not pure)
+    pair[] toJones(real tol = config.math.eps) {
+        if (!isPure(tol)) return new pair[]{};
+
+        real s_pow = 0.5 * (S0 + S1);
+        real p_pow = 0.5 * (S0 - S1);
+        real Es_mag = (s_pow > config.math.eps) ? sqrt(s_pow) : 0.0;
+        real Ep_mag = (p_pow > config.math.eps) ? sqrt(p_pow) : 0.0;
+
+        pair Es;
+        pair Ep;
+
+        if (Es_mag <= config.math.eps) {
+            // Pure P-polarized mode: Es is 0, Ep carries all amplitude
+            Es = (0.0, 0.0);
+            Ep = (Ep_mag, 0.0);
+        } else if (Ep_mag <= config.math.eps) {
+            // Pure S-polarized mode: Ep is 0, Es carries all amplitude
+            Es = (Es_mag, 0.0);
+            Ep = (0.0, 0.0);
+        } else {
+            // Both components nonzero: Es is real and positive, Ep carries relative phase
+            real delta = atan2(S3, S2);
+            Es = (Es_mag, 0.0);
+            Ep = (Ep_mag * cos(delta), Ep_mag * sin(delta));
+        }
+
+        return new pair[]{ Es, Ep };
+    }
+
     // Azimuth / tilt of the major axis: [-pi/2, pi/2]
     real psi() { return 0.5 * atan2(S2, S1); }
 
@@ -402,7 +447,26 @@ struct Polarization {
         p.S3 = s3;
         return p;
     }
+
+    // Factory constructor from complex Jones amplitudes (parallel to .stokes())
+    static Polarization jones(pair Es, pair Ep) {
+        Polarization pol = new Polarization;
+        real Is = abs2(Es);
+        real Ip = abs2(Ep);
+        pair cross = 2.0 * conj(Es) * Ep;
+
+        pol.S0 = Is + Ip;
+        pol.S1 = Is - Ip;
+        pol.S2 = cross.x;
+        pol.S3 = cross.y;
+        return pol;
+    }
 };
+
+pair[] toJones(Polarization pol, real tol = config.math.eps) {
+    if (pol == null) return new pair[]{};
+    return pol.toJones(tol);
+}
 
 // ============================================================================
 // Standalone Functions & Operators
@@ -1044,6 +1108,7 @@ struct Ray {
     real opl;
     real phase;
     Medium medium;
+    int coherenceId = 0;
     bool alive = true;
     bool terminated = false;
     int[] ignoredFlatIndices = new int[];
@@ -1068,7 +1133,8 @@ struct Ray {
                        Medium medium = null,
                        real lambda = config.physics.lambda,
                        Polarization pol = Polarization.unpolarized(),
-                       real phase = 0) {
+                       real phase = 0,
+                       int coherenceId = 0) {
         this.id = -1;
         this.parentId = -1;
         this.generation = 0;
@@ -1080,6 +1146,7 @@ struct Ray {
         this.medium = medium;
         this.lambda = lambda;
         this.phase = phase;
+        this.coherenceId = coherenceId;
         // Directly assign the incoming polarization state
         this.pol = copy(pol);
         this.opl = 0;
@@ -1095,16 +1162,18 @@ struct Ray {
                      Medium medium = null,
                      real lambda = config.physics.lambda,
                      Polarization pol = Polarization.unpolarized(),
-                     real phase = 0) {
-        return Ray(p, dir(angle), medium, lambda, pol, phase);
+                     real phase = 0,
+                     int coherenceId = 0) {
+        return Ray(p, dir(angle), medium, lambda, pol, phase, coherenceId);
     }
     static Ray between(pair a,
                        pair b,
                        Medium medium = null,
                        real lambda = config.physics.lambda,
                        Polarization pol = Polarization.unpolarized(),
-                       real phase = 0) {
-        return Ray(a, b - a, medium, lambda, pol, phase);
+                       real phase = 0,
+                       int coherenceId = 0) {
+        return Ray(a, b - a, medium, lambda, pol, phase, coherenceId);
     }
     static Ray toPoint(pair target,
                        pair d,
@@ -1112,9 +1181,10 @@ struct Ray {
                        Medium medium = null,
                        real lambda = config.physics.lambda,
                        Polarization pol = Polarization.unpolarized(),
-                       real phase = 0) {
+                       real phase = 0,
+                       int coherenceId = 0) {
         pair dHat = unitOr(d);
-        return Ray(target - distance * dHat, dHat, medium, lambda, pol, phase);
+        return Ray(target - distance * dHat, dHat, medium, lambda, pol, phase, coherenceId);
     }
     static Ray toPoint(pair target,
                        real angle,
@@ -1122,8 +1192,9 @@ struct Ray {
                        Medium medium = null,
                        real lambda = config.physics.lambda,
                        Polarization pol = Polarization.unpolarized(),
-                       real phase = 0) {
-        return toPoint(target, dir(angle), distance, medium, lambda, pol, phase);
+                       real phase = 0,
+                       int coherenceId = 0) {
+        return toPoint(target, dir(angle), distance, medium, lambda, pol, phase, coherenceId);
     }
     // Added Phase Methods
     real totalPhase() {
@@ -1175,6 +1246,7 @@ Ray copy(Ray src) {
     r.phase = src.phase;
     r.opl = src.opl;
     r.pol = copy(src.pol);
+    r.coherenceId = src.coherenceId;
     r.alive = src.alive;
     r.terminated = src.terminated;
     r.ignoredFlatIndices = copy(src.ignoredFlatIndices);
@@ -1195,6 +1267,23 @@ Ray reverse(Ray r, real distance = 0) {
     out.d = -r.d;
     out.waveNormal = -r.waveNormal;
     return out;
+}
+
+// Advances ray geometrically along its direction by dist, accumulating OPL
+Ray propagate(Ray r, real dist) {
+    if (r == null) return null;
+    Ray out = copy(r);
+    real n_eff = rayIndex(r.medium, r.p, r.waveNormal, r.d, r.lambda, r.pol);
+    out.p = r.p + dist * r.d;
+    out.opl = r.opl + dist * n_eff;
+    return out;
+}
+
+// Advances ray geometrically to a target point, accumulating OPL
+Ray propagateTo(Ray r, pair target) {
+    if (r == null) return null;
+    real dist = length(target - r.p);
+    return propagate(r, dist);
 }
 
 Ray spawnRay(Ray src,
@@ -1228,6 +1317,69 @@ Ray spawnRay(Ray src,
     out.hit = null;
     out.trajectory = nullpath;
     return out;
+}
+
+// ============================================================================
+// Multi-Ray Coherent / Incoherent Interference
+// ============================================================================
+
+// Returns combined polarization state from interference at a detector point
+Polarization interfereState(Ray[] rays) {
+    if (rays.length == 0) return Polarization.unpolarized(0.0);
+    if (rays.length == 1) return copy(rays[0].pol);
+
+    int ref_coh = rays[0].coherenceId;
+    real ref_lambda = rays[0].lambda;
+    bool allCoherent = true;
+
+    for (Ray r : rays) {
+        if (r == null || r.pol == null || !r.pol.isPure() || r.coherenceId != ref_coh || abs(r.lambda - ref_lambda) > config.math.eps) {
+            allCoherent = false;
+            break;
+        }
+    }
+
+    if (!allCoherent) {
+        real s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+        for (Ray r : rays) {
+            if (r != null && r.pol != null) {
+                s0 += r.pol.S0;
+                s1 += r.pol.S1;
+                s2 += r.pol.S2;
+                s3 += r.pol.S3;
+            }
+        }
+        return Polarization.stokes(s0, s1, s2, s3);
+    }
+
+    pair Es_tot = (0.0, 0.0);
+    pair Ep_tot = (0.0, 0.0);
+
+    for (Ray r : rays) {
+        pair[] J = r.pol.toJones();
+        real phi = r.totalPhase();
+        pair phasor = (cos(phi), sin(phi));
+        Es_tot += J[0] * phasor;
+        Ep_tot += J[1] * phasor;
+    }
+
+    return Polarization.jones(Es_tot, Ep_tot);
+}
+
+// Computes detected irradiance from any number of rays meeting at a screen/detector point
+real interfere(Ray[] rays) {
+    if (rays.length == 0) return 0.0;
+    if (rays.length == 1) return rays[0].intensity();
+    return interfereState(rays).intensity();
+}
+
+// Varargs overloads allowing arbitrary positional rays: interfere(r1, r2, ...), interfereState(r1, r2, ...)
+real interfere(... Ray[] rays) {
+    return interfere(rays);
+}
+
+Polarization interfereState(... Ray[] rays) {
+    return interfereState(rays);
 }
 
 // Pluggable ODE Integrator Engine
