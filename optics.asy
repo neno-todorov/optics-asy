@@ -294,7 +294,7 @@ struct Polarization {
             Ep = (Ep_mag * cos(delta), Ep_mag * sin(delta));
         }
 
-        return new pair[]{ Es, Ep };
+        return new pair[]{Es, Ep};
     }
 
     // Azimuth / tilt of the major axis: [-pi/2, pi/2]
@@ -1333,7 +1333,8 @@ Polarization interfereState(Ray[] rays) {
     bool allCoherent = true;
 
     for (Ray r : rays) {
-        if (r == null || r.pol == null || !r.pol.isPure() || r.coherenceId != ref_coh || abs(r.lambda - ref_lambda) > config.math.eps) {
+        if (r == null || r.pol == null || !r.pol.isPure() || r.coherenceId != ref_coh ||
+            abs(r.lambda - ref_lambda) > config.math.eps) {
             allCoherent = false;
             break;
         }
@@ -1374,13 +1375,9 @@ real interfere(Ray[] rays) {
 }
 
 // Varargs overloads allowing arbitrary positional rays: interfere(r1, r2, ...), interfereState(r1, r2, ...)
-real interfere(... Ray[] rays) {
-    return interfere(rays);
-}
+real interfere( ... Ray[] rays) { return interfere(rays); }
 
-Polarization interfereState(... Ray[] rays) {
-    return interfereState(rays);
-}
+Polarization interfereState( ... Ray[] rays) { return interfereState(rays); }
 
 // Pluggable ODE Integrator Engine
 private
