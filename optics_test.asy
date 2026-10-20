@@ -269,19 +269,19 @@ write("");
 // Test Case 8: Diffraction Grating Spectral Order Angle
 // ============================================================================
 write("Test Case 8: Diffraction Grating Spectral Order Angle");
-real lines_per_mm = 600.0;
-real lambda_nm = 500.0;
-real lambda_um = lambda_nm / 1000.0;
-real d_grating_um = 1000.0 / lines_per_mm;
+real linesPerMm = 600.0;
+real lambda = 500.0;
+real lambdaUnits = lambda / 1000.0;
+real d_grating_um = 1000.0 / linesPerMm;
 int m_order = 1;
-Element testGrating = Grating(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, lines_per_mm = lines_per_mm);
+Element testGrating = Grating(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, linesPerMm = linesPerMm);
 OpticalSystem gratingSys = system(testGrating, Materials.VACUUM);
 
-Ray ray_grating = Ray(p = (0.0, -1.0), d = (0.0, 1.0), medium = Materials.VACUUM, lambda = lambda_nm);
+Ray ray_grating = Ray(p = (0.0, -1.0), d = (0.0, 1.0), medium = Materials.VACUUM, lambda = lambda);
 Trace t_grating = gratingSys.trace(ray_grating);
 Ray diff_ray = t_grating.transmitted(0);
 
-real sin_theta_diff = (m_order * lambda_um) / d_grating_um;
+real sin_theta_diff = (m_order * lambdaUnits) / d_grating_um;
 real expected_diff_angle = degrees(asin(sin_theta_diff));
 pair expected_diff_dir = (sin_theta_diff, sqrt(1.0 - sin_theta_diff ^ 2));
 
@@ -704,7 +704,7 @@ real[] diff_efficiencies = {0.25, 0.50, 0.25};
 Element triGrating = Grating(center = (0.0, 0.0),
                              diameter = 20.0,
                              angle = 90.0,
-                             lines_per_mm = 300.0,
+                             linesPerMm = 300.0,
                              orders = diff_orders,
                              efficiencies = diff_efficiencies);
 OpticalSystem triSys = system(triGrating, Materials.VACUUM);
@@ -1493,10 +1493,10 @@ write("");
 // Test Case 53: Dichroic Medium Propagation & Mueller Theory
 // ============================================================================
 write("Test Case 53: Dichroic Medium Propagation & Mueller Theory");
-real alpha_s_val = 0.0;
-real alpha_p_val = 1.0;
+real alphaSVal = 0.0;
+real alphaPVal = 1.0;
 real prop_dist = 2.0;
-Medium dichroicFilter = medium("DichroicFilter").add(Dichroic(alpha_s_val, alpha_p_val));
+Medium dichroicFilter = medium("DichroicFilter").add(Dichroic(alphaSVal, alphaPVal));
 Polarization syncInput = Polarization.linear(45.0, 1.0);
 Polarization syncOutput = dichroicFilter.stepPolarization(syncInput, (0, 0), (1, 0), 633.0, prop_dist);
 
@@ -1519,8 +1519,8 @@ assert_relative("Unpolarized-path S0 agrees with intensity",
                 1e-5,
                 1e-7);
 
-real Ts = exp(-alpha_s_val * prop_dist);
-real Tp = exp(-alpha_p_val * prop_dist);
+real Ts = exp(-alphaSVal * prop_dist);
+real Tp = exp(-alphaPVal * prop_dist);
 
 assert_relative("Diattenuator S0 matches Mueller prediction",
                 syncUnpolOutput.S0,
@@ -1745,7 +1745,7 @@ write("");
 // Test Case 62: General Elliptical Polarization (Poincaré vs Semi-Axes)
 // ============================================================================
 write("Test Case 62: General Elliptical Polarization (Poincaré vs Semi-Axes)");
-Polarization el1 = Polarization.elliptical(a = 1.0, b = 0.5, phase_deg = 90.0, theta_deg = 0.0);
+Polarization el1 = Polarization.elliptical(a = 1.0, b = 0.5, phase = 90.0, theta = 0.0);
 
 assert_stokes_physical("Elliptical state 1", el1);
 assert_near("Elliptical S0", el1.S0, 1.25, 1e-5);
@@ -1754,7 +1754,7 @@ assert_near("Elliptical S2", el1.S2, 0.0, 1e-5);
 assert_near("Elliptical S3", el1.S3, 1.0, 1e-5);
 assert_near("Elliptical DOP", el1.dop(), 1.0, 1e-5);
 
-Polarization el2 = Polarization.fromAngles(psi_deg = 45.0, chi_deg = 20.0, intensity = 1.0);
+Polarization el2 = Polarization.fromAngles(psi = 45.0, chi = 20.0, intensity = 1.0);
 
 assert_stokes_physical("Elliptical state 2", el2);
 assert_near("Poincare S1", el2.S1, 0.0, 1e-4);
@@ -1882,9 +1882,9 @@ write("");
 write("Test Case 65: Anisotropic Maxwell Boundary Solver - Energy Conservation");
 // Calcite: no = 1.658, ne = 1.486
 real no_cal = 1.658, ne_cal = 1.486;
-pair c_axis = unit((1.0, 1.0)); // 45 deg tilted optic axis
+pair opticAxis = unit((1.0, 1.0)); // 45 deg tilted optic axis
 Medium calcite_o = medium("Calcite_O", no_cal);
-Medium calcite_e = uniaxialExtraordinary("Calcite_E", no_cal, ne_cal, c_axis);
+Medium calcite_e = uniaxialExtraordinary("Calcite_E", no_cal, ne_cal, opticAxis);
 
 Element crystal = Crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e, Materials.VACUUM);
 OpticalSystem sys_energy = system(crystal, Materials.VACUUM);
