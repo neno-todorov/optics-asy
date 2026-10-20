@@ -6399,6 +6399,177 @@ Inset PolarizationInset(Trace tr,
 // ============================================================================
 // Scaled InterferenceInset Factory (Type Inset, using interfere/interfereState)
 // ============================================================================
+// Inset InterferenceInset(Ray[] sources,
+//                         pair screenCenter = (0, 0),
+//                         pair screenAxis = (0, 1),
+//                         real span = nan,
+//                         real lambdaScale = 1.0,
+//                         real visualLambda = nan,
+//                         int periods = 5,
+//                         int samples = 300,
+//                         pair pos = (nan, nan),
+//                         pair target = (nan, nan),
+//                         real size = 28.0,
+//                         string title = "Screen Interference",
+//                         string tag = "",
+//                         pen laserPen = Red(1.0),
+//                         pen border = rgb(0.0, 0.2, 0.6),
+//                         pen fill = white,
+//                         pen badgeText = white) {
+//     Inset ins;
+//     ins.pos = pos;
+//     ins.target = target;
+//     ins.size = size;
+//     ins.title = title;
+//     ins.tag = tag;
+//     ins.border = border;
+//     ins.fill = fill;
+//     ins.badgeText = badgeText;
+
+//     real r = size;
+//     real w = r * 1.5;
+//     real h = r;
+
+//     // Header Title
+//     if (title != "") {
+//         label(ins.pic, Label("\bfseries{\strut\tiny " + title + "}"), (0, h * 0.85 + 2), N);
+//     }
+
+//     real originX = -w * 0.85;
+//     real plotW = w * 0.65;
+//     real plotTopY = h * 0.75;
+//     real plotBotY = -h * 0.75;
+
+//     real stripX = w * 0.45;
+//     real stripW = w * 0.40;
+
+//     pair uScreen = unitOr(screenAxis, (0, 1));
+//     pair nScreen = perp(uScreen);
+
+//     // ========================================================================
+//     // 1. Determine Effective Wavelength & Auto-Span
+//     // ========================================================================
+//     real ref_lambda = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
+//     real lambda_eff = !isnan(visualLambda) ? visualLambda : (ref_lambda * lambdaScale);
+
+//     // Compute characteristic geometry (D and d) for auto-span
+//     real actualSpan = span;
+//     if (isnan(actualSpan) || actualSpan <= 0) {
+//         real min_y = infinity, max_y = -infinity;
+//         real avg_D = 0.0;
+//         int count = 0;
+
+//         for (Ray src : sources) {
+//             if (src == null) continue;
+//             real y_proj = dot(src.p - screenCenter, uScreen);
+//             real x_proj = abs(dot(src.p - screenCenter, nScreen));
+//             if (y_proj < min_y) min_y = y_proj;
+//             if (y_proj > max_y) max_y = y_proj;
+//             avg_D += x_proj;
+//             ++count;
+//         }
+
+//         real d_char = (count > 1 && max_y > min_y) ? (max_y - min_y) : 10.0;
+//         real D_char = (count > 0) ? (avg_D / count) : 100.0;
+
+//         // Physical fringe spacing: Delta_y = lambda_eff * D / d
+//         // In optics.asy, lambda is in nm, distances in um:
+//         real lambda_in_units = !isnan(visualLambda) ? visualLambda : wavelengthInUnits(lambda_eff);
+//         real delta_y = (d_char > config.math.eps) ? (lambda_in_units * D_char / d_char) : 10.0;
+
+//         actualSpan = periods * delta_y;
+//     }
+
+//     // ========================================================================
+//     // 2. Physical Wave Interference Sampling
+//     // ========================================================================
+//     real maxI = 0.0;
+//     real[] intensities = new real[samples + 1];
+
+//     for (int i = 0; i <= samples; ++i) {
+//         real t = -1.0 + 2.0 * i / samples; // [-1, 1]
+//         pair P_y = screenCenter + (t * actualSpan / 2.0) * uScreen;
+
+//         Ray[] raysAtP;
+//         for (Ray src : sources) {
+//             if (src == null) continue;
+//             pair d_k = unitOr(P_y - src.p);
+//             real dist = length(P_y - src.p);
+//             real n_med = rayIndex(src.medium, src.p, d_k, d_k, src.lambda, src.pol);
+
+//             // Inherit source state and scale phase accumulation
+//             Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_eff, pol = src.pol, phase = src.phase);
+//             r_k.coherenceId = src.coherenceId;
+//             r_k.opl = src.opl + dist * n_med;
+//             r_k.p = P_y;
+
+//             raysAtP.push(r_k);
+//         }
+
+//         Polarization pol_P = interfereState(raysAtP);
+//         real I_P = pol_P.intensity();
+
+//         intensities[i] = I_P;
+//         if (I_P > maxI) maxI = I_P;
+//     }
+
+//     if (maxI <= 0) maxI = 1.0;
+
+//     // ========================================================================
+//     // 3. Render 2D Fringe Camera Sensor Strip
+//     // ========================================================================
+//     fill(ins.pic, box((stripX - stripW / 2.0, plotBotY), (stripX + stripW / 2.0, plotTopY)), black);
+
+//     for (int i = 0; i < samples; ++i) {
+//         real t1 = -1.0 + 2.0 * i / samples;
+//         real t2 = -1.0 + 2.0 * (i + 1) / samples;
+//         real y1 = t1 * plotTopY;
+//         real y2 = t2 * plotTopY;
+//         real normI = clamp(0.5 * (intensities[i] + intensities[i + 1]) / maxI, 0.0, 1.0);
+
+//         pen slicePen = interp(black, laserPen, normI);
+//         fill(ins.pic, box((stripX - stripW / 2.0, y1), (stripX + stripW / 2.0, y2)), slicePen);
+//     }
+//     draw(ins.pic, box((stripX - stripW / 2.0, plotBotY), (stripX + stripW / 2.0, plotTopY)), gray(0.4) + 0.6pt);
+
+//     // ========================================================================
+//     // 4. Render 1D Cartesian Intensity Profile Curve I(y)
+//     // ========================================================================
+//     guide intensityCurve;
+//     for (int i = 0; i <= samples; ++i) {
+//         real t = -1.0 + 2.0 * i / samples;
+//         real normI = clamp(intensities[i] / maxI, 0.0, 1.0);
+//         pair pt = (originX + normI * plotW, t * plotTopY);
+//         if (i == 0)
+//             intensityCurve = pt;
+//         else
+//             intensityCurve = intensityCurve -- pt;
+//     }
+
+//     fill(ins.pic,
+//          (originX, plotBotY) -- intensityCurve -- (originX, plotTopY) -- cycle,
+//                                                                      interp(white, laserPen, 0.15));
+//     draw(ins.pic, intensityCurve, laserPen + 1.2pt);
+
+//     // Axes
+//     draw(ins.pic, (originX, plotBotY) -- (originX, plotTopY), gray(0.5) + 0.6pt);
+//     draw(ins.pic,
+//          (originX, plotBotY) -- (originX + plotW + 2, plotBotY), gray(0.5) + 0.6pt, Arrow(HookHead, size = 3pt));
+
+//     draw(ins.pic, (originX - 1.2, 0) -- (originX + 1.2, 0), gray(0.5) + 0.5pt);
+//     label(ins.pic, "\tiny $0$", (originX - 1.5, 0), W, gray(0.4));
+
+//     draw(ins.pic, (originX + plotW, 0) -- (stripX - stripW / 2.0, 0), gray(0.5) + 0.5pt + dotted);
+
+//     label(ins.pic, "\tiny $I(y)$", (originX + plotW * 0.5, -h * 0.88), S, gray(0.3));
+//     label(ins.pic, "\tiny Fringes", (stripX, -h * 0.88), S, gray(0.3));
+
+//     return ins;
+// }
+
+// ============================================================================
+// InterferenceInset Factory (With Corrected Scale & Anti-Aliasing)
+// ============================================================================
 Inset InterferenceInset(Ray[] sources,
                         pair screenCenter = (0, 0),
                         pair screenAxis = (0, 1),
@@ -6406,7 +6577,7 @@ Inset InterferenceInset(Ray[] sources,
                         real lambdaScale = 1.0,
                         real visualLambda = nan,
                         int periods = 5,
-                        int samples = 300,
+                        int samples = 400,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 28.0,
@@ -6430,7 +6601,6 @@ Inset InterferenceInset(Ray[] sources,
     real w = r * 1.5;
     real h = r;
 
-    // Header Title
     if (title != "") {
         label(ins.pic, Label("\bfseries{\strut\tiny " + title + "}"), (0, h * 0.85 + 2), N);
     }
@@ -6447,12 +6617,16 @@ Inset InterferenceInset(Ray[] sources,
     pair nScreen = perp(uScreen);
 
     // ========================================================================
-    // 1. Determine Effective Wavelength & Auto-Span
+    // 1. Exact Scaling (Correcting the 1000x nm vs um mismatch)
     // ========================================================================
     real ref_lambda = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
-    real lambda_eff = !isnan(visualLambda) ? visualLambda : (ref_lambda * lambdaScale);
 
-    // Compute characteristic geometry (D and d) for auto-span
+    // In optics.asy, lambda is stored in nm. If visualLambda is in diagram units (um),
+    // convert it to nm (* 1000) so vacuumWaveNumber computes k = 2*pi / visualLambda:
+    real lambda_nm_eff = !isnan(visualLambda) ? (visualLambda * 1000.0) : (ref_lambda * lambdaScale);
+    real lambda_geom_units = wavelengthInUnits(lambda_nm_eff); // Exactly visualLambda!
+
+    // Auto-calculate span so it ALWAYS shows exactly 'periods' fringes
     real actualSpan = span;
     if (isnan(actualSpan) || actualSpan <= 0) {
         real min_y = infinity, max_y = -infinity;
@@ -6472,16 +6646,13 @@ Inset InterferenceInset(Ray[] sources,
         real d_char = (count > 1 && max_y > min_y) ? (max_y - min_y) : 10.0;
         real D_char = (count > 0) ? (avg_D / count) : 100.0;
 
-        // Physical fringe spacing: Delta_y = lambda_eff * D / d
-        // In optics.asy, lambda is in nm, distances in um:
-        real lambda_in_units = !isnan(visualLambda) ? visualLambda : wavelengthInUnits(lambda_eff);
-        real delta_y = (d_char > config.math.eps) ? (lambda_in_units * D_char / d_char) : 10.0;
-
+        // Exact physical fringe spacing: Delta_y = lambda * D / d
+        real delta_y = (d_char > config.math.eps) ? (lambda_geom_units * D_char / d_char) : 10.0;
         actualSpan = periods * delta_y;
     }
 
     // ========================================================================
-    // 2. Physical Wave Interference Sampling
+    // 2. Physical Interference Sampling
     // ========================================================================
     real maxI = 0.0;
     real[] intensities = new real[samples + 1];
@@ -6495,10 +6666,9 @@ Inset InterferenceInset(Ray[] sources,
             if (src == null) continue;
             pair d_k = unitOr(P_y - src.p);
             real dist = length(P_y - src.p);
-            real n_med = rayIndex(src.medium, src.p, d_k, d_k, src.lambda, src.pol);
+            real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_nm_eff, src.pol);
 
-            // Inherit source state and scale phase accumulation
-            Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_eff, pol = src.pol, phase = src.phase);
+            Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_nm_eff, pol = src.pol, phase = src.phase);
             r_k.coherenceId = src.coherenceId;
             r_k.opl = src.opl + dist * n_med;
             r_k.p = P_y;
@@ -6516,7 +6686,7 @@ Inset InterferenceInset(Ray[] sources,
     if (maxI <= 0) maxI = 1.0;
 
     // ========================================================================
-    // 3. Render 2D Fringe Camera Sensor Strip
+    // 3. Render 2D Fringe Camera Strip (Clean & Smooth)
     // ========================================================================
     fill(ins.pic, box((stripX - stripW / 2.0, plotBotY), (stripX + stripW / 2.0, plotTopY)), black);
 
@@ -6546,21 +6716,28 @@ Inset InterferenceInset(Ray[] sources,
             intensityCurve = intensityCurve -- pt;
     }
 
+    // Clean area tint under the curve (anchored cleanly along the axis)
     fill(ins.pic,
          (originX, plotBotY) -- intensityCurve -- (originX, plotTopY) -- cycle,
                                                                      interp(white, laserPen, 0.15));
+
+    // Intensity curve line
     draw(ins.pic, intensityCurve, laserPen + 1.2pt);
 
     // Axes
-    draw(ins.pic, (originX, plotBotY) -- (originX, plotTopY), gray(0.5) + 0.6pt);
+    draw(ins.pic, (originX, plotBotY) -- (originX, plotTopY), gray(0.5) + 0.6pt); // position axis
     draw(ins.pic,
-         (originX, plotBotY) -- (originX + plotW + 2, plotBotY), gray(0.5) + 0.6pt, Arrow(HookHead, size = 3pt));
+         (originX,
+          plotBotY) -- (originX + plotW + 2, plotBotY), gray(0.5) + 0.6pt, Arrow(HookHead, size = 3pt)); // I-axis
 
+    // Origin tick
     draw(ins.pic, (originX - 1.2, 0) -- (originX + 1.2, 0), gray(0.5) + 0.5pt);
     label(ins.pic, "\tiny $0$", (originX - 1.5, 0), W, gray(0.4));
 
+    // Center peak projection line across to fringe strip
     draw(ins.pic, (originX + plotW, 0) -- (stripX - stripW / 2.0, 0), gray(0.5) + 0.5pt + dotted);
 
+    // Readout Labels below
     label(ins.pic, "\tiny $I(y)$", (originX + plotW * 0.5, -h * 0.88), S, gray(0.3));
     label(ins.pic, "\tiny Fringes", (stripX, -h * 0.88), S, gray(0.3));
 
