@@ -89,6 +89,7 @@ struct GeometryConfig {
 }
 
 struct RenderingConfig {
+    real visualLambda = nan;
     bool useIntensityOpacity = true;
     bool drawPolarization = false;
     bool drawWavefronts = false;
@@ -142,10 +143,20 @@ defaultConfig() {
 Config config = defaultConfig();
 
 // Wavelengths are expressed in nm at the public API; geometric lengths use um.
-real wavelengthInUnits(real lambda_nm) { return lambda_nm / 1000.0; }
+// wavelengthInUnits() and resolveEffectiveLambda() return geometric units.
+real wavelengthInUnits(real lambda) { return lambda / 1000.0; }
 
-real vacuumWaveNumber(real lambda_nm) {
-    real lambda = wavelengthInUnits(lambda_nm);
+// localVisLambda is an optional diagram wavelength in geometric units;
+// srcLambda is a physical wavelength in nanometers.
+real resolveEffectiveLambda(real localVisLambda, real srcLambda) {
+    if (!isnan(localVisLambda) && localVisLambda > 0) return localVisLambda;
+    if (!isnan(config.rendering.visualLambda) && config.rendering.visualLambda > 0)
+        return config.rendering.visualLambda;
+    return wavelengthInUnits(srcLambda);
+}
+
+real vacuumWaveNumber(real lambda) {
+    real lambda = wavelengthInUnits(lambda);
     return (lambda > config.math.eps) ? 2.0 * pi / lambda : 0.0;
 }
 
@@ -362,10 +373,10 @@ struct Polarization {
         return p;
     }
 
-    // 2. Linear polarization at angle theta_deg
-    static Polarization linear(real theta_deg, real intensity = 1.0) {
+    // 2. Linear polarization at angle theta
+    static Polarization linear(real theta, real intensity = 1.0) {
         Polarization p = new Polarization;
-        real th = radians(theta_deg);
+        real th = radians(theta);
         p.S0 = intensity;
         p.S1 = intensity * cos(2.0 * th);
         p.S2 = intensity * sin(2.0 * th);
@@ -384,22 +395,22 @@ struct Polarization {
     }
 
     // 4. Elliptical polarization via Poincaré angles (psi, chi)
-    static Polarization fromAngles(real psi_deg, real chi_deg, real intensity = 1.0) {
+    static Polarization fromAngles(real psi, real chi, real intensity = 1.0) {
         Polarization p = new Polarization;
-        real psi = radians(psi_deg);
-        real chi = radians(chi_deg);
+        real psiRad = radians(psi);
+        real chiRad = radians(chi);
         p.S0 = intensity;
-        p.S1 = intensity * cos(2.0 * chi) * cos(2.0 * psi);
-        p.S2 = intensity * cos(2.0 * chi) * sin(2.0 * psi);
-        p.S3 = intensity * sin(2.0 * chi);
+        p.S1 = intensity * cos(2.0 * chiRad) * cos(2.0 * psiRad);
+        p.S2 = intensity * cos(2.0 * chiRad) * sin(2.0 * psiRad);
+        p.S3 = intensity * sin(2.0 * chiRad);
         return p;
     }
 
     // 5. Elliptical polarization via semi-axes (a, b), phase shift, and tilt
     static Polarization elliptical(real a = nan,
                                    real b = nan,
-                                   real phase_deg = 90.0,
-                                   real theta_deg = 0.0,
+                                   real phase = 90.0,
+                                   real theta = 0.0,
                                    real azimuth = nan,
                                    real ellipticity = nan,
                                    real intensity = 1.0,
@@ -419,16 +430,16 @@ struct Polarization {
         // 3. Otherwise: semi-axes (a, b) with phase and tilt
         real a_val = isnan(a) ? 1.0 : a;
         real b_val = isnan(b) ? 0.5 : b;
-        real delta = radians(phase_deg);
-        real theta = radians(theta_deg);
+        real deltaRad = radians(phase);
+        real thetaRad = radians(theta);
 
         real s0 = a_val * a_val + b_val * b_val;
         real s1 = a_val * a_val - b_val * b_val;
-        real s2 = 2.0 * a_val * b_val * cos(delta);
-        real s3 = 2.0 * a_val * b_val * sin(delta);
+        real s2 = 2.0 * a_val * b_val * cos(deltaRad);
+        real s3 = 2.0 * a_val * b_val * sin(deltaRad);
 
         real c2 = cos(2.0 * theta);
-        real s2_th = sin(2.0 * theta);
+        real s2_th = sin(2.0 * thetaRad);
 
         Polarization p = new Polarization;
         p.S0 = s0;
@@ -652,19 +663,19 @@ VolumeProperty Gain(real g) {
     return vp;
 }
 
-// Linear dichroism.  alpha_s acts on light polarized along `axis_deg`
-// (measured in the Stokes frame, 0 = s/TE), alpha_p on the orthogonal state.
-VolumeProperty Dichroic(real alpha_s, real alpha_p, real axis_deg = 0.0) {
+// Linear dichroism.  alphaS acts on light polarized along `axis`
+// (measured in the Stokes frame, 0 = s/TE), alphaP on the orthogonal state.
+VolumeProperty Dichroic(real alphaS, real alphaP, real axis = 0.0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Dichroic";
-    real axis = radians(axis_deg);
+    real axis = radians(axis);
 
     vp.polarizationStep = new Polarization(Polarization inPol, pair p, pair d, real lambda, real ds) {
         if (inPol == null || ds <= 0) return inPol;
 
         Polarization out = copy(inPol);
-        real Ts = exp(-alpha_s * ds);
-        real Tp = exp(-alpha_p * ds);
+        real Ts = exp(-alphaS * ds);
+        real Tp = exp(-alphaP * ds);
         // Rotate into the dichroic eigenframe, apply the Mueller
         // diattenuator, and rotate back.
         if (axis != 0) out.applyRotation(-axis);
@@ -695,20 +706,20 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
     if (no <= 0 || ne <= 0) abort("Uniaxial refractive indices must be positive.");
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Uniaxial Extraordinary";
-    pair c_axis = unitOr(opticAxis);
-    pair q_axis = perp(c_axis);
+    pair opticAxis = unitOr(opticAxis);
+    pair q_axis = perp(opticAxis);
     vp.phaseIndex = new real(pair p, pair waveNormal, real lambda, Polarization pol) {
         pair u = unitOr(waveNormal);
-        real invN2 = dot(u, c_axis) ^ 2 / (no * no) + dot(u, q_axis) ^ 2 / (ne * ne);
+        real invN2 = dot(u, opticAxis) ^ 2 / (no * no) + dot(u, q_axis) ^ 2 / (ne * ne);
         return 1.0 / sqrt(max(config.math.eps, invN2));
     };
     vp.groupDir = new pair(pair waveNormal, pair p, real lambda) {
         pair k = unitOr(waveNormal);
-        return unitOr(dot(k, c_axis) * c_axis / (no * no) + dot(k, q_axis) * q_axis / (ne * ne), k);
+        return unitOr(dot(k, opticAxis) * opticAxis / (no * no) + dot(k, q_axis) * q_axis / (ne * ne), k);
     };
     vp.waveNormal = new pair(pair groupDir, pair p, real lambda) {
         pair d = unitOr(groupDir);
-        return unitOr((dot(d, c_axis) * no * no) * c_axis + (dot(d, q_axis) * ne * ne) * q_axis, d);
+        return unitOr((dot(d, opticAxis) * no * no) * opticAxis + (dot(d, q_axis) * ne * ne) * q_axis, d);
     };
     vp.anisotropicSolver = new AnisotropicTransmission(pair N, pair T, real kt, pair forward, pair p, real lambda) {
         AnisotropicTransmission out = new AnisotropicTransmission;
@@ -716,9 +727,9 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
         real inv_no2 = 1.0 / (no * no);
         real inv_ne2 = 1.0 / (ne * ne);
 
-        real eta_tt = dot(T, c_axis) * dot(T, c_axis) * inv_no2 + dot(T, q_axis) * dot(T, q_axis) * inv_ne2;
-        real eta_nn = dot(N, c_axis) * dot(N, c_axis) * inv_no2 + dot(N, q_axis) * dot(N, q_axis) * inv_ne2;
-        real eta_tn = (dot(N, c_axis) * dot(T, c_axis)) * inv_no2 + (dot(N, q_axis) * dot(T, q_axis)) * inv_ne2;
+        real eta_tt = dot(T, opticAxis) * dot(T, opticAxis) * inv_no2 + dot(T, q_axis) * dot(T, q_axis) * inv_ne2;
+        real eta_nn = dot(N, opticAxis) * dot(N, opticAxis) * inv_no2 + dot(N, q_axis) * dot(N, q_axis) * inv_ne2;
+        real eta_tn = (dot(N, opticAxis) * dot(T, opticAxis)) * inv_no2 + (dot(N, q_axis) * dot(T, q_axis)) * inv_ne2;
 
         real a = eta_nn;
         real b = 2.0 * kt * eta_tn;
@@ -742,8 +753,9 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
         for (real kn : candidates) {
             pair k = kn * N + kt * T;
             pair waveNormal = unitOr(k);
-            pair group = unitOr(dot(waveNormal, c_axis) * c_axis * inv_no2 + dot(waveNormal, q_axis) * q_axis * inv_ne2,
-                                waveNormal);
+            pair group =
+                unitOr(dot(waveNormal, opticAxis) * opticAxis * inv_no2 + dot(waveNormal, q_axis) * q_axis * inv_ne2,
+                       waveNormal);
             real score = dot(group, forward);
             if (score > bestForward) {
                 bestForward = score;
@@ -760,7 +772,7 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair opticAxis = (1, 0)) 
     return vp;
 }
 // Optical Activity / Natural Polarization Rotation
-VolumeProperty OpticalActivity(real rot_deg_per_unit) {
+VolumeProperty OpticalActivity(real rotPerUnit) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "OpticalActivity";
 
@@ -768,7 +780,7 @@ VolumeProperty OpticalActivity(real rot_deg_per_unit) {
         if (inPol == null || ds <= 0) return inPol;
         Polarization out = copy(inPol);
 
-        real theta = radians(rot_deg_per_unit * ds);
+        real theta = radians(rotPerUnit * ds);
         out.applyRotation(theta);
 
         return out;
@@ -2333,8 +2345,8 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
         Ray currRay = copy(r);
         guide traj = currRay.p;
         Integrator solver = (config.physics.grinSolver == GRINSolverType.RK4) ? Integrator.RK4() : Integrator.RK45();
-        real max_ds = 0.075, min_ds = 1e-5;
-        real current_ds = max(min_ds, min(ds, max_ds));
+        real maxDs = 0.075, minDs = 1e-5;
+        real currentDs = max(minDs, min(ds, maxDs));
         real tol = config.physics.epsIntegration;
         Ray testRay = new Ray;
         while (tTotal < far && currRay.alive) {
@@ -2343,18 +2355,18 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flatSurfac
                 currRay.alive = false;
                 break;
             }
-            real step = min(current_ds, far - tTotal);
+            real step = min(currentDs, far - tTotal);
             GRINStep stepResult = solver.advance(currRay, step);
             if (solver.isAdaptive) {
-                if (stepResult.error > tol && step > min_ds) {
-                    current_ds *= 0.5;
+                if (stepResult.error > tol && step > minDs) {
+                    currentDs *= 0.5;
                     continue;
                 }
                 if (stepResult.error > 0) {
                     real scaleFactor = 0.9 * (tol / stepResult.error) ^ 0.2;
-                    current_ds = min(max_ds, current_ds * max(0.2, min(2.0, scaleFactor)));
+                    currentDs = min(maxDs, currentDs * max(0.2, min(2.0, scaleFactor)));
                 } else {
-                    current_ds = min(max_ds, current_ds * 2.0);
+                    currentDs = min(maxDs, currentDs * 2.0);
                 }
             }
             Ray nextRay = stepResult.ray;
@@ -3552,7 +3564,7 @@ copy(RayWavefront src) {
 //   rayWavefront(visible = false, last = true)
 // to hide crests on all segments except the last one.
 RayWavefront rayWavefront(bool visible = config.rendering.drawWavefronts,
-                          real spacing = 12.0,
+                          real spacing = nan,
                           int count = -1,
                           real width = 14.0,
                           real before = 0.05,
@@ -3702,7 +3714,10 @@ void drawWavefront(picture pic = currentpicture,
         real step = L / (effWf.count + 1);
         for (int i = 1; i <= effWf.count; ++i) radii.push(i * step);
     } else {
-        real sp = (!isnan(effWf.spacing) && effWf.spacing > 0) ? (effWf.spacing / localN) : 12.0;
+        real physicalLambda = (r.lambda > 0) ? r.lambda : config.physics.lambda;
+        real sp = (!isnan(effWf.spacing) && effWf.spacing > 0) ? (effWf.spacing / localN)
+                                                               : resolveEffectiveLambda(nan, physicalLambda) / localN;
+        if (sp <= config.math.eps) sp = 12.0;
         for (real cur_r = sp; cur_r < L - config.math.eps; cur_r += sp) {
             radii.push(cur_r);
         }
@@ -3777,12 +3792,13 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     int N = traces.length;
     if (N < 2) return;
     pen p = (wf.pContours != nullpen) ? wf.pContours : heavycyan;
-    real spacing = wf.spacing;
     int count = (wf.count > 0) ? wf.count : 12;
 
     // 1. Resolve Incoming Direction and Reference Origin
     Trace t0 = traces[0];
     if (t0.first() == null) return;
+    real sourceLambda = (t0.first().lambda > 0) ? t0.first().lambda : config.physics.lambda;
+    real spacing = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, sourceLambda);
     pair p0_ref = t0.first().p;
     pair d_in = unitOr(t0.first().d);
     real n_amb = (t0.first().medium != null) ? t0.first().medium.n() : 1.0;
@@ -3918,11 +3934,11 @@ void drawBundleInterference(picture pic = currentpicture, Trace t1, Trace t2, Ra
     pair u_axis = perp(u_slit);
     if (dot(u_axis, t1.first().d) < 0) u_axis = -u_axis;
 
-    // Resolve wavelength from wf.spacing or ray lambda
-    // Ray wavelengths are in nm; geometry is in um.
-    real lam = (!isnan(wf.spacing) && wf.spacing > 0)
-                   ? wf.spacing
-                   : (t1.first().lambda > 0 ? wavelengthInUnits(t1.first().lambda) : 8.0);
+    // Resolve wavelength from explicit spacing, global visualLambda, or the
+    // physical ray wavelength. All values here are geometric units.
+    real sourceLambda = (t1.first().lambda > 0) ? t1.first().lambda : config.physics.lambda;
+    real lam = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, sourceLambda);
+    if (lam <= config.math.eps) return;
 
     int maxOrderPossible = floor(d / lam);
     int ordersToDraw = min(wf.maxOrders, maxOrderPossible);
@@ -4652,10 +4668,10 @@ pair wavevectorShiftAxis(pair inDir, pair targetDir, real deltaK, bool reflectiv
 }
 
 Property
-Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false, real[] efficiencies = new real[]{}) {
+Diffract(real linesPerMm, int[] orders = new int[]{1}, bool reflective = false, real[] efficiencies = new real[]{}) {
     Property p = new Property;
     p.name = "Diffract";
-    real gratingSpacing = 1000.0 / lines_per_mm;
+    real gratingSpacing = 1000.0 / linesPerMm;
     // Generation Closure
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
         Ray[] validRays;
@@ -4672,10 +4688,10 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
         }
         real n2 = reflective ? n1 : m2.n(h.p, r.d, r.lambda, r.pol);
         real kIn = dot(r.d, T);
-        real lambda_um = wavelengthInUnits(r.lambda);
+        real lambdaUnits = wavelengthInUnits(r.lambda);
         real phaseShift = reflective ? pi : 0;
         for (int i = 0; i < orders.length; ++i) {
-            real deltaK = orders[i] * lambda_um / gratingSpacing;
+            real deltaK = orders[i] * lambdaUnits / gratingSpacing;
             real kOut = (n1 * kIn + deltaK) / n2;
             if (abs(kOut) <= 1.0) {
                 pair vOut = diffractionOutputDir(N, T, kOut, reflective);
@@ -5122,14 +5138,14 @@ struct BeamSplitter {
     }
 }
 
-// Thin polarization optics.  `axis_deg` / `fastAxis_deg` are angles in the
+// Thin polarization optics.  `axis` / `fastAxis` are angles in the
 // Stokes (s/p) frame of the transmitted light; `angle` is the direction of
 // the plate's optical axis (its surface normal) in the drawing plane.  The
 // two are independent: rotating a waveplate's fast axis does not tilt the
 // plate.
-// General linear retarder: retardance delta (rad), fast axis at fastAxis_deg.
-Property Retard(real delta, real fastAxis_deg = 0.0) {
-    real ax = radians(fastAxis_deg);
+// General linear retarder: retardance delta (rad), fast axis at fastAxis.
+Property Retard(real delta, real fastAxis = 0.0) {
+    real ax = radians(fastAxis);
     return property(
         "Retarder",
         new Ray[](Ray r, Hit h, mediumResolver res) {
@@ -5142,15 +5158,15 @@ Property Retard(real delta, real fastAxis_deg = 0.0) {
 }
 
 struct Polarizer {
-    // 1. Ideal Linear Polarizer Plate (transmits linear light at axis_deg)
+    // 1. Ideal Linear Polarizer Plate (transmits linear light at axis)
     static Element LP(pair center,
-                      real axis_deg = 0.0,
+                      real axis = 0.0,
                       real diameter = 30.0,
                       real angle = 0.0,
                       real thickness = 2.0,
                       real extinction = 1000.0) {
         // Index-free dichroic medium: no Fresnel loss, only diattenuation.
-        Medium polMed = medium("Polarizer").add(Dichroic(0.0, extinction, axis_deg));
+        Medium polMed = medium("Polarizer").add(Dichroic(0.0, extinction, axis));
         path plate = box((-thickness / 2, -diameter / 2), (thickness / 2, diameter / 2));
         Element e = Interface(shift(center) * rotate(angle) * plate, polMed);
         e.name = "Linear Polarizer";
@@ -5164,24 +5180,24 @@ struct Polarizer {
     // Ideal zero-thickness retarder plate (no Fresnel loss, no medium change).
     static Element retarder(pair center,
                             real delta,
-                            real fastAxis_deg = 0.0,
+                            real fastAxis = 0.0,
                             real diameter = 30.0,
                             real angle = 0.0,
                             pen stroke = black,
                             string name = "Retarder") {
         pair A = dir(angle);
-        Property[] props = {Retard(delta, fastAxis_deg)};
+        Property[] props = {Retard(delta, fastAxis)};
         return element(linearBoundary(center, A, diameter), props, stroke, nullpen, name, center, A);
     }
 
     // 2. Quarter-Wave Plate (QWP) - Retardance = pi/2
-    static Element QWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0, real angle = 0.0) {
-        return retarder(center, pi / 2.0, fastAxis_deg, diameter, angle, name = "QWP");
+    static Element QWP(pair center, real fastAxis = 0.0, real diameter = 30.0, real angle = 0.0) {
+        return retarder(center, pi / 2.0, fastAxis, diameter, angle, name = "QWP");
     }
 
     // 3. Half-Wave Plate (HWP) - Retardance = pi (Rotates linear polarization by 2*theta)
-    static Element HWP(pair center, real fastAxis_deg = 0.0, real diameter = 30.0, real angle = 0.0) {
-        return retarder(center, pi, fastAxis_deg, diameter, angle, name = "HWP");
+    static Element HWP(pair center, real fastAxis = 0.0, real diameter = 30.0, real angle = 0.0) {
+        return retarder(center, pi, fastAxis, diameter, angle, name = "HWP");
     }
 }
 
@@ -5223,7 +5239,7 @@ Element PhaseGradient(pair center,
 Element Grating(pair center,
                 real diameter,
                 real angle,
-                real lines_per_mm,
+                real linesPerMm,
                 bool reflective = false,
                 int[] orders = new int[]{1},
                 real[] efficiencies = new real[]{},
@@ -5231,7 +5247,7 @@ Element Grating(pair center,
                 string name = "Grating") {
     pair ax = dir(angle);
     path boundary = linearBoundary(center, ax, diameter);
-    Property[] props = {Diffract(lines_per_mm, orders, reflective, efficiencies)};
+    Property[] props = {Diffract(linesPerMm, orders, reflective, efficiencies)};
     Element e = element(boundary, props, stroke, nullpen, name, center, ax);
     e.customDraw = drawGrating;
     return e;
@@ -6162,7 +6178,8 @@ struct Inset {
     string title = "";        // Optional title
     string tag = "";          // Badge tag (e.g. "A", "1")
     real size = 20.0;         // Content scale/radius
-    real margin = 2.0;        // Inner padding for box (pt)
+    real titleContentGap = 5.0;
+    real boxMargin = 1.0;     // User-configurable padding inside the inset box
     // Color Palette
     pen border = rgb(0.0, 0.2, 0.6); // Box outline, connector line, & target dot color
     pen fill = white;                // Inset box background fill
@@ -6183,7 +6200,7 @@ struct Inset {
             frame box_frame;
             // Wrap content in box and shift to target canvas position
             filltype ft = (this.fill != nullpen) ? FillDraw(this.fill, this.border) : Fill(this.border);
-            box(box_frame, content, this.margin, this.margin, this.border, ft, above = false);
+            box(box_frame, content, this.boxMargin, this.boxMargin, this.border, ft, above = false);
             add(box_frame, content);
             box_frame = shift(pos_pt) * box_frame;
             // Draw connector line and dot at target point
@@ -6200,6 +6217,30 @@ struct Inset {
             // Stamp boxed inset on canvas
             add(f, box_frame);
         });
+    }
+}
+
+// Shared inset header: every inset uses the same tag pill and title baseline.
+private void drawInsetHeader(picture pic, real y, string title, string tag, pen border) {
+    frame header;
+    real titleX = 0.0;
+    if (tag != "") {
+        frame tagFrame;
+        label(tagFrame, Label("\bfseries{\tiny " + tag + "}", white));
+        roundbox(tagFrame, tagFrame, 0.0, 0.0, border, Fill(border), above = false);
+        add(header, tagFrame, N);
+        titleX = max(tagFrame).x;
+    }
+    if (title != "") {
+        // Keep the title vertically centered with or without a badge.  N
+        // alignment makes a badge-less title extend downward from its anchor,
+        // creating an unnecessarily large title/content gap.
+        pair titleAnchor = (tag != "") ? (titleX, 0) : (0, 0);
+        label(header, Label("\bfseries{\tiny\strut " + title + "}", border), titleAnchor, (tag != "") ? E : W);
+    }
+    if (title != "" || tag != "") {
+        pair headerCenter = ((min(header).x + max(header).x) / 2.0, 0);
+        add(pic, shift((-headerCenter.x, y)) * header);
     }
 }
 
@@ -6232,8 +6273,10 @@ Inset PolarizationInset(Polarization pol,
     label(ins.pic, "\tiny $S$", (r, 0), 2S + W, gray(0.4));
     label(ins.pic, "\tiny $P$", (0, r), S + 2W, gray(0.4));
 
-    // Title
-    if (title != "") label(ins.pic, Label("\bfseries{\strut\tiny " + title + "}"), (0, r + 2), N);
+    // Render tag and title together so their baseline is independent of the
+    // surrounding panel layout.
+    real headerY = r + ins.titleContentGap;
+    drawInsetHeader(ins.pic, headerY, title, tag, border);
 
     real localI = pol.intensity();
     real orbitR = 0.75 * r;
@@ -6244,8 +6287,6 @@ Inset PolarizationInset(Polarization pol,
 
     real dop = pol.dop();
     real I_pol = dop * localI;
-    real I_unpol = (1.0 - dop) * localI;
-
     real minArrowSize = config.rendering.polarizationInsetMinArrowFraction * orbitR;
 
     // =========================================================================
@@ -6345,7 +6386,7 @@ Inset PolarizationInset(Polarization pol,
     }
 
     frame fReadout = pack(align = S, ... lines);
-    add(ins.pic, fReadout, (0, -r - 2), S);
+    add(ins.pic, fReadout, (0, -r - 2.0), S);
     return ins;
 }
 
@@ -6397,13 +6438,12 @@ Inset PolarizationInset(Trace tr,
 }
 
 // ============================================================================
-// InterferenceInset Factory (With Corrected Scale & Anti-Aliasing)
+// InterferenceInset Factory (Type Inset, using interfere/interfereState)
 // ============================================================================
 Inset InterferenceInset(Ray[] sources,
                         pair screenCenter = (0, 0),
                         pair screenAxis = (0, 1),
                         real span = nan,
-                        real lambdaScale = 1.0,
                         real visualLambda = nan,
                         int periods = 5,
                         int samples = 400,
@@ -6415,8 +6455,16 @@ Inset InterferenceInset(Ray[] sources,
                         pen laserPen = Red(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
-                        pen badgeText = white) {
+                        pen badgeText = white,
+                        real rotation = 0.0) {
+    if (samples < 1) abort("InterferenceInset: samples must be positive.");
+    if (periods < 1) abort("InterferenceInset: periods must be positive.");
+    if (sources.length < 2) abort("InterferenceInset: at least two sources are required.");
+    if (!isnan(visualLambda) && visualLambda <= 0) abort("InterferenceInset: visualLambda must be positive or nan.");
+
     Inset ins;
+    picture content;
+    picture titleContent;
     ins.pos = pos;
     ins.target = target;
     ins.size = size;
@@ -6430,32 +6478,23 @@ Inset InterferenceInset(Ray[] sources,
     real w = r * 1.5;
     real h = r;
 
-    if (title != "") {
-        label(ins.pic, Label("\bfseries{\strut\tiny " + title + "}"), (0, h * 0.85 + 2), N);
-    }
+    // ========================================================================
+    // Header Title & Tag Badge (Sharing the exact same typographical baseline)
+    // ========================================================================
+    real yHeader = h * 0.85 + ins.titleContentGap;
+    drawInsetHeader(titleContent, yHeader, title, tag, border);
 
-    real originX = -w * 0.85;
-    real plotW = w * 0.65;
-    real plotTopY = h * 0.75;
-    real plotBotY = -h * 0.75;
-
-    real stripX = w * 0.45;
-    real stripW = w * 0.40;
-
+    // ========================================================================
+    // 1. Effective Wavelength & Universal N-Slit Auto-Span
+    // ========================================================================
+    pair probeCenter = (!isnan(target.x) && !isnan(target.y)) ? target : screenCenter;
     pair uScreen = unitOr(screenAxis, (0, 1));
     pair nScreen = perp(uScreen);
 
-    // ========================================================================
-    // 1. Exact Scaling (Correcting the 1000x nm vs um mismatch)
-    // ========================================================================
     real ref_lambda = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
+    real lambda_geom_units = resolveEffectiveLambda(visualLambda, ref_lambda);
+    real lambdaNmEff = lambda_geom_units * 1000.0; // nm for vacuumWaveNumber
 
-    // In optics.asy, lambda is stored in nm. If visualLambda is in diagram units (um),
-    // convert it to nm (* 1000) so vacuumWaveNumber computes k = 2*pi / visualLambda:
-    real lambda_nm_eff = !isnan(visualLambda) ? (visualLambda * 1000.0) : (ref_lambda * lambdaScale);
-    real lambda_geom_units = wavelengthInUnits(lambda_nm_eff); // Exactly visualLambda!
-
-    // Auto-calculate span so it ALWAYS shows exactly 'periods' fringes
     real actualSpan = span;
     if (isnan(actualSpan) || actualSpan <= 0) {
         real min_y = infinity, max_y = -infinity;
@@ -6464,40 +6503,41 @@ Inset InterferenceInset(Ray[] sources,
 
         for (Ray src : sources) {
             if (src == null) continue;
-            real y_proj = dot(src.p - screenCenter, uScreen);
-            real x_proj = abs(dot(src.p - screenCenter, nScreen));
+            real y_proj = dot(src.p - probeCenter, uScreen);
+            real x_proj = abs(dot(src.p - probeCenter, nScreen));
             if (y_proj < min_y) min_y = y_proj;
             if (y_proj > max_y) max_y = y_proj;
             avg_D += x_proj;
             ++count;
         }
 
-        real d_char = (count > 1 && max_y > min_y) ? (max_y - min_y) : 10.0;
+        // Universal pitch for N >= 2 collinear sources: d = Delta_y / (N - 1)
+        real d_char = (count > 1 && max_y > min_y) ? ((max_y - min_y) / (count - 1)) : 10.0;
         real D_char = (count > 0) ? (avg_D / count) : 100.0;
 
-        // Exact physical fringe spacing: Delta_y = lambda * D / d
+        // Exact fringe period: Delta_y = lambda * D / d
         real delta_y = (d_char > config.math.eps) ? (lambda_geom_units * D_char / d_char) : 10.0;
         actualSpan = periods * delta_y;
     }
 
     // ========================================================================
-    // 2. Physical Interference Sampling
+    // 2. Physical Wave Interference Sampling
     // ========================================================================
     real maxI = 0.0;
     real[] intensities = new real[samples + 1];
 
     for (int i = 0; i <= samples; ++i) {
         real t = -1.0 + 2.0 * i / samples; // [-1, 1]
-        pair P_y = screenCenter + (t * actualSpan / 2.0) * uScreen;
+        pair P_y = probeCenter + (t * actualSpan / 2.0) * uScreen;
 
         Ray[] raysAtP;
         for (Ray src : sources) {
             if (src == null) continue;
             pair d_k = unitOr(P_y - src.p);
             real dist = length(P_y - src.p);
-            real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_nm_eff, src.pol);
+            real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambdaNmEff, src.pol);
 
-            Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_nm_eff, pol = src.pol, phase = src.phase);
+            Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambdaNmEff, pol = src.pol, phase = src.phase);
             r_k.coherenceId = src.coherenceId;
             r_k.opl = src.opl + dist * n_med;
             r_k.p = P_y;
@@ -6515,60 +6555,75 @@ Inset InterferenceInset(Ray[] sources,
     if (maxI <= 0) maxI = 1.0;
 
     // ========================================================================
-    // 3. Render 2D Fringe Camera Strip (Clean & Smooth)
+    // 3. Render Inset: Horizontal vs Vertical Layout
     // ========================================================================
-    fill(ins.pic, box((stripX - stripW / 2.0, plotBotY), (stripX + stripW / 2.0, plotTopY)), black);
+    // --------------------------------------------------------------------
+    // Standard Position (I(y) on top, Fringes directly UNDER)
+    // --------------------------------------------------------------------
+    real plotHalfW = w * 0.75;
+    real plotH = h * 0.70;
+    real yBase = h * -0.15; // baseline between graph and fringes
+
+    // 3A. Draw 1D Intensity Plot Curve I(y) on Top
+    guide curve;
+    for (int i = 0; i <= samples; ++i) {
+        real t = -1.0 + 2.0 * i / samples;
+        real normI = clamp(intensities[i] / maxI, 0.0, 1.0);
+        pair pt = (t * plotHalfW, yBase + normI * plotH);
+        if (i == 0)
+            curve = pt;
+        else
+            curve = curve -- pt;
+    }
+
+    // Fill area under curve and stroke line
+    fill(content,
+         (-plotHalfW, yBase) -- curve -- (plotHalfW, yBase) -- cycle,
+                                                            interp(white, laserPen, 0.15));
+    draw(content, curve, laserPen);
+
+    // Axes: Horizontal position axis (y) & Vertical Intensity axis (I)
+    draw(content,
+         (-plotHalfW - 2, yBase) -- (plotHalfW + 6, yBase), gray(0.5), Arrow(HookHead, size = 3pt)); // y-axis
+    draw(content,
+         (-plotHalfW,
+          yBase) -- (-plotHalfW, yBase + plotH + 4), gray(0.5), Arrow(HookHead, size = 3pt)); // I-axis
+
+    // label(content, "\tiny $y$", (plotHalfW + 6, yBase), E, gray(0.4));
+    // label(content, "\tiny $I$", (-plotHalfW, yBase + plotH + 4), N, gray(0.4));
+
+    // Center tick (y = 0)
+    draw(content, (0, yBase - 1.2) -- (0, yBase + 1.2), gray(0.5));
+    label(content, "\tiny $0$", (0, yBase + 1.5), N, gray(0.4));
+
+    // 3B. Draw 2D Fringe Camera Strip directly UNDER the graph
+    real stripTopY = yBase - 4.0;
+    real stripH = h * 0.45;
+    real stripBotY = stripTopY - stripH;
+
+    fill(content, box((-plotHalfW, stripBotY), (plotHalfW, stripTopY)), black);
 
     for (int i = 0; i < samples; ++i) {
         real t1 = -1.0 + 2.0 * i / samples;
         real t2 = -1.0 + 2.0 * (i + 1) / samples;
-        real y1 = t1 * plotTopY;
-        real y2 = t2 * plotTopY;
+        real x1 = t1 * plotHalfW;
+        real x2 = t2 * plotHalfW;
         real normI = clamp(0.5 * (intensities[i] + intensities[i + 1]) / maxI, 0.0, 1.0);
 
         pen slicePen = interp(black, laserPen, normI);
-        fill(ins.pic, box((stripX - stripW / 2.0, y1), (stripX + stripW / 2.0, y2)), slicePen);
-    }
-    draw(ins.pic, box((stripX - stripW / 2.0, plotBotY), (stripX + stripW / 2.0, plotTopY)), gray(0.4) + 0.6pt);
-
-    // ========================================================================
-    // 4. Render 1D Cartesian Intensity Profile Curve I(y)
-    // ========================================================================
-    guide intensityCurve;
-    for (int i = 0; i <= samples; ++i) {
-        real t = -1.0 + 2.0 * i / samples;
-        real normI = clamp(intensities[i] / maxI, 0.0, 1.0);
-        pair pt = (originX + normI * plotW, t * plotTopY);
-        if (i == 0)
-            intensityCurve = pt;
-        else
-            intensityCurve = intensityCurve -- pt;
+        fill(content, box((x1, stripBotY), (x2, stripTopY)), slicePen);
     }
 
-    // Clean area tint under the curve (anchored cleanly along the axis)
-    fill(ins.pic,
-         (originX, plotBotY) -- intensityCurve -- (originX, plotTopY) -- cycle,
-                                                                     interp(white, laserPen, 0.15));
+    draw(content, box((-plotHalfW, stripBotY), (plotHalfW, stripTopY)), gray(0.4) + 0.6pt);
+    // label(content, "\tiny Fringes", (0, stripBotY - 1.5), S, gray(0.3));
 
-    // Intensity curve line
-    draw(ins.pic, intensityCurve, laserPen + 1.2pt);
+    // Dotted vertical projection line aligning central maximum down to fringe strip
+    draw(content, (0, yBase + plotH) -- (0, stripBotY), gray(0.5) + dotted);
 
-    // Axes
-    draw(ins.pic, (originX, plotBotY) -- (originX, plotTopY), gray(0.5) + 0.6pt); // position axis
-    draw(ins.pic,
-         (originX,
-          plotBotY) -- (originX + plotW + 2, plotBotY), gray(0.5) + 0.6pt, Arrow(HookHead, size = 3pt)); // I-axis
-
-    // Origin tick
-    draw(ins.pic, (originX - 1.2, 0) -- (originX + 1.2, 0), gray(0.5) + 0.5pt);
-    label(ins.pic, "\tiny $0$", (originX - 1.5, 0), W, gray(0.4));
-
-    // Center peak projection line across to fringe strip
-    draw(ins.pic, (originX + plotW, 0) -- (stripX - stripW / 2.0, 0), gray(0.5) + 0.5pt + dotted);
-
-    // Readout Labels below
-    label(ins.pic, "\tiny $I(y)$", (originX + plotW * 0.5, -h * 0.88), S, gray(0.3));
-    label(ins.pic, "\tiny Fringes", (stripX, -h * 0.88), S, gray(0.3));
+    // Keep the header clear when the plot is rotated into a vertical layout.
+    real rotatedContentShift = (abs(sin(radians(rotation))) > 0.5) ? -0.55 * h : 0.0;
+    ins.pic.add(shift((0, rotatedContentShift)) * rotate(rotation) * content);
+    ins.pic.add(titleContent);
 
     return ins;
 }
@@ -6577,8 +6632,10 @@ Inset InterferenceInset(Ray[] sources,
 Inset InterferenceInset(Trace[] traces,
                         pair screenCenter = (0, 0),
                         pair screenAxis = (0, 1),
-                        real span = 1000.0,
-                        int samples = 200,
+                        real span = nan,
+                        real visualLambda = nan,
+                        int periods = 5,
+                        int samples = 400,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 28.0,
@@ -6587,7 +6644,8 @@ Inset InterferenceInset(Trace[] traces,
                         pen laserPen = Red(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
-                        pen badgeText = white) {
+                        pen badgeText = white,
+                        real rotation = 0.0) {
     Ray[] sources;
     for (Trace tr : traces) {
         if (tr != null && tr.last() != null) sources.push(tr.last());
@@ -6596,6 +6654,8 @@ Inset InterferenceInset(Trace[] traces,
                              screenCenter,
                              screenAxis,
                              span,
+                             visualLambda,
+                             periods,
                              samples,
                              pos,
                              target,
@@ -6605,7 +6665,8 @@ Inset InterferenceInset(Trace[] traces,
                              laserPen,
                              border,
                              fill,
-                             badgeText);
+                             badgeText,
+                             rotation);
 }
 
 // ============================================================================
@@ -6614,7 +6675,7 @@ Inset InterferenceInset(Trace[] traces,
 struct InsetPanel {
     Inset[] insets;
     int perrow = 1;     // Grid columns (1 = vertical list, 2 = 2-col table)
-    real margin = 4.0;  // Panel padding in pt
+    real margin = 2.0;  // Panel padding in pt
     real spacing = 8.0; // Spacing between cells in pt
     // Panel Global Styling
     pen border = nullpen;   // Panel outline (nullpen = defaults to insets[0].border)
@@ -6676,16 +6737,9 @@ struct InsetPanel {
             for (int i = 0; i < n; ++i) {
                 frame cf;
                 Inset ins = this.insets[i];
-                // Badge inside the panel: uses inset's badgePen/border & badgeText
-                pen bPen = ins.getBadgePen();
-                pen bTxt = (ins.badgeText != nullpen) ? ins.badgeText : this.badgeText;
-                frame bf;
-                label(bf, Label("\tiny\bfseries " + ins.tag, bTxt));
-                roundbox(bf, bf, 0.0, 0.0, bPen, Fill(bPen), above = false);
-                add(cf, bf);
                 // Inset content next to badge
                 frame content = ins.pic.fit();
-                add(cf, shift(max(bf).x + 4.0 - min(content).x, min(content).y) * content);
+                add(cf, shift(-min(content).x, min(content).y) * content);
                 cells[i] = cf;
                 int r = floor(i / cols), c = i % cols;
                 pair sz = max(cf) - min(cf);
@@ -6820,7 +6874,7 @@ OpticalSystem operator+(Medium ambient, Element[] es) { return system(es, ambien
 
 // 4. Angle-to-Polarization Cast Operator
 // Usage: Ray r = Ray(p, d, pol = 45); // Automatically creates linear polarization at 45 degrees
-Polarization operator cast(real angle_deg) { return Polarization.linear(angle_deg); }
+Polarization operator cast(real angle) { return Polarization.linear(angle); }
 
 // Draw dimension lines and labels
 void distance(picture pic = currentpicture,
