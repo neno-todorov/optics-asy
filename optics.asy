@@ -3181,6 +3181,15 @@ struct RayPolarization {
         // Create a fresh copy of current state
         RayPolarization out = new RayPolarization;
         out.visible = this.visible;
+        // An empty list or the sentinel -1 means all segments. Otherwise
+        // restrict polarization markers to the explicitly selected segments.
+        if (this.segments.length > 0 && !(this.segments.length == 1 && this.segments[0] == -1)) {
+            out.visible = false;
+            for (int idx : this.segments) {
+                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
+                if (resolved_idx == i) out.visible = this.visible;
+            }
+        }
         out.count = this.count;
         out.spacing = this.spacing;
         out.before = this.before;
@@ -3228,6 +3237,7 @@ copy(RayPolarization src) {
     if (src == null) return null;
     RayPolarization out = new RayPolarization;
     out.visible = src.visible;
+    out.segments = copy(src.segments);
     out.count = src.count;
     out.spacing = src.spacing;
     out.before = src.before;
@@ -3499,15 +3509,16 @@ struct RayWavefront {
     bool contours = false;      // Draw iso-OPL / iso-phase wavefront contours across the bundle
     bool phase_locked = false;  // Use common physical-OPL contours for bundle wavefronts
     pen p_contours = lightblue; // Pen for iso-OPL contour lines
-    // Interference lines (draw(Trace[], ...) only, requires contours or wavelets)
+    // Interference families (draw(Trace[], ...) only)
     bool antinodes = false;            // Draw constructive interference channels (Delta phi = 2*pi*m)
     bool nodes = false;                // Draw destructive interference channels (Delta phi = pi*(2m+1))
     pen pen_line = gray(0.4) + dashed; // Pen for interference lines
     pen pen_dots = gray(0.4) + 2pt;    // Pen for intersection dots
     real max_dist = config.rendering.wavefront_max_dist;    // Max distance from source midpoint to trace interference
     int max_orders = config.rendering.wavefront_max_orders; // Maximum interference order |m| to draw
-    bool show_dots = true;                                  // Show circle-crossing dots at antinodes
-    bool show_labels = true;                                // Label each antinodal channel with m
+    bool show_dots = true;                                  // Show circle-crossing dots
+    bool show_labels = true;                                // Label each interference order
+    bool show_lines = true;                                 // Show interference node/antinode loci
     // Segment rules
     SegmentRule[] rules;
 
@@ -3543,6 +3554,7 @@ struct RayWavefront {
         out.max_orders = this.max_orders;
         out.show_dots = this.show_dots;
         out.show_labels = this.show_labels;
+        out.show_lines = this.show_lines;
 
         for (SegmentRule rule : rules) {
             for (int idx : rule.indices) {
@@ -3598,6 +3610,7 @@ copy(RayWavefront src) {
     out.max_orders = src.max_orders;
     out.show_dots = src.show_dots;
     out.show_labels = src.show_labels;
+    out.show_lines = src.show_lines;
     for (SegmentRule r : src.rules) out.rules.push(copy(r));
     return out;
 }
@@ -3624,7 +3637,6 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
                           pen p = nullpen,
                           // Bundle iso-OPL contours
                           bool contours = false,
-                          bool phase_locked = false,
                           pen p_contours = lightblue,
                           // Interference lines
                           bool antinodes = false,
@@ -3637,7 +3649,9 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
                           bool show_labels = true,
                           bool3 first = default,
                           bool3 middle = default,
-                          bool3 last = default, ... SegmentRule[] rules) {
+                          bool3 last = default,
+                          bool phase_locked = false,
+                          bool show_lines = true, ... SegmentRule[] rules) {
     RayWavefront out = new RayWavefront;
     out.spacing = spacing;
     out.width = width;
@@ -3661,6 +3675,7 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
     out.max_orders = max_orders;
     out.show_dots = show_dots;
     out.show_labels = show_labels;
+    out.show_lines = show_lines;
     if (visible) {
         out.visible = true;
         out.first = (first != default) ? (bool)first : true;
@@ -4136,7 +4151,7 @@ void drawBundleInterference(picture pic = currentpicture, Trace t1, Trace t2, Ra
             }
 
             if (length(hyperbola_path) > 0) {
-                draw(pic, hyperbola_path, wf.pen_line);
+                if (wf.show_lines) draw(pic, hyperbola_path, wf.pen_line);
                 if (wf.show_labels && !isnan(last_pt.x)) {
                     string lbl;
                     if (offset == 0) {
