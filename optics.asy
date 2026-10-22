@@ -3702,7 +3702,7 @@ void drawWavefrontMarker(picture pic = currentpicture,
         // =====================================================================
         real theta0 = degrees(atan2(d_hat.y, d_hat.x));
         real a_span = clamp(wf.alpha, 5.0, 90.0);
-        path arc_full = Arc(center, radius, theta0 - a_span, theta0 + a_span, 100);
+        path arc_full = Arc(center, radius, theta0 - a_span, theta0 + a_span, 160);
 
         // Boundary clipping: truncate the arc if it hits a physical surface
         if (wf.cut_at_boundary && hit != null && hit.valid) {
@@ -3711,16 +3711,29 @@ void drawWavefrontMarker(picture pic = currentpicture,
             if (dot(d_hat, N) > 0) N = -N; // Opposes incident wave
 
             guide arc_visible, arc_behind;
-            int n_pts = 100;
+            bool visible_run = false;
+            bool hidden_run = false;
+            int n_pts = 160;
             for (int j = 0; j <= n_pts; ++j) {
                 pair pt = point(arc_full, reltime(arc_full, j / (real)n_pts));
-                if (dot(pt - hit_p, N) >= -config.math.eps)
+                bool is_visible = dot(pt - hit_p, N) >= -config.math.eps;
+                if (is_visible) {
+                    if (wf.dashed_behind && hidden_run && length(arc_behind) > 1)
+                        draw(pic, arc_behind, q + dashed);
+                    arc_behind = nullpath;
+                    hidden_run = false;
                     arc_visible = arc_visible -- pt;
-                else
+                    visible_run = true;
+                } else {
+                    if (visible_run && length(arc_visible) > 1) draw(pic, arc_visible, q);
+                    arc_visible = nullpath;
+                    visible_run = false;
                     arc_behind = arc_behind -- pt;
+                    hidden_run = true;
+                }
             }
-            if (length(arc_visible) > 0) draw(pic, arc_visible, q);
-            if (wf.dashed_behind && length(arc_behind) > 0) draw(pic, arc_behind, q + dashed);
+            if (length(arc_visible) > 1) draw(pic, arc_visible, q);
+            if (wf.dashed_behind && length(arc_behind) > 1) draw(pic, arc_behind, q + dashed);
         } else {
             draw(pic, arc_full, q);
         }
@@ -3857,6 +3870,34 @@ void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWa
     real spacing_um = geometryToUm((!isnan(wf.spacing) && wf.spacing > 0)
                                    ? wf.spacing : resolveEffectiveLambda(nan, source_lambda));
     if (spacing_um <= config.math.eps) return;
+    // For explicitly requested interference families, use the identical
+    // paired-circle construction as drawBundleInterference. This guarantees
+    // that visible wavelet intersections lie on the same node/antinode loci.
+    if (wf.antinodes || wf.nodes) {
+        Ray a = traces[0].first(), b = traces[1].first();
+        real lambda_geom = spacing_um / metersToUm(config.physics.meters_per_unit);
+        real separation = length(a.p - b.p);
+        if (separation <= config.math.eps) return;
+        int max_order = max(0, wf.max_orders);
+        for (int m = -max_order; m <= max_order; ++m) {
+            for (real offset = 0.0; offset <= 0.5; offset += 0.5) {
+                if ((offset == 0.0 && !wf.antinodes) || (offset == 0.5 && !wf.nodes)) continue;
+                int n_max = ceil((wf.max_dist + separation) / lambda_geom);
+                for (int n = 1; n <= n_max; ++n) {
+                    real r1 = n * lambda_geom;
+                    real r2 = (n - m - offset) * lambda_geom;
+                    if (r2 <= 0 || abs(r1 - r2) > separation || r1 + r2 < separation) continue;
+                    Hit hit_a = (traces[0].last() != null) ? traces[0].last().hit : null;
+                    Hit hit_b = (traces[1].last() != null) ? traces[1].last().hit : null;
+                    drawWavefrontMarker(pic, a.p, a.d, r1, 1.0, hit_a,
+                                        (wf.p != nullpen) ? wf.p : lightblue, wf);
+                    drawWavefrontMarker(pic, b.p, b.d, r2, 1.0, hit_b,
+                                        (wf.p != nullpen) ? wf.p : lightblue, wf);
+                }
+            }
+        }
+        return;
+    }
     real max_opl = 0.0;
     for (Trace tr : traces) {
         if (tr == null || tr.first() == null) continue;
@@ -3870,10 +3911,13 @@ void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWa
         for (int k = 0; k < traces.length; ++k) {
             Ray src = traces[k].first();
             if (src == null) continue;
-            real k0 = vacuumWaveNumber(src.lambda);
+            // Use the same effective wavelength as the interference-line
+            // renderer. This keeps wavelet crossings aligned with nodes and
+            // antinodes when spacing is a visual geometry wavelength.
+            real k0 = 2.0 * pi / spacing_um;
             real phase_offset = (k0 > config.math.eps) ? src.phase / k0 : 0.0;
             real opl_from_source = target - phase_offset;
-            if (wf.nodes && k == 1) opl_from_source -= 0.5 * (src.lambda * nm_to_um);
+            if (wf.nodes && k == 1) opl_from_source -= 0.5 * spacing_um;
             if (opl_from_source <= config.math.eps) continue;
             real n_src = (src.medium != null) ? src.medium.n(src.p, src.d, src.lambda, src.pol) : 1.0;
             real radius = opl_from_source / max(config.math.eps, n_src) /
