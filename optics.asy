@@ -44,6 +44,28 @@ import graph;
 import math;
 import version;
 
+// Compare version components numerically; lexical string comparison makes
+// versions such as 3.9 sort after 3.11.
+int compareVersion(string v1, string v2) {
+    int i1 = 0, i2 = 0;
+    while (i1 < length(v1) || i2 < length(v2)) {
+        int n1 = 0, n2 = 0;
+        while (i1 < length(v1) && v1[i1] != '.') {
+            n1 = 10 * n1 + (int)v1[i1] - (int)'0';
+            ++i1;
+        }
+        while (i2 < length(v2) && v2[i2] != '.') {
+            n2 = 10 * n2 + (int)v2[i2] - (int)'0';
+            ++i2;
+        }
+        if (n1 < n2) return -1;
+        if (n1 > n2) return 1;
+        if (i1 < length(v1)) ++i1;
+        if (i2 < length(v2)) ++i2;
+    }
+    return 0;
+}
+
 usepackage("fontenc", "T2A");
 usepackage("amsmath");
 usepackage("siunitx");
@@ -179,16 +201,11 @@ Config config = defaultConfig();
 // code.  This keeps failures local and descriptive instead of producing
 // invalid steps, runaway rendering loops, or numerical overflows later.
 void validateConfig() {
-    if (config.physics.meters_per_unit <= 0)
-        abort("config.physics.meters_per_unit must be positive.");
-    if (config.physics.lambda <= 0)
-        abort("config.physics.lambda must be positive (nm).");
-    if (config.physics.ds <= 0)
-        abort("config.physics.ds must be positive geometry units.");
-    if (config.physics.far <= 0)
-        abort("config.physics.far must be positive geometry units.");
-    if (config.physics.min_refractive_index <= 0)
-        abort("config.physics.min_refractive_index must be positive.");
+    if (config.physics.meters_per_unit <= 0) abort("config.physics.meters_per_unit must be positive.");
+    if (config.physics.lambda <= 0) abort("config.physics.lambda must be positive (nm).");
+    if (config.physics.ds <= 0) abort("config.physics.ds must be positive geometry units.");
+    if (config.physics.far <= 0) abort("config.physics.far must be positive geometry units.");
+    if (config.physics.min_refractive_index <= 0) abort("config.physics.min_refractive_index must be positive.");
     if (config.physics.max_depth < 1 || config.physics.max_branches < 1)
         abort("config.physics.max_depth and max_branches must be at least 1.");
     if (config.geometry.max_bisection_steps < 1 || config.geometry.arc_subdivisions < 4)
@@ -2756,7 +2773,7 @@ struct Trace {
         sub.root_ids = new int[];
         return sub;
     }
-    if (VERSION < "3.11") {
+    if (compareVersion(VERSION, "3.11") < 0) {
         Trace get(int i) { return subtrace(i); }
     } else {
         // Native Subscript Operator: t[i] returns Trace view for i-th ray in a beam!
@@ -3308,8 +3325,7 @@ RayPolarization rayPolarization(bool visible = config.rendering.draw_polarizatio
                                 int[] segments = new int[]{-1},
                                 real min_amplitude = 0,
                                 real min_segment_length = config.rendering.min_polarization_segment_length,
-                                real min_separation = config.rendering.min_polarization_marker_separation,
-                                ... SegmentRule[] rules) {
+                                real min_separation = config.rendering.min_polarization_marker_separation, ... SegmentRule[] rules) {
     RayPolarization out = new RayPolarization;
     out.count = count;
     out.spacing = spacing;
@@ -3768,8 +3784,7 @@ void drawWavefrontMarker(picture pic = currentpicture,
                 pair pt = point(arc_full, reltime(arc_full, j / (real)n_pts));
                 bool is_visible = dot(pt - hit_p, N) >= -config.math.eps;
                 if (is_visible) {
-                    if (wf.dashed_behind && hidden_run && length(arc_behind) > 1)
-                        draw(pic, arc_behind, q + dashed);
+                    if (wf.dashed_behind && hidden_run && length(arc_behind) > 1) draw(pic, arc_behind, q + dashed);
                     arc_behind = nullpath;
                     hidden_run = false;
                     arc_visible = arc_visible -- pt;
@@ -3915,10 +3930,10 @@ private TracePoint pointAtOPL(Segment[] segs, real target_o_p_l) {
 private
 void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWavefront wf) {
     if (traces.length < 2) return;
-    real source_lambda = (traces[0].first() != null && traces[0].first().lambda > 0)
-                         ? traces[0].first().lambda : config.physics.lambda;
-    real spacing_um = geometryToUm((!isnan(wf.spacing) && wf.spacing > 0)
-                                   ? wf.spacing : resolveEffectiveLambda(nan, source_lambda));
+    real source_lambda =
+        (traces[0].first() != null && traces[0].first().lambda > 0) ? traces[0].first().lambda : config.physics.lambda;
+    real spacing_um =
+        geometryToUm((!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, source_lambda));
     if (spacing_um <= config.math.eps) return;
     // For explicitly requested interference families, use the identical
     // paired-circle construction as drawBundleInterference. This guarantees
@@ -3939,10 +3954,8 @@ void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWa
                     if (r2 <= 0 || abs(r1 - r2) > separation || r1 + r2 < separation) continue;
                     Hit hit_a = (traces[0].last() != null) ? traces[0].last().hit : null;
                     Hit hit_b = (traces[1].last() != null) ? traces[1].last().hit : null;
-                    drawWavefrontMarker(pic, a.p, a.d, r1, 1.0, hit_a,
-                                        (wf.p != nullpen) ? wf.p : lightblue, wf);
-                    drawWavefrontMarker(pic, b.p, b.d, r2, 1.0, hit_b,
-                                        (wf.p != nullpen) ? wf.p : lightblue, wf);
+                    drawWavefrontMarker(pic, a.p, a.d, r1, 1.0, hit_a, (wf.p != nullpen) ? wf.p : lightblue, wf);
+                    drawWavefrontMarker(pic, b.p, b.d, r2, 1.0, hit_b, (wf.p != nullpen) ? wf.p : lightblue, wf);
                 }
             }
         }
@@ -3970,10 +3983,8 @@ void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWa
             if (wf.nodes && k == 1) opl_from_source -= 0.5 * spacing_um;
             if (opl_from_source <= config.math.eps) continue;
             real n_src = (src.medium != null) ? src.medium.n(src.p, src.d, src.lambda, src.pol) : 1.0;
-            real radius = opl_from_source / max(config.math.eps, n_src) /
-                          metersToUm(config.physics.meters_per_unit);
-            drawWavefrontMarker(pic, src.p, src.d, radius, n_src, null,
-                                (wf.p != nullpen) ? wf.p : lightblue, wf);
+            real radius = opl_from_source / max(config.math.eps, n_src) / metersToUm(config.physics.meters_per_unit);
+            drawWavefrontMarker(pic, src.p, src.d, radius, n_src, null, (wf.p != nullpen) ? wf.p : lightblue, wf);
         }
     }
 }
@@ -3990,7 +4001,8 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     Trace t0 = traces[0];
     if (t0.first() == null) return;
     real source_lambda = (t0.first().lambda > 0) ? t0.first().lambda : config.physics.lambda;
-    real spacing_geom = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, source_lambda);
+    real spacing_geom =
+        (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, source_lambda);
     real spacing = geometryToUm(spacing_geom);
     pair p0_ref = t0.first().p;
     pair d_in = unitOr(t0.first().d);
@@ -4538,8 +4550,16 @@ void draw(picture pic = currentpicture,
     if (wavefronts.phase_locked) individual_wavefronts.visible = false;
     if (individual_wavefronts.visible) {
         for (Trace t : traces) {
-            draw(pic, t, before, after, margin, nullpen, rayArrows(visible = false),
-                 rayPolarization(visible = false), individual_wavefronts, draw_reflections);
+            draw(pic,
+                 t,
+                 before,
+                 after,
+                 margin,
+                 nullpen,
+                 rayArrows(visible = false),
+                 rayPolarization(visible = false),
+                 individual_wavefronts,
+                 draw_reflections);
         }
     }
 
