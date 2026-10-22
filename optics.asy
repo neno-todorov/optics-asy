@@ -6710,6 +6710,7 @@ Inset InterferenceInset(Ray[] sources,
                         real vis_lambda = nan,
                         int periods = 5,
                         int samples = 400,
+                        bool collimated = false,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 28.0,
@@ -6764,6 +6765,15 @@ Inset InterferenceInset(Ray[] sources,
         has_visual_lambda ? lambda_geom_units * metersToUm(config.physics.meters_per_unit) * um_to_nm : ref_lambda_nm;
 
     real actual_span = span;
+    if (collimated && (isnan(actual_span) || actual_span <= 0)) {
+        real lambda_geom = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
+        real dtheta = (sources.length >= 2) ?
+                      abs(dot(sources[0].d - sources[1].d, u_screen)) : 0.0;
+        if (dtheta > config.math.eps)
+            actual_span = periods * lambda_geom / dtheta;
+        else
+            actual_span = 20.0;
+    }
     if (isnan(actual_span) || actual_span <= 0) {
         real min_y = infinity, max_y = -infinity;
         real avg_D = 0.0;
@@ -6796,19 +6806,27 @@ Inset InterferenceInset(Ray[] sources,
 
     for (int i = 0; i <= samples; ++i) {
         real t = -1.0 + 2.0 * i / samples; // [-1, 1]
-        pair P_y = probe_center + (t * actual_span / 2.0) * u_screen;
+        real x_coord = t * actual_span / 2.0;
+        pair P_y = probe_center + x_coord * u_screen;
 
         Ray[] raysAtP;
         for (Ray src : sources) {
             if (src == null) continue;
-            pair d_k = unitOr(P_y - src.p);
-            real dist = length(P_y - src.p);
-            real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_eff_nm, src.pol);
-
-            Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_eff_nm, pol = src.pol, phase = src.phase);
-            r_k.coherence_id = src.coherence_id;
-            r_k.opl = src.opl + geometryToUm(dist) * n_med;
-            r_k.p = P_y;
+            Ray r_k = copy(src);
+            r_k.lambda = lambda_eff_nm;
+            if (collimated) {
+                real normal_advance = dot(P_y - src.p, perp(u_screen));
+                real tilt_advance = dot(src.d, u_screen) * x_coord;
+                r_k.opl = src.opl + geometryToUm(normal_advance + tilt_advance);
+                r_k.p = P_y;
+            } else {
+                pair d_k = unitOr(P_y - src.p);
+                real dist = length(P_y - src.p);
+                real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_eff_nm, src.pol);
+                r_k.d = d_k;
+                r_k.opl = src.opl + geometryToUm(dist) * n_med;
+                r_k.p = P_y;
+            }
 
             raysAtP.push(r_k);
         }
@@ -6904,6 +6922,7 @@ Inset InterferenceInset(Trace[] traces,
                         real vis_lambda = nan,
                         int periods = 5,
                         int samples = 400,
+                        bool collimated = false,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 28.0,
@@ -6925,6 +6944,7 @@ Inset InterferenceInset(Trace[] traces,
                              vis_lambda,
                              periods,
                              samples,
+                             collimated,
                              pos,
                              target,
                              size,
