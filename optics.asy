@@ -4,20 +4,39 @@
 // for the Trace subscript operator; older versions use Trace.get(i)).
 //
 // Naming convention:
-//   PascalCase       structs, public optical constructors and factories
-//   camelCase        operations, calculations, queries, and helpers
-//   snake_case       variables, struct fields, parameters, and local values
-//   UPPER_SNAKE_CASE constants and enum-like values
+//   * PascalCase       - structs, public optical constructors and factories
+//   * camelCase        - operations, calculations, queries, and helpers
+//   * snake_case       - variables, struct fields, parameters, and local values
+//   * UPPER_SNAKE_CASE - constants and enum-like values
 // Naming details:
 //   * semantic qualifiers precede units: lambda_eff_nm, theta_inc_deg;
 //   * unit suffixes are last: *_nm, *_um, *_mm, *_deg, *_rad;
 //   * pen variables use the pen_* form: pen_ray, pen_laser, pen_line;
 //   * standard optical notation (S0, rs, rp, n1, n2) is preserved.
 //
-// Units: wavelengths in nm at the public API.
-// Polarization: Stokes vectors referenced to the global s (= z, TE) and
-// p (in-plane, TM) basis.  Fresnel convention: rs = (n1 ci - n2 ct)/(...),
-// rp = (n2 ci - n1 ct)/(...); mirrors are the n2 -> infinity limit.
+// Units and physical scale:
+//   * Public wavelength arguments are in nm; material dispersion models use µm
+//     internally.  Wavelengths are never converted to geometry units for
+//     physical calculations.
+//   * Points, paths, ray positions, intersections, and element dimensions use
+//     native Asymptote geometry units and are independent of rendering size.
+//   * config.physics.meters_per_unit defines the physical length represented by
+//     one geometry unit.  Physical distances are converted to µm before they
+//     are used for OPL, phase, absorption, or polarization evolution.
+//   * Ray.opl is stored in µm.  vacuumWaveNumber() returns rad/µm, so
+//     vacuumWaveNumber(lambda) * Ray.opl is a dimensionless phase.
+//   * Length-dependent material coefficients (for example absorption and
+//     rotation coefficients) are interpreted per µm.
+//
+// Polarization and Fresnel conventions:
+//   * Stokes vectors use one fixed global basis: s (= z, TE, out of the
+//     drawing plane) and p (= in-plane, TM).
+//   * S1 = Is - Ip; S2 and S3 describe the relative phase between the s and p
+//     field components.
+//   * Fresnel amplitudes use rs = (n1 ci - n2 ct)/(...) and
+//     rp = (n2 ci - n1 ct)/(...); mirrors use the n2 -> infinity limit.
+//   * In anisotropic media, d is the energy/group direction and wave_normal
+//     is the phase-propagation direction.
 // Run the test suite with:  asy -noV optics_test.asy
 
 import geometry;
@@ -69,17 +88,20 @@ struct MathConfig {
 }
 
 struct PhysicsConfig {
-    real lambda = 633;
+    real lambda = 633.0;
+    // Physical scale: metres represented by one native Asymptote geometry unit.
+    // The historical convention is one geometry unit = one micrometre.
+    real meters_per_unit = 1e-6;
     real min_intensity = 1e-3;
-    real min_refractive_index = 0.1;
+    real min_refractive_index = 1e-1;
     real eps_integration = 1e-4;
     real wavevector_alignment_tolerance = 1e-6;
     real aiming_direction_eps = 1e-7;
     real aiming_height_tolerance = 1e-5;
-    real far = 1000;
-    real ds = 0.01;
-    real paraxial_height = 0.05;
-    real differential_angle = 0.5;
+    real far = 1e3;
+    real ds = 1e-2;
+    real paraxial_height = 5e-2;
+    real differential_angle = 5e-1;
     int grin_solver = GRINSolverType.RK45;
     int max_depth = 20;
     int max_branches = 128;
@@ -90,9 +112,9 @@ struct PhysicsConfig {
 struct GeometryConfig {
     real eps = 1e-8;
     real eps_intersection = 1e-8;
-    real self_intersection_factor = 100;
-    real near_intersection_factor = 10;
-    real ray_to_path_extension = 1000;
+    real self_intersection_factor = 1e2;
+    real near_intersection_factor = 1e1;
+    real ray_to_path_extension = 1e3;
     real hemisphere_margin = 0.999;
     int max_bisection_steps = 25;
     int arc_subdivisions = 64;
@@ -131,6 +153,7 @@ struct RenderingConfig {
     int polarization_inset_ellipse_steps = 36;
     real wavefront_max_dist = 120.0;
     int wavefront_max_orders = 3;
+    int wavefront_max_markers = 2000;
 }
 
 struct Config {
@@ -153,20 +176,28 @@ defaultConfig() {
 Config config = defaultConfig();
 
 // Wavelengths are expressed in nm at the public API; geometric lengths use um.
-// wavelengthInUnits() and resolveEffectiveLambda() return geometric units.
-real wavelengthInUnits(real lambda) { return lambda / 1000.0; }
+// Unit-conversion ratios: multiply to convert between nm and um.
+real nm_to_um = 1e-3; // multiply a value in nm to get um
+real um_to_nm = 1e3;  // multiply a value in um to get nm
+
+// Canonical physical length unit for optical calculations is micrometres.
+real metersToUm(real metres) { return metres * 1e6; }
+real geometryToUm(real distance) { return distance * metersToUm(config.physics.meters_per_unit); }
+real geometryWavelengthUm(real lambda_nm) {
+    return (lambda_nm * nm_to_um) / metersToUm(config.physics.meters_per_unit);
+}
+// resolveEffectiveLambda() is a rendering quantity: it returns geometry units.
 
 // local_vis_lambda is an optional diagram wavelength in geometric units;
 // src_lambda is a physical wavelength in nanometers.
 real resolveEffectiveLambda(real local_vis_lambda, real src_lambda) {
     if (!isnan(local_vis_lambda) && local_vis_lambda > 0) return local_vis_lambda;
-    if (!isnan(config.rendering.vis_lambda) && config.rendering.vis_lambda > 0)
-        return config.rendering.vis_lambda;
-    return wavelengthInUnits(src_lambda);
+    if (!isnan(config.rendering.vis_lambda) && config.rendering.vis_lambda > 0) return config.rendering.vis_lambda;
+    return geometryWavelengthUm(src_lambda);
 }
 
-real vacuumWaveNumber(real lambda) {
-    real lambda = wavelengthInUnits(lambda);
+real vacuumWaveNumber(real lambda_nm) {
+    real lambda = lambda_nm * nm_to_um;
     return (lambda > config.math.eps) ? 2.0 * pi / lambda : 0.0;
 }
 
@@ -622,19 +653,19 @@ RefractiveIndex(real A = 1.0, real B = 0.0, indexProfile n_profile = null, gradi
     vp.spatial_index = (n_profile != null);
     if (n_profile != null) {
         vp.phase_index = new real(pair p, pair d, real lambda, Polarization pol) {
-            real l_um = wavelengthInUnits(lambda);
+            real l_um = lambda * nm_to_um;
             real base_n = A + (l_um > 0 ? B / (l_um * l_um) : 0);
             return base_n * n_profile(p, lambda);
         };
     } else if (A != 1.0 || B != 0.0) {
         vp.phase_index = new real(pair p, pair d, real lambda, Polarization pol) {
-            real l_um = wavelengthInUnits(lambda);
+            real l_um = lambda * nm_to_um;
             return A + (l_um > 0 ? B / (l_um * l_um) : 0);
         };
     }
     if (grad_profile != null) {
         vp.phase_gradient = new pair(pair p, pair d, real lambda) {
-            real l_um = wavelengthInUnits(lambda);
+            real l_um = lambda * nm_to_um;
             real base_n = A + (l_um > 0 ? B / (l_um * l_um) : 0);
             return base_n * grad_profile(p, lambda);
         };
@@ -684,8 +715,9 @@ VolumeProperty Dichroic(real alpha_s, real alpha_p, real axis = 0.0) {
         if (in_pol == null || ds <= 0) return in_pol;
 
         Polarization out = copy(in_pol);
-        real Ts = exp(-alpha_s * ds);
-        real Tp = exp(-alpha_p * ds);
+        real ds_um = geometryToUm(ds);
+        real Ts = exp(-alpha_s * ds_um);
+        real Tp = exp(-alpha_p * ds_um);
         // Rotate into the dichroic eigenframe, apply the Mueller
         // diattenuator, and rotate back.
         if (axis != 0) out.applyRotation(-axis);
@@ -704,7 +736,7 @@ VolumeProperty Sellmeier(real[] B, real[] C) {
     vp.name = "Sellmeier";
     real[] Bc = copy(B), Cc = copy(C);
     vp.phase_index = new real(pair p, pair d, real lambda, Polarization pol) {
-        real l2 = wavelengthInUnits(lambda) ^ 2;
+        real l2 = (lambda * nm_to_um) ^ 2;
         real n2 = 1.0;
         for (int i = 0; i < Bc.length; ++i) n2 += Bc[i] * l2 / (l2 - Cc[i]);
         return sqrt(max(0.0, n2));
@@ -763,9 +795,9 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0))
         for (real kn : candidates) {
             pair k = kn * N + kt * T;
             pair wave_normal = unitOr(k);
-            pair group =
-                unitOr(dot(wave_normal, optic_axis) * optic_axis * inv_no2 + dot(wave_normal, q_axis) * q_axis * inv_ne2,
-                       wave_normal);
+            pair group = unitOr(dot(wave_normal, optic_axis) * optic_axis * inv_no2 +
+                                    dot(wave_normal, q_axis) * q_axis * inv_ne2,
+                                wave_normal);
             real score = dot(group, forward);
             if (score > best_forward) {
                 best_forward = score;
@@ -790,7 +822,7 @@ VolumeProperty OpticalActivity(real rot_per_unit) {
         if (in_pol == null || ds <= 0) return in_pol;
         Polarization out = copy(in_pol);
 
-        real theta = radians(rot_per_unit * ds);
+        real theta = radians(rot_per_unit * geometryToUm(ds));
         out.applyRotation(theta);
 
         return out;
@@ -807,7 +839,7 @@ VolumeProperty FaradayRotator(real V, pair B = (1, 0)) {
         if (in_pol == null || ds <= 0) return in_pol;
         Polarization out = copy(in_pol);
 
-        real theta = radians(V * dot(B, d) * ds);
+        real theta = radians(V * dot(B, d) * geometryToUm(ds));
         out.applyRotation(theta);
 
         return out;
@@ -886,7 +918,7 @@ struct Medium {
         real a = absorption(p, d, lambda, in_pol);
         // Beer-Lambert: isotropic loss/gain scales the whole Stokes vector
         // by exp(-alpha*ds).  Scaling only S0 would leave |S_123| > S0.
-        if (a != 0) curr_pol.scale(exp(-a * ds));
+        if (a != 0) curr_pol.scale(exp(-a * geometryToUm(ds)));
 
         return curr_pol;
     }
@@ -1297,7 +1329,7 @@ Ray propagate(Ray r, real dist) {
     Ray out = copy(r);
     real n_eff = rayIndex(r.medium, r.p, r.wave_normal, r.d, r.lambda, r.pol);
     out.p = r.p + dist * r.d;
-    out.opl = r.opl + dist * n_eff;
+    out.opl = r.opl + geometryToUm(dist) * n_eff;
     return out;
 }
 
@@ -2407,10 +2439,10 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfa
                 // Midpoint-rule OPL over the partial step (same order as the
                 // interior steps); the index at the step start biased it.
                 real n_hit = curr_ray.medium.n(0.5 * (curr_ray.p + h.p),
-                                             unitOr(curr_ray.d + incident_ray.d, curr_ray.d),
-                                             curr_ray.lambda,
-                                             curr_ray.pol);
-                incident_ray.opl = curr_ray.opl + hit_step * n_hit;
+                                               unitOr(curr_ray.d + incident_ray.d, curr_ray.d),
+                                               curr_ray.lambda,
+                                               curr_ray.pol);
+                incident_ray.opl = curr_ray.opl + geometryToUm(hit_step) * n_hit;
                 applyAbsorption(incident_ray, hit_step);
                 traj = traj -- h.p;
                 return propagationResult(incident_ray, true, h, traj);
@@ -2419,7 +2451,7 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfa
                 pair mid_direction = unitOr(curr_ray.d + next_ray.d, curr_ray.d);
                 real n_mid = curr_ray.medium.n(mid_point, mid_direction, curr_ray.lambda, curr_ray.pol);
                 curr_ray = next_ray;
-                curr_ray.opl += step * n_mid;
+                curr_ray.opl += geometryToUm(step) * n_mid;
                 t_total += step;
                 traj = traj -- curr_ray.p;
                 curr_ray.ignored_flat_indices = new int[];
@@ -2433,12 +2465,12 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfa
         real current_n = rayIndex(medium, r.p, r.wave_normal, r.d, r.lambda, r.pol);
         Ray next_ray = copy(r);
         if (!h.valid || h.t > far) {
-            next_ray.opl += far * current_n;
+            next_ray.opl += geometryToUm(far) * current_n;
             next_ray.p = r.p + far * r.d;
             applyAbsorption(next_ray, far);
             return propagationResult(next_ray, false, null, r.p -- next_ray.p);
         } else {
-            next_ray.opl += h.t * current_n;
+            next_ray.opl += geometryToUm(h.t) * current_n;
             next_ray.p = h.p;
             applyAbsorption(next_ray, h.t);
             return propagationResult(next_ray, true, h, r.p -- h.p);
@@ -2833,8 +2865,10 @@ struct OpticalSystem {
         };
         return makeTracer(flat_surfaces, resolve, ds, far, max_depth).traceRays(rays);
     }
-    Trace
-    trace(Ray ray, real ds = config.physics.ds, real far = config.physics.far, int max_depth = config.physics.max_depth) {
+    Trace trace(Ray ray,
+                real ds = config.physics.ds,
+                real far = config.physics.far,
+                int max_depth = config.physics.max_depth) {
         return trace(new Ray[]{ray}, ds = ds, far = far, max_depth = max_depth);
     }
 }
@@ -3340,8 +3374,8 @@ void drawPolarization(picture pic = currentpicture,
     if (L <= config.rendering.min_drawable_length) return;
 
     // Minimum Segment Length Gate: If the segment is too short to reasonably display a marker, skip entirely.
-    real min_seg_l =
-        !isnan(eff_pol.min_segment_length) ? eff_pol.min_segment_length : config.rendering.min_polarization_segment_length;
+    real min_seg_l = !isnan(eff_pol.min_segment_length) ? eff_pol.min_segment_length
+                                                        : config.rendering.min_polarization_segment_length;
     if (L < min_seg_l) return;
 
     // Margins and Spacing Limits
@@ -3456,23 +3490,24 @@ struct RayWavefront {
     real after = 0.05;  // Margin from segment end
     pen p = nullpen;
     // Huygens Wavelet Settings
-    bool wavelets = false;     // If true: draw circular Huygens secondary wavelet arcs
-    real alpha = 30.0;         // Half-angle of arc (spans d +- alpha, default 30 deg, up to 90 deg)
+    bool wavelets = false;       // If true: draw circular Huygens secondary wavelet arcs
+    real alpha = 30.0;           // Half-angle of arc (spans d +- alpha, default 30 deg, up to 90 deg)
     bool cut_at_boundary = true; // If true: arcs are clipped at physical surfaces
-    bool dashed_behind = false; // If true: portion behind boundary is dashed instead of omitted
-    bool show_source = true;    // Draw center dot at emission origin P0
+    bool dashed_behind = false;  // If true: portion behind boundary is dashed instead of omitted
+    bool show_source = true;     // Draw center dot at emission origin P0
     // Bundle iso-OPL contours (draw(Trace[], ...) only)
-    bool contours = false;     // Draw iso-OPL / iso-phase wavefront contours across the bundle
+    bool contours = false;      // Draw iso-OPL / iso-phase wavefront contours across the bundle
+    bool phase_locked = false;  // Use common physical-OPL contours for bundle wavefronts
     pen p_contours = lightblue; // Pen for iso-OPL contour lines
     // Interference lines (draw(Trace[], ...) only, requires contours or wavelets)
-    bool antinodes = false;                           // Draw constructive interference channels (Delta phi = 2*pi*m)
-    bool nodes = false;                               // Draw destructive interference channels (Delta phi = pi*(2m+1))
-    pen pen_line = gray(0.4) + dashed;                   // Pen for interference lines
-    pen pen_dots = gray(0.4) + 2pt;                      // Pen for intersection dots
-    real max_dist = config.rendering.wavefront_max_dist; // Max distance from source midpoint to trace interference
+    bool antinodes = false;            // Draw constructive interference channels (Delta phi = 2*pi*m)
+    bool nodes = false;                // Draw destructive interference channels (Delta phi = pi*(2m+1))
+    pen pen_line = gray(0.4) + dashed; // Pen for interference lines
+    pen pen_dots = gray(0.4) + 2pt;    // Pen for intersection dots
+    real max_dist = config.rendering.wavefront_max_dist;    // Max distance from source midpoint to trace interference
     int max_orders = config.rendering.wavefront_max_orders; // Maximum interference order |m| to draw
-    bool show_dots = true;                                // Show circle-crossing dots at antinodes
-    bool show_labels = true;                              // Label each antinodal channel with m
+    bool show_dots = true;                                  // Show circle-crossing dots at antinodes
+    bool show_labels = true;                                // Label each antinodal channel with m
     // Segment rules
     SegmentRule[] rules;
 
@@ -3498,6 +3533,7 @@ struct RayWavefront {
         out.p = this.p;
         // Bundle-level fields pass through unchanged
         out.contours = this.contours;
+        out.phase_locked = this.phase_locked;
         out.p_contours = this.p_contours;
         out.antinodes = this.antinodes;
         out.nodes = this.nodes;
@@ -3552,6 +3588,7 @@ copy(RayWavefront src) {
     out.dashed_behind = src.dashed_behind;
     out.show_source = src.show_source;
     out.contours = src.contours;
+    out.phase_locked = src.phase_locked;
     out.p_contours = src.p_contours;
     out.antinodes = src.antinodes;
     out.nodes = src.nodes;
@@ -3587,6 +3624,7 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
                           pen p = nullpen,
                           // Bundle iso-OPL contours
                           bool contours = false,
+                          bool phase_locked = false,
                           pen p_contours = lightblue,
                           // Interference lines
                           bool antinodes = false,
@@ -3613,6 +3651,7 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
     out.show_source = show_source;
     out.p = p;
     out.contours = contours;
+    out.phase_locked = phase_locked;
     out.p_contours = p_contours;
     out.antinodes = antinodes;
     out.nodes = nodes;
@@ -3647,11 +3686,11 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
 
 // Standalone Wavefront Marker / Huygens Wavelet Renderer
 void drawWavefrontMarker(picture pic = currentpicture,
-                         pair center,       // Emission origin P0 (for wavelets) or bar center (for crests)
-                         pair d,            // Wave propagation direction
-                         real radius,       // Arc radius (for wavelets) or arc distance s
+                         pair center,        // Emission origin P0 (for wavelets) or bar center (for crests)
+                         pair d,             // Wave propagation direction
+                         real radius,        // Arc radius (for wavelets) or arc distance s
                          real local_n = 1.0, // Refractive index for wavelength scaling
-                         Hit hit = null,    // Optional boundary for automatic clipping
+                         Hit hit = null,     // Optional boundary for automatic clipping
                          pen p = currentpen,
                          RayWavefront wf = rayWavefront()) {
     pen q = (wf.p != nullpen) ? wf.p : p;
@@ -3725,11 +3764,24 @@ void drawWavefront(picture pic = currentpicture,
         for (int i = 1; i <= eff_wf.count; ++i) radii.push(i * step);
     } else {
         real physical_lambda = (r.lambda > 0) ? r.lambda : config.physics.lambda;
-        real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0) ? (eff_wf.spacing / local_n)
-                                                               : resolveEffectiveLambda(nan, physical_lambda) / local_n;
+        real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0)
+                      ? (eff_wf.spacing / local_n)
+                      : resolveEffectiveLambda(nan, physical_lambda) / local_n;
         if (sp <= config.math.eps) sp = 12.0;
-        for (real cur_r = sp; cur_r < L - config.math.eps; cur_r += sp) {
-            radii.push(cur_r);
+        int requested = max(0, ceil((L - config.math.eps) / sp));
+        int marker_count = min(requested, max(1, config.rendering.wavefront_max_markers));
+        if (requested <= marker_count) {
+            for (real cur_r = sp; cur_r < L - config.math.eps; cur_r += sp) {
+                radii.push(cur_r);
+            }
+        } else {
+            // Extremely small rendered wavelengths can otherwise allocate
+            // millions of paths. Preserve coverage while bounding rendering
+            // work; this affects drawing only, never physical phase/OPL.
+            real render_step = L / (marker_count + 1);
+            for (int i = 1; i <= marker_count; ++i) {
+                radii.push(i * render_step);
+            }
         }
     }
 
@@ -3773,7 +3825,7 @@ private TracePoint pointAtOPL(Segment[] segs, real target_o_p_l) {
         Segment s = segs[i];
         real seg_len = arclength(s.traj);
         real n_med = rayIndex(s.before);
-        real seg_opl = seg_len * n_med;
+        real seg_opl = geometryToUm(seg_len) * n_med;
         real next_opl = cur_opl + seg_opl;
 
         // Strict range check: if target_o_p_l exceeds next_opl on the last segment, the ray has ENDED!
@@ -3796,6 +3848,42 @@ private TracePoint pointAtOPL(Segment[] segs, real target_o_p_l) {
     return tp; // Ray has ended or not reached yet -> invalid!
 }
 
+// Phase-locked Huygens wavelets from common physical OPL targets.
+private
+void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWavefront wf) {
+    if (traces.length < 2) return;
+    real source_lambda = (traces[0].first() != null && traces[0].first().lambda > 0)
+                         ? traces[0].first().lambda : config.physics.lambda;
+    real spacing_um = geometryToUm((!isnan(wf.spacing) && wf.spacing > 0)
+                                   ? wf.spacing : resolveEffectiveLambda(nan, source_lambda));
+    if (spacing_um <= config.math.eps) return;
+    real max_opl = 0.0;
+    for (Trace tr : traces) {
+        if (tr == null || tr.first() == null) continue;
+        real total = 0.0;
+        for (Segment s : tr.segments()) total += geometryToUm(arclength(s.traj)) * rayIndex(s.before);
+        max_opl = max(max_opl, total);
+    }
+    int count = min(max(1, ceil(max_opl / spacing_um)), max(1, config.rendering.wavefront_max_markers));
+    for (int i = 1; i <= count; ++i) {
+        real target = i * max_opl / (count + 1);
+        for (int k = 0; k < traces.length; ++k) {
+            Ray src = traces[k].first();
+            if (src == null) continue;
+            real k0 = vacuumWaveNumber(src.lambda);
+            real phase_offset = (k0 > config.math.eps) ? src.phase / k0 : 0.0;
+            real opl_from_source = target - phase_offset;
+            if (wf.nodes && k == 1) opl_from_source -= 0.5 * (src.lambda * nm_to_um);
+            if (opl_from_source <= config.math.eps) continue;
+            real n_src = (src.medium != null) ? src.medium.n(src.p, src.d, src.lambda, src.pol) : 1.0;
+            real radius = opl_from_source / max(config.math.eps, n_src) /
+                          metersToUm(config.physics.meters_per_unit);
+            drawWavefrontMarker(pic, src.p, src.d, radius, n_src, null,
+                                (wf.p != nullpen) ? wf.p : lightblue, wf);
+        }
+    }
+}
+
 // Private: Iso-OPL / Iso-Phase Wavefront Contours across a ray bundle
 private
 void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefront wf) {
@@ -3808,7 +3896,8 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     Trace t0 = traces[0];
     if (t0.first() == null) return;
     real source_lambda = (t0.first().lambda > 0) ? t0.first().lambda : config.physics.lambda;
-    real spacing = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, source_lambda);
+    real spacing_geom = (!isnan(wf.spacing) && wf.spacing > 0) ? wf.spacing : resolveEffectiveLambda(nan, source_lambda);
+    real spacing = geometryToUm(spacing_geom);
     pair p0_ref = t0.first().p;
     pair d_in = unitOr(t0.first().d);
     real n_amb = (t0.first().medium != null) ? t0.first().medium.n() : 1.0;
@@ -3827,13 +3916,15 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
         Trace t = traces[k];
         if (t.first() == null || t.last() == null) continue;
 
-        real offset = dot(t.first().p - p0_ref, d_in) * n_amb;
+        real k0 = vacuumWaveNumber(t.first().lambda);
+        real phase_opl_offset = (k0 > config.math.eps) ? t.first().phase / k0 : 0.0;
+        real offset = geometryToUm(dot(t.first().p - p0_ref, d_in) * n_amb) + phase_opl_offset;
         launch_offsets[k] = offset;
 
         real trace_total_o_p_l = 0.0;
         for (Segment s : segs_of[k]) {
             real n_med = rayIndex(s.before);
-            trace_total_o_p_l += arclength(s.traj) * n_med;
+            trace_total_o_p_l += geometryToUm(arclength(s.traj)) * n_med;
         }
 
         min_global_o_p_l = min(min_global_o_p_l, offset);
@@ -3845,8 +3936,17 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     // 3. Determine Target OPL values
     real[] targetOPLs;
     if (!isnan(spacing) && spacing > 0) {
-        for (real L = min_global_o_p_l + spacing; L < max_global_o_p_l; L += spacing) {
-            targetOPLs.push(L);
+        int requested = max(0, ceil((max_global_o_p_l - min_global_o_p_l) / spacing));
+        int target_count = min(requested, max(1, config.rendering.wavefront_max_markers));
+        if (requested <= target_count) {
+            for (real L = min_global_o_p_l + spacing; L < max_global_o_p_l; L += spacing) {
+                targetOPLs.push(L);
+            }
+        } else {
+            real contour_step = (max_global_o_p_l - min_global_o_p_l) / (target_count + 1);
+            for (int i = 1; i <= target_count; ++i) {
+                targetOPLs.push(min_global_o_p_l + i * contour_step);
+            }
         }
     } else {
         real d_l = (max_global_o_p_l - min_global_o_p_l) / (count + 1);
@@ -3892,9 +3992,11 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
                         pair S_hit_curr = s_curr[trans_seg].b;
                         pair S_hit_prev = s_prev[trans_seg].b;
 
-                        real opl_hit_curr = launch_offsets[k] + (tp.seg_idx > trans_seg ? tp.seg_o_p_l_start : tp.seg_o_p_l_end);
+                        real opl_hit_curr =
+                            launch_offsets[k] + (tp.seg_idx > trans_seg ? tp.seg_o_p_l_start : tp.seg_o_p_l_end);
                         real opl_hit_prev =
-                            launch_offsets[prev_k] + (prev_t_p.seg_idx > trans_seg ? prev_t_p.seg_o_p_l_start : prev_t_p.seg_o_p_l_end);
+                            launch_offsets[prev_k] +
+                            (prev_t_p.seg_idx > trans_seg ? prev_t_p.seg_o_p_l_start : prev_t_p.seg_o_p_l_end);
 
                         real denom = opl_hit_curr - opl_hit_prev;
                         real tau =
@@ -4025,7 +4127,8 @@ void drawRaySegment(picture pic = currentpicture,
         if (base_alpha == 0) base_alpha = 1.0;
         pen_line = p + opacity(base_alpha * start_i);
     }
-    arrowbar ab = (arrow.visible && L_traj >= config.rendering.min_polarization_segment_length) ? (arrowbar)arrow : None;
+    arrowbar ab =
+        (arrow.visible && L_traj >= config.rendering.min_polarization_segment_length) ? (arrowbar)arrow : None;
 
     drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
     draw(pic, L, traj, pen_line, ab);
@@ -4064,7 +4167,7 @@ void drawFadingSegment(picture pic = currentpicture,
         real t2 = arctime(traj, (i + 1) * step_l);
         path sub = subpath(traj, t1, t2);
         real local_dist = (i + 0.5) * step_l;
-        real local_i = start_i * exp(-alpha * local_dist);
+        real local_i = start_i * exp(-alpha * geometryToUm(local_dist));
         pen pen_sub = p;
         if (apply_opacity) {
             pen_sub = p + opacity(base_alpha * max(0.0, min(1.0, local_i))) + squarecap;
@@ -4080,7 +4183,7 @@ void drawFadingSegment(picture pic = currentpicture,
         real pos = isnan(arrow.relative) ? (segment_idx == total_segments - 1 ? 1.0 : 0.5) : arrow.relative;
         pen pen_arrow = p;
         if (apply_opacity) {
-            real local_i = start_i * exp(-alpha * pos * L_traj);
+            real local_i = start_i * exp(-alpha * geometryToUm(pos * L_traj));
             pen_arrow = p + opacity(base_alpha * max(0.0, min(1.0, local_i)));
         }
         pic.add(arrow(h, traj, invisible, sz, FillDraw(pen_arrow, pen_arrow), position = Relative(pos)));
@@ -4333,12 +4436,30 @@ void draw(picture pic = currentpicture,
           RayPolarization polarization = rayPolarization(),
           RayWavefront wavefronts = rayWavefront(),
           bool draw_reflections = config.rendering.draw_reflections) {
-    // 1. Draw each individual trace (rays + per-ray crests/wavelets)
+    // 1. Draw wavefronts before rays so rays and arrows remain legible on top.
+    // Phase-locked bundles draw common OPL contours instead of crest bars.
+    RayWavefront individual_wavefronts = wavefronts;
+    // Wavelet arcs are intentionally retained as a visual Huygens overlay;
+    // only ordinary per-ray crest bars are replaced by common OPL contours.
+    if (wavefronts.phase_locked) individual_wavefronts.visible = false;
+    if (individual_wavefronts.visible) {
+        for (Trace t : traces) {
+            draw(pic, t, before, after, margin, nullpen, rayArrows(visible = false),
+                 rayPolarization(visible = false), individual_wavefronts, draw_reflections);
+        }
+    }
+
+    if (wavefronts.phase_locked && wavefronts.wavelets) {
+        drawPhaseLockedWavelets(pic, traces, wavefronts);
+    }
+
+    RayWavefront no_wavefronts = wavefronts;
+    no_wavefronts.visible = false;
     for (Trace t : traces) {
-        draw(pic, t, before, after, margin, p, arrows, polarization, wavefronts, draw_reflections);
+        draw(pic, t, before, after, margin, p, arrows, polarization, no_wavefronts, draw_reflections);
     }
     // 2. Bundle iso-OPL contours
-    if (wavefronts.contours && traces.length >= 2) {
+    if ((wavefronts.contours || wavefronts.phase_locked) && !wavefronts.wavelets && traces.length >= 2) {
         drawBundleContours(pic, traces, wavefronts);
     }
     // 3. Interference lines between the first two traces
@@ -4466,8 +4587,13 @@ Property Refract(Medium inside, Medium ambient = null, real reflectance = nan) {
             (res.tir || config.physics.trace_reflections || config.rendering.draw_reflections)) {
             real intensity = r.intensity() * res.R;
             real refl_phase = atan2(res.rs.y, res.rs.x); // pi for external reflection (n1 < n2)
-            Ray refl_ray =
-                spawnRay(r, h, res.reflected_direction, intensity, res.source_medium, refl_phase, res.reflected_wave_normal);
+            Ray refl_ray = spawnRay(r,
+                                    h,
+                                    res.reflected_direction,
+                                    intensity,
+                                    res.source_medium,
+                                    refl_phase,
+                                    res.reflected_wave_normal);
 
             if (isnan(reflectance)) {
                 // Mueller reflection transformation for Stokes vector
@@ -4570,8 +4696,13 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
             if (config.physics.trace_reflections || config.rendering.draw_reflections || res.tir) {
                 real I_refl = r.intensity() * res.R;
                 if (I_refl > config.physics.min_intensity) {
-                    Ray refl_ray =
-                        spawnRay(r, h, res.reflected_direction, I_refl, res.source_medium, 0, res.reflected_wave_normal);
+                    Ray refl_ray = spawnRay(r,
+                                            h,
+                                            res.reflected_direction,
+                                            I_refl,
+                                            res.source_medium,
+                                            0,
+                                            res.reflected_wave_normal);
                     refl_ray.pol = copy(r.pol);
                     refl_ray.pol.scaleTo(I_refl);
                     rays.push(refl_ray);
@@ -4698,10 +4829,10 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
         }
         real n2 = reflective ? n1 : m2.n(h.p, r.d, r.lambda, r.pol);
         real k_in = dot(r.d, T);
-        real lambda_units = wavelengthInUnits(r.lambda);
+        real lambda_um = r.lambda * nm_to_um;
         real phase_shift = reflective ? pi : 0;
         for (int i = 0; i < orders.length; ++i) {
-            real delta_k = orders[i] * lambda_units / grating_spacing;
+            real delta_k = orders[i] * lambda_um / grating_spacing;
             real k_out = (n1 * k_in + delta_k) / n2;
             if (abs(k_out) <= 1.0) {
                 pair v_out = diffractionOutputDir(N, T, k_out, reflective);
@@ -4726,7 +4857,7 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
     // Alignment Closure (Decouples align() completely!)
     p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
         int target_order = (orders.length > order_index) ? orders[order_index] : 0;
-        real delta_k = target_order * wavelengthInUnits(lambda) / grating_spacing;
+        real delta_k = target_order * (lambda * nm_to_um) / grating_spacing;
         return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
     };
     return p;
@@ -4881,7 +5012,7 @@ arrowhead LensHead(bool concave = false, real angle = 20, real bow = 0.3, real b
         pair c_l = size * (barb - 0.5) * arrow_dir + (w * bow) * n;
         pair c_r = size * (barb - 0.5) * arrow_dir - (w * bow) * n;
         path hook_path = (concave) ? M -- p_l .. c_l .. tip -- tip .. c_r .. p_r -- cycle
-                                  : (-tip) -- M -- p_l .. c_l .. tip -- tip .. c_r .. p_r -- M -- cycle;
+                                   : (-tip) -- M -- p_l .. c_l .. tip -- tip .. c_r .. p_r -- M -- cycle;
         // Attachment Point:
         pair attach_point = (concave) ? -(size * barb) * arrow_dir : (size * barb) * arrow_dir;
         return shift(P0 - attach_point) * hook_path;
@@ -4910,7 +5041,10 @@ void drawThinLens(picture pic, Element e) {
     real head_size = config.rendering.min_lens_head;
     real f_val = !isnan(e.focal_length) ? e.focal_length : 0;
     // Single declarative draw line using native Asymptote Arrows!
-    draw(pic, a -- b, e.stroke, Arrows(LensHead(concave = (f_val < 0)), size = head_size, filltype = FillDraw));
+    draw(pic,
+         a -- b,
+         e.stroke,
+         Arrows(LensHead(concave = (f_val < 0)), size = head_size, filltype = FillDraw));
     // Optional focal points F1, F2
     if (e.show_info) {
         pair F1 = center - f_val * axis;
@@ -5034,8 +5168,11 @@ struct Lens {
 
 // Master Mirror Factories
 struct Mirror {
-    static Element
-    flat(pair center, real angle, real diameter, pen stroke = config.rendering.pen_mirror, string name = "Flat Mirror") {
+    static Element flat(pair center,
+                        real angle,
+                        real diameter,
+                        pen stroke = config.rendering.pen_mirror,
+                        string name = "Flat Mirror") {
         pair A = dir(angle);
         path boundary = linearBoundary(center, A, diameter);
         Property[] props = {Reflect()};
@@ -5301,7 +5438,9 @@ Element UniaxialCrystal(path boundary,
 // Section 8: Geometric Alignment, Solvers & Optical Analysis
 // ----------------------------------------------------------------------------
 pair lineIntersection(Ray r1, Ray r2) { return lineIntersection(r1.p, r1.d, r2.p, r2.d); }
-pair lineIntersection(Ray r, pair line_origin, pair line_dir) { return lineIntersection(r.p, r.d, line_origin, line_dir); }
+pair lineIntersection(Ray r, pair line_origin, pair line_dir) {
+    return lineIntersection(r.p, r.d, line_origin, line_dir);
+}
 pair intersection(Ray r1, Ray r2) { return lineIntersection(r1, r2); }
 
 // Dynamic Geometric Alignment API
@@ -5408,13 +5547,12 @@ real markAcute(Label L = "",
                arrowbar arrow = None,
                bool opposite = false) {
     if (inter == null || inter.hit == null) return 0;
-    Ray r =
-        (ray_type == Ray.Incident)
-            ? inter.incident
-            : ((ray_type == Ray.Reflected && ray_index < inter.reflected.length)
-                   ? inter.reflected[ray_index]
-                   : ((ray_type == Ray.Transmitted && ray_index < inter.transmitted.length) ? inter.transmitted[ray_index]
-                                                                                          : null));
+    Ray r = (ray_type == Ray.Incident) ? inter.incident
+                                       : ((ray_type == Ray.Reflected && ray_index < inter.reflected.length)
+                                              ? inter.reflected[ray_index]
+                                              : ((ray_type == Ray.Transmitted && ray_index < inter.transmitted.length)
+                                                     ? inter.transmitted[ray_index]
+                                                     : null));
     if (r == null) return 0;
     pair O = inter.hit.p;
     pair v_ray = (ray_type == Ray.Incident) ? -unitOr(r.d) : unitOr(r.d);
@@ -6189,13 +6327,13 @@ struct Inset {
     string tag = "";          // Badge tag (e.g. "A", "1")
     real size = 20.0;         // Content scale/radius
     real title_content_gap = 5.0;
-    real box_margin = 1.0;     // User-configurable padding inside the inset box
+    real box_margin = 1.0; // User-configurable padding inside the inset box
     // Color Palette
     pen border = rgb(0.0, 0.2, 0.6); // Box outline, connector line, & target dot color
     pen fill = white;                // Inset box background fill
     pen connector = nullpen;         // Connector line pen (defaults to border + dashed)
-    pen pen_badge = nullpen;          // Badge fill color (defaults to border)
-    pen badge_text = white;           // Badge text label color
+    pen pen_badge = nullpen;         // Badge fill color (defaults to border)
+    pen badge_text = white;          // Badge text label color
     void add(Label L) { label(this.pic, L); }
     void addGraphic(string filename) { label(this.pic, graphic(filename)); }
     // Helpers to resolve fallback pens
@@ -6292,7 +6430,8 @@ Inset PolarizationInset(Polarization pol,
     real orbit_r = 0.75 * r;
 
     // Guaranteed auto-scale: if ref_amplitude is nan, scale by sqrt(local_i)
-    real scale_norm = (!isnan(ref_amplitude) && ref_amplitude > 0) ? ref_amplitude : sqrt(max(config.math.eps, local_i));
+    real scale_norm =
+        (!isnan(ref_amplitude) && ref_amplitude > 0) ? ref_amplitude : sqrt(max(config.math.eps, local_i));
     real display_factor = orbit_r / scale_norm;
 
     real dop = pol.dop();
@@ -6501,9 +6640,14 @@ Inset InterferenceInset(Ray[] sources,
     pair u_screen = unitOr(screen_axis, (0, 1));
     pair n_screen = perp(u_screen);
 
-    real ref_lambda = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
-    real lambda_geom_units = resolveEffectiveLambda(vis_lambda, ref_lambda);
-    real lambda_eff_nm = lambda_geom_units * 1000.0; // nm for vacuumWaveNumber
+    real ref_lambda_nm = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
+    bool has_visual_lambda = !isnan(vis_lambda) && vis_lambda > 0;
+    real lambda_geom_units = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
+    // Keep the physical source wavelength in the public nm convention. Only
+    // an explicitly supplied rendering wavelength needs conversion from
+    // geometry units before material queries are made.
+    real lambda_eff_nm =
+        has_visual_lambda ? lambda_geom_units * metersToUm(config.physics.meters_per_unit) * um_to_nm : ref_lambda_nm;
 
     real actual_span = span;
     if (isnan(actual_span) || actual_span <= 0) {
@@ -6549,7 +6693,7 @@ Inset InterferenceInset(Ray[] sources,
 
             Ray r_k = Ray(src.p, d_k, medium = src.medium, lambda = lambda_eff_nm, pol = src.pol, phase = src.phase);
             r_k.coherence_id = src.coherence_id;
-            r_k.opl = src.opl + dist * n_med;
+            r_k.opl = src.opl + geometryToUm(dist) * n_med;
             r_k.p = P_y;
 
             raysAtP.push(r_k);
@@ -6589,7 +6733,7 @@ Inset InterferenceInset(Ray[] sources,
     // Fill area under curve and stroke line
     fill(content,
          (-plot_half_w, y_base) -- curve -- (plot_half_w, y_base) -- cycle,
-                                                            interp(white, pen_laser, 0.15));
+                                                               interp(white, pen_laser, 0.15));
     draw(content, curve, pen_laser);
 
     // Axes: Horizontal position axis (y) & Vertical Intensity axis (I)
@@ -6688,8 +6832,8 @@ struct InsetPanel {
     real margin = 2.0;  // Panel padding in pt
     real spacing = 8.0; // Spacing between cells in pt
     // Panel Global Styling
-    pen border = nullpen;   // Panel outline (nullpen = defaults to insets[0].border)
-    pen fill = nullpen;     // Panel background fill (nullpen = defaults to insets[0].fill)
+    pen border = nullpen;    // Panel outline (nullpen = defaults to insets[0].border)
+    pen fill = nullpen;      // Panel background fill (nullpen = defaults to insets[0].fill)
     pen badge_text = white;  // Default badge text color
     bool draw_badges = true; // Draw badges and connectors on diagram
     InsetPanel add(Inset ins, string tag = "") {

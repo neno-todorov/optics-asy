@@ -349,7 +349,9 @@ write("");
 // Test Case 11: Optical Activity in Chiral Medium
 // ============================================================================
 write("Test Case 11: Optical Activity in Chiral Medium");
-Medium sugar_water = medium("Sugar Water").add(OpticalActivity(5.0));
+real sugar_distance = 10.0;
+real sugar_rotation_per_um = 50.0 / geometryToUm(sugar_distance);
+Medium sugar_water = medium("Sugar Water").add(OpticalActivity(sugar_rotation_per_um));
 
 Polarization p_in = Polarization.linear(0.0, 1.0); // S = (1, 1, 0, 0)
 Polarization p_out = sugar_water.stepPolarization(p_in, (0, 0), (1, 0), 633.0, 10.0);
@@ -368,7 +370,7 @@ write("");
 write("Test Case 12: Beer-Lambert Law & Optical Path Length (OPL)");
 real d1 = 10.0, d2 = 20.0, far_reach = 45.0;
 real n_glass_abs = 1.5;
-real alpha_glass = 0.1;
+real alpha_glass = 0.1 / geometryToUm(d2);
 Medium absorbing_glass = medium("Absorbing Glass", n_glass_abs, alpha = alpha_glass);
 Element glass_block = Interface(box((d1, -10.0), (d1 + d2, 10.0)), absorbing_glass, Materials.VACUUM);
 OpticalSystem multi_sys = system(glass_block, Materials.VACUUM);
@@ -377,11 +379,11 @@ Ray ray_multi = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
 Trace t_multi = multi_sys.trace(ray_multi, far = far_reach);
 Ray final_ray = t_multi.last();
 
-real expected_total_opl = (1.0 * d1) + (n_glass_abs * d2) + (1.0 * far_reach);
+real expected_total_opl = geometryToUm((1.0 * d1) + (n_glass_abs * d2) + (1.0 * far_reach));
 assert_near("Total Optical Path Length (OPL)", final_ray.opl, expected_total_opl);
 
 real T_interface = 1.0 - ((n_glass_abs - 1.0) / (n_glass_abs + 1.0)) ^ 2;
-real expected_final_intensity = (T_interface ^ 2) * exp(-alpha_glass * d2);
+real expected_final_intensity = (T_interface ^ 2) * exp(-alpha_glass * geometryToUm(d2));
 assert_near("Final transmitted intensity (Fresnel + Beer-Lambert)", final_ray.intensity(), expected_final_intensity);
 write("");
 
@@ -389,7 +391,7 @@ write("");
 // Test Case 13: Faraday Rotation (Non-Reciprocal Polarization)
 // ============================================================================
 write("Test Case 13: Faraday Rotation (Non-Reciprocal Polarization)");
-real V_verdet = 10.0;      // deg / (Tesla * unit)
+real V_verdet = 30.0 / geometryToUm(3.0); // deg / (Tesla * µm)
 pair B_field = (1.0, 0.0); // 1 Tesla along +x-axis
 Medium faraday_medium = medium("Faraday Glass").add(FaradayRotator(V_verdet, B_field));
 
@@ -516,7 +518,7 @@ write("");
 // Test Case 18: Gain Medium (Optical Amplification)
 // ============================================================================
 write("Test Case 18: Gain Medium (Optical Amplification)");
-real g_amp = 0.1;
+real g_amp = 0.1 / geometryToUm(20.0); // gain per µm; exponent over slab = 0.1*20
 real d_entry = 10.0;
 real d_slab = 20.0;
 real far_exit = 40.0;
@@ -529,10 +531,10 @@ Ray ray_amp = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
 Trace t_amp = amp_sys.trace(ray_amp, far = far_exit);
 Ray ray_final_amp = t_amp.last();
 
-real expected_amp_opl = d_entry + d_slab + far_exit;
+real expected_amp_opl = geometryToUm(d_entry + d_slab + far_exit);
 assert_near("Optical Path Length of amplified ray", ray_final_amp.opl, expected_amp_opl);
 
-real expected_amplified_I = exp(g_amp * d_slab);
+real expected_amplified_I = exp(g_amp * geometryToUm(d_slab));
 assert_near("Amplified Ray intensity (Beer-Lambert with negative absorption)",
             ray_final_amp.intensity(),
             expected_amplified_I);
@@ -589,13 +591,13 @@ real expected_BFL = expected_f_thick * (1.0 - (n_thick - 1.0) * t_thick / (n_thi
 
 real center_x = 100.0;
 Element thick_lens = Lens.biconvex(center = (center_x, 0.0),
-                                  angle = 0.0,
-                                  R1 = R1,
-                                  R2 = R2,
-                                  thickness = t_thick,
-                                  diameter = 30.0,
-                                  glass = bk7_thick,
-                                  ambient = Materials.VACUUM);
+                                   angle = 0.0,
+                                   R1 = R1,
+                                   R2 = R2,
+                                   thickness = t_thick,
+                                   diameter = 30.0,
+                                   glass = bk7_thick,
+                                   ambient = Materials.VACUUM);
 OpticalSystem thick_sys = system(thick_lens, Materials.VACUUM);
 
 real y_paraxial = 1.0;
@@ -624,12 +626,12 @@ Medium glass_in_water = medium("Glass", 1.50);
 
 Element water_tank = Interface(box((0.0, -40.0), (200.0, 40.0)), water, Materials.VACUUM);
 Element lens_inside = Lens.biconvex(center = (100.0, 0.0),
-                                   angle = 0.0,
-                                   R1 = 50.0,
-                                   R2 = 50.0,
-                                   thickness = 6.0,
-                                   diameter = 30.0,
-                                   glass = glass_in_water);
+                                    angle = 0.0,
+                                    R1 = 50.0,
+                                    R2 = 50.0,
+                                    thickness = 6.0,
+                                    diameter = 30.0,
+                                    glass = glass_in_water);
 
 OpticalSystem nested_sys = system(new Element[]{water_tank, lens_inside}, Materials.VACUUM);
 
@@ -686,12 +688,12 @@ real opl_axial = t_axial.opl();
 
 Ray marginal_after = t_marginal.transmitted(0);
 real t_to_image = (image_point.x - marginal_after.p.x) / marginal_after.d.x;
-real opl_marginal_to_image = t_marginal.interaction(0).incident.opl + t_to_image * 1.0;
+real opl_marginal_to_image = t_marginal.interaction(0).incident.opl + geometryToUm(t_to_image) * 1.0;
 
 real expected_opl_marginal = sqrt(s_o ^ 2 + h_marginal ^ 2) + sqrt(s_i ^ 2 + h_marginal ^ 2);
 
-assert_near("Axial Ray OPL to image point", opl_axial, s_o + s_i);
-assert_near("Marginal Ray Geometric OPL", opl_marginal_to_image, expected_opl_marginal, 1e-4);
+assert_near("Axial Ray OPL to image point", opl_axial, geometryToUm(s_o + s_i));
+assert_near("Marginal Ray Geometric OPL", opl_marginal_to_image, geometryToUm(expected_opl_marginal), 1e-4);
 write("");
 
 // ============================================================================
@@ -702,11 +704,11 @@ int[] diff_orders = {-1, 0, 1};
 real[] diff_efficiencies = {0.25, 0.50, 0.25};
 
 Element tri_grating = Grating(center = (0.0, 0.0),
-                             diameter = 20.0,
-                             angle = 90.0,
-                             lines_per_mm = 300.0,
-                             orders = diff_orders,
-                             efficiencies = diff_efficiencies);
+                              diameter = 20.0,
+                              angle = 90.0,
+                              lines_per_mm = 300.0,
+                              orders = diff_orders,
+                              efficiencies = diff_efficiencies);
 OpticalSystem tri_sys = system(tri_grating, Materials.VACUUM);
 
 Ray ray_tri = Ray(p = (0.0, -5.0), d = (0.0, 1.0), medium = Materials.VACUUM, lambda = 600.0);
@@ -828,7 +830,7 @@ gradientProfile axial_gradient = new pair(pair p, real lambda) { return (1.0, 0.
 Medium axial_gradient_medium = medium("Axial gradient").add(GRIN(axial_gradient_index, axial_gradient));
 OpticalSystem empty_system = system(new Element[]);
 Trace axial_gradient_trace = empty_system.trace(Ray((0, 0), (1, 0), axial_gradient_medium), ds = 0.05, far = 1.0);
-assert_near("GRIN OPL integral of n(x)=1+x over [0,1]", axial_gradient_trace.opl(), 1.5, 1e-8);
+assert_near("GRIN OPL integral of n(x)=1+x over [0,1]", axial_gradient_trace.opl(), geometryToUm(1.5), 1e-8);
 assert_near_pair("Line intersection", lineIntersection((0, 0), (1, 0), (2, -1), (0, 1)), (2, 0));
 pair parallel_intersection = lineIntersection((0, 0), (1, 0), (0, 1), (2, 0));
 assert_bool("Parallel line intersection is infinite", abs(parallel_intersection.x) == infinity, true);
@@ -914,7 +916,7 @@ write("");
 // Test Case 31: Dichroic Extinction Ratio
 // ============================================================================
 write("Test Case 31: Dichroic Extinction Ratio");
-Medium pol_medium = medium("DichroicFilter").add(Dichroic(0.0, 10.0));
+Medium pol_medium = medium("DichroicFilter").add(Dichroic(0.0, 10.0 / geometryToUm(1.0)));
 Polarization out_unpol = pol_medium.stepPolarization(Polarization.unpolarized(1.0), (0, 0), (1, 0), 633.0, 1.0);
 
 assert_stokes_physical("Filter output physical state", out_unpol);
@@ -1120,8 +1122,10 @@ real guide_theta_i = radians(25.0);
 real guide_sin_t = guide_n1 / guide_n2 * sin(guide_theta_i);
 real guide_cos_t = sqrt(1.0 - guide_sin_t ^ 2);
 real guide_cos_i = cos(guide_theta_i);
-real guide_rs = ((guide_n1 * guide_cos_i - guide_n2 * guide_cos_t) / (guide_n1 * guide_cos_i + guide_n2 * guide_cos_t)) ^ 2;
-real guide_rp = ((guide_n2 * guide_cos_i - guide_n1 * guide_cos_t) / (guide_n2 * guide_cos_i + guide_n1 * guide_cos_t)) ^ 2;
+real guide_rs =
+    ((guide_n1 * guide_cos_i - guide_n2 * guide_cos_t) / (guide_n1 * guide_cos_i + guide_n2 * guide_cos_t)) ^ 2;
+real guide_rp =
+    ((guide_n2 * guide_cos_i - guide_n1 * guide_cos_t) / (guide_n2 * guide_cos_i + guide_n1 * guide_cos_t)) ^ 2;
 real guide_expected_transmission = 1.0 - 0.5 * (guide_rs + guide_rp);
 assert_near("Waveguide output power from end-face Fresnel transmission",
             exit_guide.intensity(),
@@ -1156,7 +1160,7 @@ assert_near("Brewster Reflected Ray is purely S-polarized (S1 == S0)", r_refl.po
 real brewster_sin_t = sin(radians(theta_B_deg_41)) / glass_br_41.n();
 real brewster_cos_t = sqrt(1.0 - brewster_sin_t ^ 2);
 real brewster_rs_amplitude = (cos(radians(theta_B_deg_41)) - glass_br_41.n() * brewster_cos_t) /
-                           (cos(radians(theta_B_deg_41)) + glass_br_41.n() * brewster_cos_t);
+                             (cos(radians(theta_B_deg_41)) + glass_br_41.n() * brewster_cos_t);
 real brewster_rs_power = brewster_rs_amplitude ^ 2;
 real brewster_ts = 1.0 - brewster_rs_power;
 real brewster_tp = 1.0;
@@ -1328,7 +1332,9 @@ write("Test Case 45: Polarization copy invariants and state preservation");
 Polarization extra_unpolarized = Polarization.unpolarized(1.0);
 Polarization extra_unpolarized_copy = copy(extra_unpolarized);
 
-assert_relative("Copy preserves unpolarized intensity", extra_unpolarized_copy.intensity(), extra_unpolarized.intensity());
+assert_relative("Copy preserves unpolarized intensity",
+                extra_unpolarized_copy.intensity(),
+                extra_unpolarized.intensity());
 assert_relative("Copy preserves unpolarized degree of polarization",
                 extra_unpolarized_copy.dop(),
                 extra_unpolarized.dop());
@@ -1494,7 +1500,7 @@ write("");
 // ============================================================================
 write("Test Case 53: Dichroic Medium Propagation & Mueller Theory");
 real alpha_s_val = 0.0;
-real alpha_p_val = 1.0;
+real alpha_p_val = 1.0 / geometryToUm(2.0);
 real prop_dist = 2.0;
 Medium dichroic_filter = medium("DichroicFilter").add(Dichroic(alpha_s_val, alpha_p_val));
 Polarization sync_input = Polarization.linear(45.0, 1.0);
@@ -1519,8 +1525,8 @@ assert_relative("Unpolarized-path S0 agrees with intensity",
                 1e-5,
                 1e-7);
 
-real Ts = exp(-alpha_s_val * prop_dist);
-real Tp = exp(-alpha_p_val * prop_dist);
+real Ts = exp(-alpha_s_val * geometryToUm(prop_dist));
+real Tp = exp(-alpha_p_val * geometryToUm(prop_dist));
 
 assert_relative("Diattenuator S0 matches Mueller prediction",
                 sync_unpol_output.S0,
@@ -1916,10 +1922,13 @@ write("");
 // polarization (the whole Stokes vector decays, not only S0)
 // ============================================================================
 write("Test Case 66: Absorption preserves degree of polarization");
-Medium rg_absMed = medium("rg absorber", 1.0, alpha = 0.5);
+real rg_direct_distance = 2.0;
+real rg_alpha = 0.5 / geometryToUm(rg_direct_distance); // µm^-1
+Medium rg_absMed = medium("rg absorber", 1.0, alpha = rg_alpha);
 Polarization rg_absOut = rg_absMed.stepPolarization(Polarization.linear(0.0, 1.0), (0, 0), (1, 0), 633.0, 2.0);
-assert_near("Absorbed S0 = exp(-alpha L)", rg_absOut.S0, exp(-1.0), 1e-9);
-assert_near("Absorbed S1 decays with S0", rg_absOut.S1, exp(-1.0), 1e-9);
+real rg_direct_transmission = exp(-rg_alpha * geometryToUm(rg_direct_distance));
+assert_near("Absorbed S0 = exp(-alpha L)", rg_absOut.S0, rg_direct_transmission, 1e-9);
+assert_near("Absorbed S1 decays with S0", rg_absOut.S1, rg_direct_transmission, 1e-9);
 assert_stokes_physical("Absorbed linear state", rg_absOut, 1e-12);
 
 Polarization rg_ell = Polarization.fromAngles(20.0, 10.0, 1.0);
@@ -1933,7 +1942,9 @@ assert_near("Absorbed elliptical state keeps azimuth", rg_ellOut.psi(), rg_ell.p
 // Through the tracer: linearly polarized ray across an absorbing, index-matched slab
 Element rg_absSlab = Interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
 Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(30.0, 1.0)), far = 20).last();
-assert_near("Traced absorbed ray intensity", rg_absEnd.intensity(), exp(-0.5 * 10.0), 1e-9);
+real rg_slab_distance = 10.0;
+real rg_slab_transmission = exp(-rg_alpha * geometryToUm(rg_slab_distance));
+assert_near("Traced absorbed ray intensity", rg_absEnd.intensity(), rg_slab_transmission, 1e-9);
 assert_near("Traced absorbed ray DoP", rg_absEnd.pol.dop(), 1.0, 1e-9);
 assert_near("Traced absorbed ray azimuth (30 deg)", degrees(rg_absEnd.pol.psi()), 30.0, 1e-6);
 write("");
@@ -1994,7 +2005,7 @@ real rg_oplMeasured = rg_tX.incident(1).opl - rg_tX.incident(0).opl;
 real rg_ky = sin(radians(rg_thIn));
 real rg_kx = rg_no * sqrt(1.0 - rg_ky ^ 2 / rg_ne ^ 2);
 pair rg_g = unit((rg_kx / rg_no ^ 2, rg_ky / rg_ne ^ 2));
-real rg_oplInside = rg_kx * rg_t + rg_ky * rg_t * rg_g.y / rg_g.x;
+real rg_oplInside = geometryToUm(rg_kx * rg_t + rg_ky * rg_t * rg_g.y / rg_g.x);
 assert_near_pair("e-ray group direction matches index-ellipse normal", rg_eIn.d, rg_g, 1e-9);
 assert_near("e-ray OPL across slab = k . dr", rg_oplMeasured, rg_oplInside, 1e-7);
 real rg_geomLen = rg_t / rg_g.x;
@@ -2006,7 +2017,7 @@ Element rg_slabIso = Crystal(box((0, -50), (rg_t, 50)),
                              uniaxialExtraordinary("e", 1.6, 1.6, (1, 0)),
                              Materials.VACUUM);
 Trace rg_tIso = system(rg_slabIso).trace(Ray((-5, 0), (1, 0), pol = Polarization.linear(90.0, 1.0)), far = 20);
-assert_near("Isotropic-limit e-ray OPL = n t", rg_tIso.incident(1).opl - rg_tIso.incident(0).opl, 1.6 * rg_t, 1e-9);
+assert_near("Isotropic-limit e-ray OPL = n t", rg_tIso.incident(1).opl - rg_tIso.incident(0).opl, geometryToUm(1.6 * rg_t), 1e-9);
 write("");
 
 // ============================================================================
@@ -2014,7 +2025,7 @@ write("");
 // the arriving ray was attenuated in the bulk
 // ============================================================================
 write("Test Case 70: Interface energy balance after bulk absorption");
-Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 0.2);
+Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 2.0 / geometryToUm(10.0));
 Trace rg_tAbs = system(Interface(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
 Interaction rg_exitIx = rg_tAbs.interaction(1);
 assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
@@ -2031,7 +2042,7 @@ write("");
 write("Test Case 71: Absorbing GRIN medium attenuation along curved path");
 indexProfile rg_gp = new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.01 * p.y ^ 2); };
 gradientProfile rg_gg = new pair(pair p, real lambda) { return (0, -1.5 * 0.01 * p.y); };
-Medium rg_gm = medium("rg absorbing GRIN").add(GRIN(rg_gp, rg_gg)).add(Absorption(0.05));
+Medium rg_gm = medium("rg absorbing GRIN").add(GRIN(rg_gp, rg_gg)).add(Absorption(0.05 * 9.5 / geometryToUm(9.5)));
 Trace rg_tg =
     system(Interface(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
 real rg_arc = arclength(rg_tg.segments()[0].traj);
@@ -2245,7 +2256,8 @@ Medium rg_axial = medium("rg axial")
                           new pair(pair p, real lambda) { return (1.0, 0.0); }));
 Trace rg_tAx = system(Interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
                    .trace(Ray((0, 0), (1, 0), rg_axial), ds = 0.05);
-assert_near("OPL = integral_0^0.73 (1 + x) dx", rg_tAx.interaction(0).incident.opl, 0.73 + 0.73 ^ 2 / 2, 1e-9);
+assert_near("OPL = integral_0^0.73 (1 + x) dx", rg_tAx.interaction(0).incident.opl,
+            geometryToUm(0.73 + 0.73 ^ 2 / 2), 1e-9);
 write("");
 
 // ============================================================================
@@ -2846,22 +2858,22 @@ arm2_0.opl = 100.0; // Delta L = 0
 // Constructive interference at Delta L = 0 -> full input power 1.0
 assert_near("Mach-Zehnder zero-delay full transmission (I == 1.0)", interfere(arm1, arm2_0), 1.0, 1e-9);
 // Destructive interference at Delta L = lambda / 2
-real half_lambda_mm = wavelengthInUnits(lambda_test) / 2.0;
+real half_lambda_um = lambda_test * nm_to_um / 2.0;
 Ray arm2_pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherence_id = 10);
 arm2_pi.pol.scaleTo(0.25);
-arm2_pi.opl = 100.0 + half_lambda_mm;
+arm2_pi.opl = 100.0 + half_lambda_um;
 assert_near("Mach-Zehnder half-wave delay extinction (I == 0.0)", interfere(arm1, arm2_pi), 0.0, 1e-9);
 // Constructive interference at Delta L = lambda
-real full_lambda_mm = wavelengthInUnits(lambda_test);
+real full_lambda_um = lambda_test * nm_to_um;
 Ray arm2_2pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherence_id = 10);
 arm2_2pi.pol.scaleTo(0.25);
-arm2_2pi.opl = 100.0 + full_lambda_mm;
+arm2_2pi.opl = 100.0 + full_lambda_um;
 assert_near("Mach-Zehnder full-wave delay transmission (I == 1.0)", interfere(arm1, arm2_2pi), 1.0, 1e-9);
 // Quadrature interference at Delta L = lambda / 4
-real quarter_lambda_mm = wavelengthInUnits(lambda_test) / 4.0;
+real quarter_lambda_um = lambda_test * nm_to_um / 4.0;
 Ray arm2_half_pi = Ray((0, 0), (1, 0), lambda = lambda_test, pol = Polarization.linear(0), coherence_id = 10);
 arm2_half_pi.pol.scaleTo(0.25);
-arm2_half_pi.opl = 100.0 + quarter_lambda_mm;
+arm2_half_pi.opl = 100.0 + quarter_lambda_um;
 assert_near("Mach-Zehnder quarter-wave delay 50% transmission (I == 0.5)", interfere(arm1, arm2_half_pi), 0.5, 1e-9);
 write("");
 
@@ -2901,6 +2913,22 @@ assert_near("Incoherent sources do not interfere (I == 2.0)", interfere(incoh_r1
 Ray diff_lam1 = Ray((0, 0), (1, 0), lambda = 500.0, pol = Polarization.linear(0), coherence_id = 100);
 Ray diff_lam2 = Ray((0, 0), (1, 0), lambda = 600.0, pol = Polarization.linear(0), coherence_id = 100);
 assert_near("Different wavelengths do not interfere (I == 2.0)", interfere(diff_lam1, diff_lam2), 2.0, 1e-9);
+write("");
+
+// ============================================================================
+// Test Case 106: Physical scale is independent of geometry/rendering units
+// ============================================================================
+write("Test Case 106: Physical geometry scale conversion");
+real saved_meters_per_unit = config.physics.meters_per_unit;
+config.physics.meters_per_unit = 1e-6;
+Ray scale_a = propagate(Ray((0, 0), (1, 0), medium = Materials.VACUUM, lambda = 633.0), 10.0);
+assert_near("One geometry unit is one micrometre by default", scale_a.opl, 10.0, 1e-12);
+config.physics.meters_per_unit = 2e-6;
+Ray scale_b = propagate(Ray((0, 0), (1, 0), medium = Materials.VACUUM, lambda = 633.0), 5.0);
+assert_near("Equivalent physical distance has equivalent OPL", scale_b.opl, scale_a.opl, 1e-12);
+Ray scale_c = propagate(Ray((0, 0), (1, 0), medium = Materials.VACUUM, lambda = 633.0), 10.0);
+assert_near("Changing physical scale updates OPL", scale_c.opl, 20.0, 1e-12);
+config.physics.meters_per_unit = saved_meters_per_unit;
 write("");
 
 // Summary
