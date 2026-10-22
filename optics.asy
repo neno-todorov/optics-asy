@@ -175,6 +175,29 @@ defaultConfig() {
 
 Config config = defaultConfig();
 
+// Validate mutable global configuration before it reaches geometry or physics
+// code.  This keeps failures local and descriptive instead of producing
+// invalid steps, runaway rendering loops, or numerical overflows later.
+void validateConfig() {
+    if (config.physics.meters_per_unit <= 0)
+        abort("config.physics.meters_per_unit must be positive.");
+    if (config.physics.lambda <= 0)
+        abort("config.physics.lambda must be positive (nm).");
+    if (config.physics.ds <= 0)
+        abort("config.physics.ds must be positive geometry units.");
+    if (config.physics.far <= 0)
+        abort("config.physics.far must be positive geometry units.");
+    if (config.physics.min_refractive_index <= 0)
+        abort("config.physics.min_refractive_index must be positive.");
+    if (config.physics.max_depth < 1 || config.physics.max_branches < 1)
+        abort("config.physics.max_depth and max_branches must be at least 1.");
+    if (config.geometry.max_bisection_steps < 1 || config.geometry.arc_subdivisions < 4)
+        abort("config.geometry iteration and subdivision limits are too small.");
+    if (config.rendering.fade_subpath_steps < 1 || config.rendering.wavefront_max_orders < 0 ||
+        config.rendering.wavefront_max_dist <= 0 || config.rendering.wavefront_max_markers < 1)
+        abort("config.rendering wavefront/fading limits are invalid.");
+}
+
 // Wavelengths are expressed in nm at the public API; geometric lengths use um.
 // Unit-conversion ratios: multiply to convert between nm and um.
 real nm_to_um = 1e-3; // multiply a value in nm to get um
@@ -2857,6 +2880,9 @@ struct OpticalSystem {
                 real ds = config.physics.ds,
                 real far = config.physics.far,
                 int max_depth = config.physics.max_depth) {
+        validateConfig();
+        if (ds <= 0 || far <= 0 || max_depth < 1)
+            abort("OpticalSystem.trace requires positive ds/far and max_depth >= 1.");
         FlatSurfaceRecord[] flat_surfaces = prepareFlatSurfaces(elements);
         Element[] trace_elements = elements;
         Medium trace_ambient = ambient;
@@ -3278,7 +3304,12 @@ RayPolarization rayPolarization(bool visible = config.rendering.draw_polarizatio
                                 bool show_p = true,
                                 pen p = nullpen,
                                 arrowhead head = config.rendering.arrow_pol_head,
-                                real size = config.rendering.arrow_pol_size, ... SegmentRule[] rules) {
+                                real size = config.rendering.arrow_pol_size,
+                                int[] segments = new int[]{-1},
+                                real min_amplitude = 0,
+                                real min_segment_length = config.rendering.min_polarization_segment_length,
+                                real min_separation = config.rendering.min_polarization_marker_separation,
+                                ... SegmentRule[] rules) {
     RayPolarization out = new RayPolarization;
     out.count = count;
     out.spacing = spacing;
@@ -3290,6 +3321,10 @@ RayPolarization rayPolarization(bool visible = config.rendering.draw_polarizatio
     out.p = p;
     out.head = head;
     out.size = size;
+    out.segments = copy(segments);
+    out.min_amplitude = min_amplitude;
+    out.min_segment_length = min_segment_length;
+    out.min_separation = min_separation;
     if (visible) {
         out.visible = true;
         out.first = (first != default) ? (bool)first : true;
