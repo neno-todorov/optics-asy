@@ -1169,6 +1169,7 @@ struct Hit {
     pair axis;
     bool entering;
     int flat_index = -1;
+    int element_index = -1;
 }
 
 private Hit
@@ -1183,6 +1184,7 @@ copy(Hit src) {
     out.center = src.center;
     out.axis = src.axis;
     out.entering = src.entering;
+    out.element_index = src.element_index;
     out.flat_index = src.flat_index;
     return out;
 }
@@ -2297,6 +2299,7 @@ path linearBoundary(pair center, pair axis, real diameter) {
 // STATELESS FLAT SURFACE PREPARATION
 struct FlatSurfaceRecord {
     Surface s;
+    int element_index = -1;
     transform inv_T; // Precomputed inverse!
     pair min_bound;
     pair max_bound;
@@ -2309,6 +2312,7 @@ private FlatSurfaceRecord[] prepareFlatSurfaces(Element[] elements) {
         for (int j = 0; j < flat.length; ++j) {
             FlatSurfaceRecord rec = new FlatSurfaceRecord;
             rec.s = flat[j];
+            rec.element_index = i;
             rec.inv_T = flat[j].inv_T; // Already inverted once by transformedSurface()
             if (length(flat[j].p) > 0) {
                 path global_path = flat[j].T * flat[j].p;
@@ -2399,6 +2403,7 @@ Hit nearestIntersection(Ray r, FlatSurfaceRecord[] flat_surfaces, real max_dista
         if (h.valid && h.t < best_hit.t) {
             best_hit = h;
             best_hit.flat_index = i;
+            best_hit.element_index = flat_surfaces[i].element_index;
         }
     }
     return best_hit;
@@ -2531,6 +2536,7 @@ real travelledLength(Ray r) {
 // The "Navigator" Trace Facade & Ray Tree
 struct Trace {
     Ray[] ray_tree;
+    Element[] system_elements;
     int root_id = 0;
     int[] route;
     int[] root_ids;
@@ -2760,6 +2766,110 @@ struct Trace {
         out.route = copy(newRoute);
         out.root_ids = copy(root_ids);
         out.is_reflection = is_reflection;
+        out.system_elements = system_elements;
+        return out;
+    }
+    Element getElement(Hit h) {
+        if (h == null || h.element_index < 0 || h.element_index >= system_elements.length) return null;
+        return system_elements[h.element_index];
+    }
+    bool sameElement(Element a, Element b) {
+        if (a == null || b == null) return false;
+        // OpticalSystem assembly may copy Element values, so object identity
+        // is not reliable across the user variables and trace metadata.
+        return a.name == b.name && a.center == b.center && a.axis == b.axis;
+    }
+    Element[] rayElementHistory(Ray r) {
+        Element[] reverse_history;
+        if (r == null) return reverse_history;
+        int id = r.id;
+        while (id >= 0 && id < ray_tree.length) {
+            Ray current = ray_tree[id];
+            Element e = getElement(current.hit);
+            if (e != null && (reverse_history.length == 0 || reverse_history[reverse_history.length - 1] != e))
+                reverse_history.push(e);
+            if (current.parent_id == id) break;
+            id = current.parent_id;
+        }
+        Element[] history;
+        for (int i = reverse_history.length - 1; i >= 0; -- i) history.push(reverse_history[i]);
+        return history;
+    }
+    // TO DO: `return out` is not "clear subtrace" if the last element is Absorber the last ray of the main trace will
+    // be absorbed and for the subray it won't be absorbed, so something like trace.follow().incident(-n) will be the
+    // same for n = 1 and n = 2, which is not very consistent, the main idea is trace.follow(A, B, C) to return traced
+    // system(A, B, C) as rays but preserving the ray properties of the main trace
+    Trace follow( ... Element[] elements) {
+        if (elements.length == 0) return this;
+        // Resolve the requested physical sequence directly against the ray
+        // tree.  This makes follow(A,B,C) mean: find the node where C was
+        // reached through A -> B -> C, then expose C's complete child
+        // subtree.  It does not depend on default-child ordering or on which
+        // terminal leaf happens to be visited first.
+        for (int ray_id = 0; ray_id < ray_tree.length; ++ray_id) {
+            Ray touched = ray_tree[ray_id];
+            if (!sameElement(getElement(touched.hit), elements[elements.length - 1])) continue;
+            Element[] history = rayElementHistory(touched);
+            int wanted = 0;
+            for (Element e : history) {
+                if (sameElement(e, elements[wanted])) {
+                    ++wanted;
+                    if (wanted == elements.length) break;
+                }
+            }
+            if (wanted != elements.length) continue;
+
+            // Reconstruct the child-choice route from the original root to
+            // the final matched element.  Keeping the original root and
+            // route preserves the complete prefix; once the explicit route
+            // ends, branches() resumes normal expansion at the final node.
+            int[] reverse_route;
+            int current_id = ray_id;
+            while (current_id >= 0 && current_id < ray_tree.length) {
+                Ray current = ray_tree[current_id];
+                if (current.parent_id < 0 || current.parent_id == current_id) break;
+                Ray parent = ray_tree[current.parent_id];
+                int child_index = -1;
+                for (int i = 0; i < parent.children_ids.length; ++i) {
+                    if (parent.children_ids[i] == current_id) {
+                        child_index = i;
+                        break;
+                    }
+                }
+                if (child_index < 0) break;
+                reverse_route.push(child_index);
+                current_id = current.parent_id;
+            }
+            int[] selected_route;
+            for (int i = reverse_route.length - 1; i >= 0; -- i) selected_route.push(reverse_route[i]);
+
+            Trace out = new Trace;
+            out.ray_tree = ray_tree;
+            out.root_id = this.root_id;
+            out.root_ids = copy(this.root_ids);
+            out.route = selected_route;
+            out.system_elements = system_elements;
+            out.is_reflection = is_reflection;
+            return out;
+        }
+        return null;
+    }
+    Trace follow(string route_string) {
+        int[] route_indices;
+        for (int i = 0; i < length(route_string); ++i) {
+            string c = UpperCase(substr(route_string, i, 1));
+            if (c == "T")
+                route_indices.push(0);
+            else if (c == "R")
+                route_indices.push(1);
+        }
+        Trace out = new Trace;
+        out.ray_tree = ray_tree;
+        out.root_id = root_id;
+        out.root_ids = copy(root_ids);
+        out.route = route_indices;
+        out.is_reflection = is_reflection;
+        out.system_elements = system_elements;
         return out;
     }
     Trace subtrace(int i) {
@@ -2768,6 +2878,7 @@ struct Trace {
         if (idx < 0 || idx >= root_ids.length) return null;
         Trace sub = new Trace;
         sub.ray_tree = ray_tree;
+        sub.system_elements = system_elements;
         sub.root_id = root_ids[idx];
         sub.route = copy(route);
         sub.root_ids = new int[];
@@ -2785,6 +2896,7 @@ Trace copy(Trace src) {
     if (src == null) return null;
     Trace out = new Trace;
     out.ray_tree = src.ray_tree;
+    out.system_elements = src.system_elements;
     out.root_id = src.root_id;
     out.route = copy(src.route);
     out.root_ids = copy(src.root_ids);
@@ -2906,7 +3018,9 @@ struct OpticalSystem {
         mediumResolver resolve = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
             return resolveMediumAt(trace_elements, trace_ambient, p, r, m1, m2, from_m1);
         };
-        return makeTracer(flat_surfaces, resolve, ds, far, max_depth).traceRays(rays);
+        Trace result = makeTracer(flat_surfaces, resolve, ds, far, max_depth).traceRays(rays);
+        result.system_elements = elements;
+        return result;
     }
     Trace trace(Ray ray,
                 real ds = config.physics.ds,
@@ -6767,8 +6881,7 @@ Inset InterferenceInset(Ray[] sources,
     real actual_span = span;
     if (collimated && (isnan(actual_span) || actual_span <= 0)) {
         real lambda_geom = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
-        real dtheta = (sources.length >= 2) ?
-                      abs(dot(sources[0].d - sources[1].d, u_screen)) : 0.0;
+        real dtheta = (sources.length >= 2) ? abs(dot(sources[0].d - sources[1].d, u_screen)) : 0.0;
         if (dtheta > config.math.eps)
             actual_span = periods * lambda_geom / dtheta;
         else
