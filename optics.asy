@@ -2178,50 +2178,45 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     res.R = isnan(reflectance) ? weightedReflectance(r.pol, res.Rs, res.Rp) : clamp(reflectance, 0.0, 1.0);
     res.T = 1.0 - res.R;
 
+    if (res.tir) {
+        // Total internal reflection takes precedence over a custom R.
+        // Preserve the complex Fresnel reflection coefficients calculated
+        // by solveIsotropicInterface().
+        res.R = 1.0;
+        res.T = 0.0;
+        res.Rs = 1.0;
+        res.Rp = 1.0;
+        res.Ts = 0.0;
+        res.Tp = 0.0;
+    } else if (!isnan(reflectance)) {
+        // Ideal lossless, symmetric, non-polarizing coating.
+        // Assumes equal-index ports, as for the cube's glass/glass coating.
+        res.R = clamp(reflectance, 0.0, 1.0);
+        res.T = 1.0 - res.R;
+
+        res.Rs = res.R;
+        res.Rp = res.R;
+        res.Ts = res.T;
+        res.Tp = res.T;
+
+        real r_amp = sqrt(res.R);
+        real t_amp = sqrt(res.T);
+
+        // Explicit complex field-amplitude convention:
+        // reflection = +pi/2; transmission = 0.
+        res.rs = (0.0, r_amp);
+        res.rp = (0.0, r_amp);
+        res.ts = (t_amp, 0.0);
+        res.tp = (t_amp, 0.0);
+    } else {
+        // Ordinary dielectric interface: retain physical Fresnel results.
+        res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
+        res.T = 1.0 - res.R;
+    }
+
     res.sync();
     return res;
 }
-
-// FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
-//     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
-//     pair inc_wave_normal = unitOr(r.wave_normal, r.d);
-
-//     pair N_into2 = (dot(inc_wave_normal, f.normal) < 0) ? -f.normal : f.normal;
-//     pair T_surf = perp(N_into2);
-
-//     real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
-//     real n2 = max(config.physics.min_refractive_index,
-//                   (f.target_medium != null) ? f.target_medium.n(h.p, inc_wave_normal, r.lambda, r.pol) : 1.0);
-
-//     FresnelResult res = solveIsotropicInterface(n1, n2, inc_wave_normal, N_into2, T_surf);
-
-//     res.normal = f.normal;
-//     res.source_medium = f.source_medium;
-//     res.medium = res.tir ? f.source_medium : f.target_medium;
-
-//     if (!isnan(reflectance)) {
-//         res.R = clamp(reflectance, 0.0, 1.0);
-//         res.T = 1.0 - res.R;
-//         res.Rs = res.R;
-//         res.Rp = res.R;
-
-//         // Enforce Stokes phase complementarity for Beam Splitters & Mirrors
-//         // Transmitted wave gets 0 phase shift (purely real)
-//         // Reflected wave gets +pi/2 phase shift (purely imaginary 'i')
-//         real r_amp = sqrt(res.R);
-//         real t_amp = sqrt(res.T);
-//         res.rs = (0.0, r_amp);
-//         res.rp = (0.0, r_amp);
-//         res.ts = (t_amp, 0.0);
-//         res.tp = (t_amp, 0.0);
-//     } else {
-//         res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
-//         res.T = 1.0 - res.R;
-//     }
-
-//     res.sync();
-//     return res;
-// }
 
 FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
     FresnelResult res;
@@ -5517,6 +5512,7 @@ struct BeamSplitter {
                         pen stroke = gray(0.3),
                         pen fill = 0.08paleblue + white,
                         string name = "Cube Beam Splitter") {
+        if (R < 0.0 || R > 1.0) abort("BeamSplitter.cube: R must be between 0 and 1.");
         real h = size / 2.0;
         // Local boundaries
         path local_box = (-h, -h) -- (h, -h) -- (h, h) -- (-h, h) -- cycle;
