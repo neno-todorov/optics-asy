@@ -2158,34 +2158,19 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
 // ============================================================================
 // Maxwell Boundary Solver for Isotropic <-> Uniaxial Planar Interfaces
 // ============================================================================
-
-FresnelResult fresnelIsotropic(
-    Medium m1,
-    Medium m2,
-    Ray r,
-    Hit h,
-    mediumResolver resolve
-) {
+FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve) {
     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
     pair inc_wave_normal = unitOr(r.wave_normal, r.d);
 
-    pair N_into2 =
-        (dot(inc_wave_normal, f.normal) < 0) ? -f.normal : f.normal;
+    pair N_into2 = (dot(inc_wave_normal, f.normal) < 0) ? -f.normal : f.normal;
     pair T_surf = perp(N_into2);
 
-    real n1 = f.source_medium.n(
-        h.p, inc_wave_normal, r.lambda, r.pol
-    );
+    real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
 
-    real n2 = max(
-        config.physics.min_refractive_index,
-        (f.target_medium != null)
-            ? f.target_medium.n(h.p, inc_wave_normal, r.lambda, r.pol)
-            : 1.0
-    );
+    real n2 = max(config.physics.min_refractive_index,
+                  (f.target_medium != null) ? f.target_medium.n(h.p, inc_wave_normal, r.lambda, r.pol) : 1.0);
 
-    FresnelResult res =
-        solveIsotropicInterface(n1, n2, inc_wave_normal, N_into2, T_surf);
+    FresnelResult res = solveIsotropicInterface(n1, n2, inc_wave_normal, N_into2, T_surf);
 
     res.normal = f.normal;
     res.source_medium = f.source_medium;
@@ -2193,15 +2178,12 @@ FresnelResult fresnelIsotropic(
 
     // Keep the physical Fresnel reflectance and complex amplitudes.
     // Never replace these with an arbitrary coating reflectance here.
-    res.R = res.tir
-        ? 1.0
-        : weightedReflectance(r.pol, res.Rs, res.Rp);
+    res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
 
     res.sync();
     return res;
 }
-
 
 FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
     FresnelResult res;
@@ -4817,20 +4799,15 @@ Property Refract(Medium inside, Medium ambient = null) {
     p.name = "Refract";
 
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        FresnelResult res =
-            fresnelIsotropic(inside, ambient, r, h, resolve);
+        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
         Ray[] rays;
 
         // Transmitted ray
-        if (!res.tir &&
-            r.intensity() * res.T > config.physics.min_intensity) {
-
+        if (!res.tir && r.intensity() * res.T > config.physics.min_intensity) {
             real intensity = r.intensity() * res.T;
 
-            Ray trans_ray = spawnRay(
-                r, h, res.d, intensity, res.medium, 0, res.wave_normal
-            );
+            Ray trans_ray = spawnRay(r, h, res.d, intensity, res.medium, 0, res.wave_normal);
 
             applyDiattenuation(trans_ray.pol, r.pol, res.Ts, res.Tp);
             rays.push(trans_ray);
@@ -4838,22 +4815,17 @@ Property Refract(Medium inside, Medium ambient = null) {
 
         // Reflected ray, including total internal reflection
         if (r.intensity() * res.R > config.physics.min_intensity &&
-            (res.tir ||
-             config.physics.trace_reflections ||
-             config.rendering.draw_reflections)) {
-
+            (res.tir || config.physics.trace_reflections || config.rendering.draw_reflections)) {
             real intensity = r.intensity() * res.R;
             real refl_phase = atan2(res.rs.y, res.rs.x);
 
-            Ray refl_ray = spawnRay(
-                r,
-                h,
-                res.reflected_direction,
-                intensity,
-                res.source_medium,
-                refl_phase,
-                res.reflected_wave_normal
-            );
+            Ray refl_ray = spawnRay(r,
+                                    h,
+                                    res.reflected_direction,
+                                    intensity,
+                                    res.source_medium,
+                                    refl_phase,
+                                    res.reflected_wave_normal);
 
             applyDiattenuation(refl_ray.pol, r.pol, res.rs, res.rp);
             rays.push(refl_ray);
@@ -4865,73 +4837,60 @@ Property Refract(Medium inside, Medium ambient = null) {
     return p;
 }
 
+// Ideal lossless, non-polarizing coating between equal-index media.
+// R is power reflectance; T = 1 - R.
+// Reflection and transmission phases are configurable in radians.
+Property Coating(Medium inside,
+                 Medium ambient = null,
+                 real R = 0.5,
+                 real reflection_phase = pi / 2,
+                 real transmission_phase = 0.0) {
+    if (R < 0.0 || R > 1.0) abort("Coating: R must be between 0 and 1.");
 
- // Ideal lossless, non-polarizing coating between equal-index media.
- // R is power reflectance; T = 1 - R.
- // Reflection and transmission phases are configurable in radians.
- Property Coating(
-     Medium inside,
-     Medium ambient = null,
-     real R = 0.5,
-     real reflection_phase = pi / 2,
-     real transmission_phase = 0.0
- ) {
-     if (R < 0.0 || R > 1.0)
-         abort("Coating: R must be between 0 and 1.");
+    Property p = new Property;
+    p.name = "Coating";
 
-     Property p = new Property;
-     p.name = "Coating";
+    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
-     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-         FresnelResult res =
-             fresnelIsotropic(inside, ambient, r, h, resolve);
+        // This ideal coating model requires equal-index ports.
+        real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
+        if (abs(res.n1 - res.n2) > 1e-6 * n_scale) abort("Coating requires equal refractive indices on both sides.");
 
-         // This ideal coating model requires equal-index ports.
-         real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
-         if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
-             abort("Coating requires equal refractive indices on both sides.");
+        // Equal-index ports should not produce TIR.
+        if (res.tir) abort("Coating: unexpected TIR for equal-index media.");
 
-         // Equal-index ports should not produce TIR.
-         if (res.tir)
-             abort("Coating: unexpected TIR for equal-index media.");
+        Ray[] rays;
+        real T = 1.0 - R;
 
-         Ray[] rays;
-         real T = 1.0 - R;
+        // Transmission: coating-defined power and phase.
+        real I_trans = r.intensity() * T;
+        if (I_trans > config.physics.min_intensity) {
+            Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
+            // An ideal non-polarizing coating preserves normalized Stokes
+            // polarization; spawnRay already scales it to I_trans.
+            rays.push(trans_ray);
+        }
 
-         // Transmission: coating-defined power and phase.
-         real I_trans = r.intensity() * T;
-         if (I_trans > config.physics.min_intensity) {
-             Ray trans_ray = spawnRay(
-                 r, h, res.d, I_trans, res.medium,
-                 transmission_phase, res.wave_normal
-             );
-             // An ideal non-polarizing coating preserves normalized Stokes
-             // polarization; spawnRay already scales it to I_trans.
-             rays.push(trans_ray);
-         }
+        // Reflection: coating-defined power and phase.
+        real I_refl = r.intensity() * R;
+        if (I_refl > config.physics.min_intensity &&
+            (config.physics.trace_reflections || config.rendering.draw_reflections)) {
+            Ray refl_ray = spawnRay(r,
+                                    h,
+                                    res.reflected_direction,
+                                    I_refl,
+                                    res.source_medium,
+                                    reflection_phase,
+                                    res.reflected_wave_normal);
+            rays.push(refl_ray);
+        }
 
-         // Reflection: coating-defined power and phase.
-         real I_refl = r.intensity() * R;
-         if (I_refl > config.physics.min_intensity &&
-             (config.physics.trace_reflections ||
-              config.rendering.draw_reflections)) {
-             Ray refl_ray = spawnRay(
-                 r, h,
-                 res.reflected_direction,
-                 I_refl,
-                 res.source_medium,
-                 reflection_phase,
-                 res.reflected_wave_normal
-             );
-             rays.push(refl_ray);
-         }
+        return rays;
+    };
 
-         return rays;
-     };
-
-     return p;
- }
-
+    return p;
+}
 
 // Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
 // modes. This is deliberately not presented as a general anisotropic solver.
