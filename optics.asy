@@ -2182,6 +2182,47 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     return res;
 }
 
+// FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolver resolve, real reflectance = nan) {
+//     InterfaceFrame f = interfaceFrame(m1, m2, r, h, resolve);
+//     pair inc_wave_normal = unitOr(r.wave_normal, r.d);
+
+//     pair N_into2 = (dot(inc_wave_normal, f.normal) < 0) ? -f.normal : f.normal;
+//     pair T_surf = perp(N_into2);
+
+//     real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
+//     real n2 = max(config.physics.min_refractive_index,
+//                   (f.target_medium != null) ? f.target_medium.n(h.p, inc_wave_normal, r.lambda, r.pol) : 1.0);
+
+//     FresnelResult res = solveIsotropicInterface(n1, n2, inc_wave_normal, N_into2, T_surf);
+
+//     res.normal = f.normal;
+//     res.source_medium = f.source_medium;
+//     res.medium = res.tir ? f.source_medium : f.target_medium;
+
+//     if (!isnan(reflectance)) {
+//         res.R = clamp(reflectance, 0.0, 1.0);
+//         res.T = 1.0 - res.R;
+//         res.Rs = res.R;
+//         res.Rp = res.R;
+
+//         // Enforce Stokes phase complementarity for Beam Splitters & Mirrors
+//         // Transmitted wave gets 0 phase shift (purely real)
+//         // Reflected wave gets +pi/2 phase shift (purely imaginary 'i')
+//         real r_amp = sqrt(res.R);
+//         real t_amp = sqrt(res.T);
+//         res.rs = (0.0, r_amp);
+//         res.rp = (0.0, r_amp);
+//         res.ts = (t_amp, 0.0);
+//         res.tp = (t_amp, 0.0);
+//     } else {
+//         res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
+//         res.T = 1.0 - res.R;
+//     }
+
+//     res.sync();
+//     return res;
+// }
+
 FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium med_e, mediumResolver resolve) {
     FresnelResult res;
     res.is_birefringent = true;
