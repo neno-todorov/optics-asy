@@ -2979,6 +2979,201 @@ assert_near("Equivalent physical distance has equivalent OPL", scale_b.opl, scal
 Ray scale_c = propagate(Ray((0, 0), (1, 0), medium = Materials.VACUUM, lambda = 633.0), 10.0);
 assert_near("Changing physical scale updates OPL", scale_c.opl, 20.0, 1e-12);
 config.physics.meters_per_unit = saved_meters_per_unit;
+// ============================================================================
+// Test Case 108: Unified complex Fresnel kernel (fresnelAmplitudesKernel)
+// ============================================================================
+write("Test Case 108: Unified complex Fresnel kernel");
+
+// 1. Normal-incidence reflection for dielectric index pairs
+FresnelAmplitudes fa_norm_1_15 = fresnelAmplitudesKernel(1.0, (1.5, 0.0), 1.0);
+assert_near("Normal incidence air->glass rs == -0.2", fa_norm_1_15.rs.x, -0.2, 1e-12);
+assert_near("Normal incidence air->glass Rs == 0.04", fa_norm_1_15.Rs, 0.04, 1e-12);
+assert_near("Normal incidence air->glass Ts == 0.96", fa_norm_1_15.Ts, 0.96, 1e-12);
+assert_near("Normal incidence air->glass Rs + Ts == 1", fa_norm_1_15.Rs + fa_norm_1_15.Ts, 1.0, 1e-12);
+assert_near("Normal incidence air->glass Rp + Tp == 1", fa_norm_1_15.Rp + fa_norm_1_15.Tp, 1.0, 1e-12);
+
+FresnelAmplitudes fa_norm_15_1 = fresnelAmplitudesKernel(1.5, (1.0, 0.0), 1.0);
+assert_near("Normal incidence glass->air rs == +0.2", fa_norm_15_1.rs.x, 0.2, 1e-12);
+assert_near("Normal incidence glass->air Rs == 0.04", fa_norm_15_1.Rs, 0.04, 1e-12);
+assert_near("Normal incidence glass->air Ts == 0.96", fa_norm_15_1.Ts, 0.96, 1e-12);
+
+// 2. Power conservation across oblique angles (below TIR)
+real[] test_angles = {15.0, 30.0, 45.0, 60.0, 75.0};
+for (real deg_i : test_angles) {
+    real cosi = Cos(deg_i);
+    FresnelAmplitudes fa_oblique = fresnelAmplitudesKernel(1.0, (1.5, 0.0), cosi);
+    assert_near("Power conservation Rs + Ts at " + string(deg_i) + " deg",
+                fa_oblique.Rs + fa_oblique.Ts, 1.0, 1e-12);
+    assert_near("Power conservation Rp + Tp at " + string(deg_i) + " deg",
+                fa_oblique.Rp + fa_oblique.Tp, 1.0, 1e-12);
+}
+
+// 3. Brewster angle: tan(theta_B) = n2 / n1 = 1.5 -> theta_B ~ 56.30993 deg
+real theta_B_deg = degrees(atan(1.5));
+FresnelAmplitudes fa_brew = fresnelAmplitudesKernel(1.0, (1.5, 0.0), Cos(theta_B_deg));
+assert_near("Brewster angle Rp == 0", fa_brew.Rp, 0.0, 1e-10);
+assert_near("Brewster angle Tp == 1", fa_brew.Tp, 1.0, 1e-10);
+assert_near("Brewster angle |rp| == 0", length(fa_brew.rp), 0.0, 1e-5);
+
+// 4. Total internal reflection: n1 = 1.5, n2 = 1.0 at 60 deg (critical angle ~ 41.81 deg)
+FresnelAmplitudes fa_tir = fresnelAmplitudesKernel(1.5, (1.0, 0.0), Cos(60.0));
+assert_bool("TIR is evanescent", fa_tir.evanescent, true);
+assert_near("TIR Rs == 1", fa_tir.Rs, 1.0, 1e-12);
+assert_near("TIR Rp == 1", fa_tir.Rp, 1.0, 1e-12);
+assert_near("TIR Ts == 0", fa_tir.Ts, 0.0, 1e-12);
+assert_near("TIR Tp == 0", fa_tir.Tp, 0.0, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 109: Complex-index materials and metals (complexMedium / complexN)
+// ============================================================================
+write("Test Case 109: Complex-index materials and metals");
+
+// Verify complexN accessor
+complex n_au = complexN(Materials.GOLD);
+assert_near("Gold real index n == 0.197", n_au.x, 0.197, 1e-12);
+assert_near("Gold extinction kappa == 3.09", n_au.y, 3.09, 1e-12);
+
+// Metal normal reflectances at 633 nm vs analytic Fresnel: R = ((n-1)^2 + k^2)/((n+1)^2 + k^2)
+FresnelAmplitudes fa_au = fresnelAmplitudesKernel(1.0, n_au, 1.0);
+real expected_R_au = ((0.197 - 1.0)^2 + 3.09^2) / ((0.197 + 1.0)^2 + 3.09^2);
+assert_near("Gold normal reflectance matches analytic formula (~92.8%)", fa_au.Rs, expected_R_au, 1e-12);
+
+complex n_ag = complexN(Materials.SILVER);
+FresnelAmplitudes fa_ag = fresnelAmplitudesKernel(1.0, n_ag, 1.0);
+real expected_R_ag = ((0.135 - 1.0)^2 + 3.99^2) / ((0.135 + 1.0)^2 + 3.99^2);
+assert_near("Silver normal reflectance matches analytic formula (~96.9%)", fa_ag.Rs, expected_R_ag, 1e-12);
+
+complex n_al = complexN(Materials.ALUMINUM);
+FresnelAmplitudes fa_al = fresnelAmplitudesKernel(1.0, n_al, 1.0);
+real expected_R_al = ((1.38 - 1.0)^2 + 7.62^2) / ((1.38 + 1.0)^2 + 7.62^2);
+assert_near("Aluminum normal reflectance matches analytic formula (~91.3%)", fa_al.Rs, expected_R_al, 1e-12);
+
+// Custom absorbing medium with n=2.0, kappa=1.0: R = ((2-1)^2 + 1) / ((2+1)^2 + 1) = 2/10 = 0.2
+Medium med_abs = complexMedium("absorber", 2.0, 1.0);
+FresnelAmplitudes fa_abs = fresnelAmplitudesKernel(1.0, complexN(med_abs), 1.0);
+assert_near("Custom absorber normal Rs == 0.2", fa_abs.Rs, 0.2, 1e-12);
+write("");
+
+// ============================================================================
+// Test Case 110: ThinFilmStack transfer-matrix multilayer solver
+// ============================================================================
+write("Test Case 110: ThinFilmStack transfer-matrix multilayer solver");
+
+Medium glass_lossless = medium("glass_lossless", 1.5);
+Hit hit_tf = new Hit;
+hit_tf.p = (0, 0);
+hit_tf.normal = (-1, 0);
+hit_tf.tangent = (0, 1);
+hit_tf.entering = true;
+mediumResolver resolve_tf = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
+    return glass_lossless;
+};
+
+// 1. Empty stack (0 layers): must reproduce bare Fresnel interface
+ThinFilmLayer[] empty_stack = new ThinFilmLayer[];
+Property prop_empty = ThinFilmStack(empty_stack, glass_lossless, Materials.VACUUM);
+Ray r_tf_in = Ray((-10, 0), (1, 0), Materials.VACUUM, lambda = 633.0);
+Ray[] out_empty = prop_empty.generate(r_tf_in, hit_tf, resolve_tf);
+assert_bool("Empty ThinFilmStack generates 2 rays (transmitted + reflected)", out_empty.length == 2, true);
+assert_near("Empty ThinFilmStack transmitted intensity == 0.96", out_empty[0].intensity(), 0.96, 1e-10);
+assert_near("Empty ThinFilmStack reflected intensity == 0.04", out_empty[1].intensity(), 0.04, 1e-10);
+
+// 2. Single-layer quarter-wave anti-reflection (AR) coating:
+// Layer index nc = sqrt(ns) = sqrt(1.5), thickness d = lambda / (4 * nc)
+real n_ar = sqrt(1.5);
+real d_ar = 633.0 / (4.0 * n_ar);
+Medium med_ar = medium("ar_coating", n_ar);
+ThinFilmLayer[] ar_stack = { ThinFilmLayer(med_ar, d_ar) };
+Property prop_ar = ThinFilmStack(ar_stack, glass_lossless, Materials.VACUUM);
+Ray[] out_ar = prop_ar.generate(r_tf_in, hit_tf, resolve_tf);
+assert_bool("AR coating eliminates reflection (only transmitted ray generated)", out_ar.length == 1, true);
+assert_near("AR coating transmitted intensity == 1.0 (zero reflectance)", out_ar[0].intensity(), 1.0, 1e-10);
+
+// 3. Distributed Bragg Reflector (DBR): alternating quarter-wave H (2.3) and L (1.4) layers
+real lambda_dbr = 633.0;
+Medium med_H = medium("H_TiO2", 2.3);
+Medium med_L = medium("L_SiO2", 1.4);
+real d_H = lambda_dbr / (4.0 * 2.3);
+real d_L = lambda_dbr / (4.0 * 1.4);
+ThinFilmLayer[] dbr_stack = new ThinFilmLayer[];
+for (int i = 0; i < 4; ++i) {
+    dbr_stack.push(ThinFilmLayer(med_H, d_H));
+    dbr_stack.push(ThinFilmLayer(med_L, d_L));
+}
+Property prop_dbr = ThinFilmStack(dbr_stack, glass_lossless, Materials.VACUUM);
+Ray[] out_dbr = prop_dbr.generate(r_tf_in, hit_tf, resolve_tf);
+assert_bool("DBR generates transmitted and reflected rays", out_dbr.length == 2, true);
+assert_near("DBR high reflectance (~95.1%)", out_dbr[1].intensity(), 0.95098536, 1e-5);
+assert_near("DBR low transmittance (~4.9%)", out_dbr[0].intensity(), 0.04901464, 1e-5);
+assert_near("DBR energy conservation R + T == 1", out_dbr[0].intensity() + out_dbr[1].intensity(), 1.0, 1e-10);
+// ============================================================================
+// Test Case 111: User API Extensions & Modern Component Factories
+// ============================================================================
+write("Test Case 111: User API Extensions & Modern Component Factories");
+
+// 1. Implicit string-to-medium casting for metals
+Medium cast_au = "gold";
+Medium cast_ag = "silver";
+Medium cast_al = "aluminum";
+assert_bool("String cast gold", cast_au.name == "gold", true);
+assert_bool("String cast silver", cast_ag.name == "silver", true);
+assert_bool("String cast aluminum", cast_al.name == "aluminum", true);
+Medium cast_au_sym = "AU";
+assert_bool("String cast AU symbol", cast_au_sym.name == "gold", true);
+
+// 2. Lens family: plano-convex, plano-concave, meniscus
+Element l_pcx = Lens.planoConvex((0, 0), 0.0, 50.0, 5.0, 30.0, Materials.BK7);
+Element l_pcc = Lens.planoConcave((0, 0), 0.0, 50.0, 5.0, 30.0, Materials.BK7);
+Element l_men = Lens.meniscus((0, 0), 0.0, 60.0, 100.0, 5.0, 30.0, Materials.BK7);
+assert_bool("Plano-convex lens has surfaces", l_pcx.surfaces.length > 0, true);
+assert_bool("Plano-concave lens has surfaces", l_pcc.surfaces.length > 0, true);
+assert_bool("Meniscus lens has surfaces", l_men.surfaces.length > 0, true);
+
+// 3. Parabolic mirror: exact geometric focus without spherical aberration
+Element pm = Mirror.parabolic((50, 0), 180.0, 50.0, 40.0);
+Trace tr_pm = system(pm).trace(new Ray[]{ Ray((0, 10), (1, 0)), Ray((0, 20), (1, 0)) });
+Ray r1_pm = tr_pm.ray_tree[1];
+Ray r2_pm = tr_pm.ray_tree[3];
+real x_cross_1 = r1_pm.p.x - r1_pm.p.y * (r1_pm.d.x / r1_pm.d.y);
+real x_cross_2 = r2_pm.p.x - r2_pm.p.y * (r2_pm.d.x / r2_pm.d.y);
+assert_near("Parabolic mirror exact focus ray 1 (x == 0)", x_cross_1, 0.0, 1e-3);
+assert_near("Parabolic mirror exact focus ray 2 (x == 0)", x_cross_2, 0.0, 1e-3);
+
+// 4. Polarizing Beam Splitter (PBS Cube)
+Element pbs_cube = BeamSplitter.pbs((0, 0), 0.0, 20.0);
+Trace tr_pbs = system(pbs_cube).trace(Ray((-20, 0), (1, 0), pol = Polarization.linear(45.0, 1.0)), far = 40);
+// Ray 3 is transmitted through diagonal (pure p-pol: S1 < 0, S1/S0 == -1)
+Ray r_pbs_trans = tr_pbs.ray_tree[3];
+assert_near("PBS transmitted ray is pure p-polarized (S1/S0 == -1)", r_pbs_trans.pol.S1 / r_pbs_trans.pol.S0, -1.0, 1e-6);
+assert_near("PBS transmitted direction is forward (d.x == 1)", r_pbs_trans.d.x, 1.0, 1e-6);
+// Ray 4 is reflected from diagonal (pure s-pol: S1 > 0, S1/S0 == +1)
+Ray r_pbs_refl = tr_pbs.ray_tree[4];
+assert_near("PBS reflected ray is pure s-polarized (S1/S0 == +1)", r_pbs_refl.pol.S1 / r_pbs_refl.pol.S0, 1.0, 1e-6);
+assert_near("PBS reflected direction is upward (d.y == 1)", r_pbs_refl.d.y, 1.0, 1e-6);
+
+// 5. Beam generators: collimated & converging
+Ray[] b_coll = Beam.collimated((0, 0), (1, 0), 20.0, 5, coherence_id = 42);
+assert_bool("Beam.collimated ray count == 5", b_coll.length == 5, true);
+assert_near("Beam.collimated bottom ray y == -10", b_coll[0].p.y, -10.0, 1e-12);
+assert_near("Beam.collimated center ray y == 0", b_coll[2].p.y, 0.0, 1e-12);
+assert_near("Beam.collimated top ray y == +10", b_coll[4].p.y, 10.0, 1e-12);
+assert_bool("Beam.collimated propagates coherence_id", b_coll[0].coherence_id == 42, true);
+
+Ray[] b_conv = Beam.converging((50, 0), (1, 0), 30.0, 100.0, 3, coherence_id = 99);
+assert_bool("Beam.converging ray count == 3", b_conv.length == 3, true);
+assert_bool("Beam.converging propagates coherence_id", b_conv[0].coherence_id == 99, true);
+
+// 6. Thin-film coating convenience properties
+Property ar_prop_wrapper = AntiReflectionCoating(medium("ar_wrap", sqrt(1.5)), glass_lossless, Materials.VACUUM, 633.0);
+Ray[] out_ar_wrap = ar_prop_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
+assert_bool("AntiReflectionCoating eliminates reflection", out_ar_wrap.length == 1, true);
+assert_near("AntiReflectionCoating transmitted intensity == 1.0", out_ar_wrap[0].intensity(), 1.0, 1e-10);
+
+Property dbr_wrapper = DistributedBraggReflector(med_H, med_L, pairs = 4, inside = glass_lossless, ambient = Materials.VACUUM, design_lambda = 633.0);
+Ray[] out_dbr_wrap = dbr_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
+assert_bool("DistributedBraggReflector generates 2 rays", out_dbr_wrap.length == 2, true);
+assert_near("DistributedBraggReflector high reflectance (~95.1%)", out_dbr_wrap[1].intensity(), 0.95098536, 1e-5);
 write("");
 
 // Summary
