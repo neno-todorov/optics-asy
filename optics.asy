@@ -261,9 +261,6 @@ real vacuumWaveNumber(real lambda_nm) {
 // `pair` for geometric quantities.  Both are the same Asymptote `pair` type.
 typedef pair complex;
 
-// Squared modulus  |z|^2  (avoids an unnecessary sqrt).
-real cmod2(complex z) { return z.x * z.x + z.y * z.y; }
-
 // Branch-safe complex square root for outgoing transmitted waves.
 //
 // Given  q2 = sqrt(n_tilde^2 - n1^2 * sin^2(theta_i)),  the two square-root
@@ -1054,8 +1051,8 @@ struct Materials {
     static Medium FLINT = medium("flint", 1.62, 0.0125);
     static Medium SILICA = medium("silica", 1.4580, 0.00354);
     // Common metals (populated after complexMedium is defined below)
-    static Medium GOLD     = null;
-    static Medium SILVER   = null;
+    static Medium GOLD = null;
+    static Medium SILVER = null;
     static Medium ALUMINUM = null;
 }
 
@@ -1078,22 +1075,17 @@ VolumeProperty ComplexRefractiveIndex(real kappa) {
     // kappa is smuggled through the attenuation closure for type compatibility.
     // The ray tracer's Beer-Lambert path calls absorption() only inside
     // stepPolarization, which is not triggered at a reflective metal boundary.
-    vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) {
-        return kappa;
-    };
+    vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) { return kappa; };
     return vp;
 }
 
 // Return the complex refractive index n_tilde = n + i*kappa for a Medium.
 // Real part: Medium.n().  Imaginary part: from ComplexRefractiveIndex property.
 // Returns (n, 0) for dielectric media with no complex-index property.
-complex complexN(Medium m,
-                 pair p = (0, 0),
-                 pair d = (1, 0),
-                 real lambda = config.physics.lambda) {
+complex complexN(Medium m, pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda) {
     if (m == null) return (1.0, 0.0);
     real n_real = m.n(p, d, lambda);
-    real kappa  = 0.0;
+    real kappa = 0.0;
     for (VolumeProperty vp : m.orderedProperties()) {
         if (vp.name == COMPLEX_INDEX_TAG && vp.attenuation != null) {
             kappa = vp.attenuation(p, d, lambda, null);
@@ -1121,9 +1113,9 @@ Medium complexMedium(string name, real n, real kappa, real alpha = 0.0) {
 // Populate metal entries.  Values: Johnson & Christy, PRB 6, 4370 (1972), 633 nm.
 // Interface-only (alpha = 0): treated as an opaque reflective boundary.
 {
-    Materials.GOLD     = complexMedium("gold",     0.197, 3.09);
-    Materials.SILVER   = complexMedium("silver",   0.135, 3.99);
-    Materials.ALUMINUM = complexMedium("aluminum", 1.38,  7.62);
+    Materials.GOLD = complexMedium("gold", 0.197, 3.09);
+    Materials.SILVER = complexMedium("silver", 0.135, 3.99);
+    Materials.ALUMINUM = complexMedium("aluminum", 1.38, 7.62);
 }
 
 // private
@@ -1215,10 +1207,10 @@ struct FresnelResult {
 // Produces physically correct results for dielectric transmission, TIR, and
 // transmission into an absorbing medium through the same equations.
 struct FresnelAmplitudes {
-    complex rs;  // s-polarization reflection amplitude
-    complex rp;  // p-polarization reflection amplitude
-    complex ts;  // s-polarization transmission amplitude
-    complex tp;  // p-polarization transmission amplitude
+    complex rs; // s-polarization reflection amplitude
+    complex rp; // p-polarization reflection amplitude
+    complex ts; // s-polarization transmission amplitude
+    complex tp; // p-polarization transmission amplitude
 
     // Power reflectances (always real and in [0,1] for lossless incident media)
     real Rs;
@@ -1279,7 +1271,7 @@ FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
 
     // --- s-polarization ---
     complex denom_s = kn1 + fa.q2;
-    if (cmod2(denom_s) > config.math.solver_denominator_eps) {
+    if (abs2(denom_s) > config.math.solver_denominator_eps) {
         fa.rs = (kn1 - fa.q2) / denom_s;
         fa.ts = 2.0 * kn1 / denom_s;
     } else {
@@ -1289,7 +1281,7 @@ FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
 
     // --- p-polarization (using n2^2 formulation, avoids explicit cos_t) ---
     complex denom_p = n2sq * (cosi, 0.0) + n1 * fa.q2;
-    if (cmod2(denom_p) > config.math.solver_denominator_eps) {
+    if (abs2(denom_p) > config.math.solver_denominator_eps) {
         fa.rp = (n2sq * (cosi, 0.0) - n1 * fa.q2) / denom_p;
         fa.tp = 2.0 * n1 * n2 * (cosi, 0.0) / denom_p;
     } else {
@@ -1298,16 +1290,16 @@ FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
     }
 
     // Power reflectances
-    fa.Rs = cmod2(fa.rs);
-    fa.Rp = cmod2(fa.rp);
+    fa.Rs = abs2(fa.rs);
+    fa.Rp = abs2(fa.rp);
 
     // Power transmittances: T = (Re(q2) / (n1*cosi)) * |t|^2
     // Re(q2) / (n1*cosi) is the real normal energy-flux ratio.
     real flux_denom = max(config.math.eps, n1 * cosi);
     real flux_q2 = fa.q2.x; // Re(q2): positive for propagating, 0 for evanescent
     real flux = flux_q2 / flux_denom;
-    fa.Ts = flux * cmod2(fa.ts);
-    fa.Tp = flux * cmod2(fa.tp);
+    fa.Ts = flux * abs2(fa.ts);
+    fa.Tp = flux * abs2(fa.tp);
 
     return fa;
 }
@@ -1324,14 +1316,14 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pa
     real cosi = clamp(dot(u, N_into2), 0.0, 1.0);
     real sini = dot(u, T_surf);
 
-    real kt  = n1 * sini;
+    real kt = n1 * sini;
     real kn1 = n1 * cosi;
     res.cosi = cosi;
-    res.n1   = n1;
-    res.n2   = n2;
+    res.n1 = n1;
+    res.n2 = n2;
 
     // Reflected direction is always defined (geometric, real-valued)
-    res.reflected_direction  = unit(sini * T_surf - cosi * N_into2);
+    res.reflected_direction = unit(sini * T_surf - cosi * N_into2);
     res.reflected_wave_normal = res.reflected_direction;
 
     // Compute complex amplitudes via the unified kernel.
@@ -1351,16 +1343,16 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pa
 
     if (res.tir) {
         res.cost = 0.0;
-        res.d          = res.reflected_direction;
+        res.d = res.reflected_direction;
         res.wave_normal = res.reflected_wave_normal;
         res.R = 1.0;
         res.T = 0.0;
     } else {
         real sint_val = kt / n2;
-        real sin2_t   = sint_val * sint_val;
+        real sin2_t = sint_val * sint_val;
         real cost_val = sqrt(max(0.0, 1.0 - sin2_t));
         res.cost = cost_val;
-        res.d          = unit(sint_val * T_surf + cost_val * N_into2);
+        res.d = unit(sint_val * T_surf + cost_val * N_into2);
         res.wave_normal = res.d;
         real R_unpol = 0.5 * (res.Rs + res.Rp);
         res.R = R_unpol;
@@ -5166,8 +5158,7 @@ Property PolarizingCoating(Medium inside,
                            real Rp = 0.0,
                            real reflection_phase = pi / 2,
                            real transmission_phase = 0.0) {
-    if (Rs < 0.0 || Rs > 1.0 || Rp < 0.0 || Rp > 1.0)
-        abort("PolarizingCoating: Rs and Rp must be between 0 and 1.");
+    if (Rs < 0.0 || Rs > 1.0 || Rp < 0.0 || Rp > 1.0) abort("PolarizingCoating: Rs and Rp must be between 0 and 1.");
 
     Property p = new Property;
     p.name = "PolarizingCoating";
@@ -5190,7 +5181,8 @@ Property PolarizingCoating(Medium inside,
         complex jp_refl = (sqrt(Rp) * cos(reflection_phase), sqrt(Rp) * sin(reflection_phase));
 
         // Transmitted ray
-        real T_weighted = (r.intensity() > 0) ? (Ts * r.pol.sPower() + Tp * r.pol.pPower()) / r.intensity() : 0.5 * (Ts + Tp);
+        real T_weighted =
+            (r.intensity() > 0) ? (Ts * r.pol.sPower() + Tp * r.pol.pPower()) / r.intensity() : 0.5 * (Ts + Tp);
         real I_trans = r.intensity() * T_weighted;
         if (I_trans > config.physics.min_intensity) {
             Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
@@ -5199,11 +5191,18 @@ Property PolarizingCoating(Medium inside,
         }
 
         // Reflected ray
-        real R_weighted = (r.intensity() > 0) ? (Rs * r.pol.sPower() + Rp * r.pol.pPower()) / r.intensity() : 0.5 * (Rs + Rp);
+        real R_weighted =
+            (r.intensity() > 0) ? (Rs * r.pol.sPower() + Rp * r.pol.pPower()) / r.intensity() : 0.5 * (Rs + Rp);
         real I_refl = r.intensity() * R_weighted;
         if (I_refl > config.physics.min_intensity &&
             (config.physics.trace_reflections || config.rendering.draw_reflections)) {
-            Ray refl_ray = spawnRay(r, h, res.reflected_direction, I_refl, res.source_medium, reflection_phase, res.reflected_wave_normal);
+            Ray refl_ray = spawnRay(r,
+                                    h,
+                                    res.reflected_direction,
+                                    I_refl,
+                                    res.source_medium,
+                                    reflection_phase,
+                                    res.reflected_wave_normal);
             applyDiattenuation(refl_ray.pol, r.pol, js_refl, jp_refl);
             rays.push(refl_ray);
         }
@@ -5235,8 +5234,8 @@ Property PolarizingCoating(Medium inside,
 //   window.add(ar);
 
 struct ThinFilmLayer {
-    Medium medium;       // layer material (use complexMedium for absorbers)
-    real thickness_nm;   // physical thickness in nanometres (same scale as lambda)
+    Medium medium;     // layer material (use complexMedium for absorbers)
+    real thickness_nm; // physical thickness in nanometres (same scale as lambda)
 
     void operator init(Medium medium, real thickness_nm) {
         this.medium = medium;
@@ -5244,46 +5243,43 @@ struct ThinFilmLayer {
     }
 }
 
-ThinFilmLayer thinFilmLayer(Medium medium, real thickness_nm) {
+ThinFilmLayer
+thinFilmLayer(Medium medium, real thickness_nm) {
     return ThinFilmLayer(medium, thickness_nm);
 }
 
 // Build the 2x2 characteristic matrix for a single layer.
 // Polarization: pol == 0 -> s, pol == 1 -> p.
 private
-real[][] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm,
-                             real sin_theta1, int pol) {
+real[][] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, real sin_theta1, int pol) {
     // Phase thickness: delta_j = (2*pi/lambda) * n_j * d_j * cos_theta_j
     // cos_theta_j = sqrt(n_j^2 - sin^2(theta_1)) / n_j   [Snell: k_t conserved]
     complex n2 = (n_j.x * n_j.x - n_j.y * n_j.y, 2.0 * n_j.x * n_j.y);
     complex ct2 = n2 - (sin_theta1 * sin_theta1, 0.0);
-    complex cos_tj = csqrt_outgoing(ct2 / n2);   // cos(theta_j) in medium j
+    complex cos_tj = csqrt_outgoing(ct2 / n2); // cos(theta_j) in medium j
 
     // Optical admittance eta_j for each polarization
     //   s: eta_j = n_j * cos(theta_j)   (TE)
     //   p: eta_j = n_j / cos(theta_j)   (TM)
     complex eta_j;
     if (pol == 0) {
-        eta_j = n_j * cos_tj;                // s-polarization
+        eta_j = n_j * cos_tj; // s-polarization
     } else {
-        real denom2 = cmod2(cos_tj);
+        real denom2 = abs2(cos_tj);
         if (denom2 < config.math.solver_denominator_eps) {
             eta_j = (n_j.x * n_j.x + n_j.y * n_j.y, 0.0);
         } else {
-            eta_j = (n_j.x * cos_tj.x + n_j.y * cos_tj.y,
-                     n_j.y * cos_tj.x - n_j.x * cos_tj.y) / denom2;
+            eta_j = (n_j.x * cos_tj.x + n_j.y * cos_tj.y, n_j.y * cos_tj.x - n_j.x * cos_tj.y) / denom2;
         }
     }
 
     // Phase thickness delta_j = (2 pi / lambda) * n_j * cos_tj * d_j
-    real k0_nm = 2.0 * pi / lambda_nm;   // in nm^{-1}
+    real k0_nm = 2.0 * pi / lambda_nm; // in nm^{-1}
     complex delta = n_j * cos_tj * (k0_nm * d_nm, 0.0);
 
     // cos(delta) and sin(delta) via Euler: e^{i*delta} = cos(delta) + i*sin(delta)
-    complex exp_pdelta = (cos(delta.x) * exp(-delta.y),
-                          sin(delta.x) * exp(-delta.y));
-    complex exp_mdelta = (cos(delta.x) * exp(delta.y),
-                          -sin(delta.x) * exp(delta.y));
+    complex exp_pdelta = (cos(delta.x) * exp(-delta.y), sin(delta.x) * exp(-delta.y));
+    complex exp_mdelta = (cos(delta.x) * exp(delta.y), -sin(delta.x) * exp(delta.y));
     complex cos_d = 0.5 * exp_pdelta + 0.5 * exp_mdelta;
     complex sin_d = (exp_pdelta - exp_mdelta) / (0.0, 2.0);
 
@@ -5295,10 +5291,11 @@ real[][] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm,
     // Actually, return as real[4][2] where [k][0] = Re, [k][1] = Im, k in {0,1,2,3}.
     real[][] M = new real[4][2];
     // M[0] = cos_d
-    M[0][0] = cos_d.x; M[0][1] = cos_d.y;
+    M[0][0] = cos_d.x;
+    M[0][1] = cos_d.y;
     // M[1] = -i * sin_d / eta_j  => multiply sin_d by -i then divide by eta_j
     complex sin_d_over_eta;
-    real eta2 = cmod2(eta_j);
+    real eta2 = abs2(eta_j);
     if (eta2 > config.math.solver_denominator_eps) {
         // -i * sin_d = (sin_d.y, -sin_d.x)
         complex neg_i_sin_d = (sin_d.y, -sin_d.x);
@@ -5306,12 +5303,15 @@ real[][] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm,
     } else {
         sin_d_over_eta = (0.0, 0.0);
     }
-    M[1][0] = sin_d_over_eta.x; M[1][1] = sin_d_over_eta.y;
+    M[1][0] = sin_d_over_eta.x;
+    M[1][1] = sin_d_over_eta.y;
     // M[2] = -i * eta_j * sin_d
     complex neg_i_eta_sin = eta_j * (sin_d.y, -sin_d.x);
-    M[2][0] = neg_i_eta_sin.x; M[2][1] = neg_i_eta_sin.y;
+    M[2][0] = neg_i_eta_sin.x;
+    M[2][1] = neg_i_eta_sin.y;
     // M[3] = cos_d
-    M[3][0] = cos_d.x; M[3][1] = cos_d.y;
+    M[3][0] = cos_d.x;
+    M[3][1] = cos_d.y;
     return M;
 }
 
@@ -5324,12 +5324,12 @@ real[][] matMul22(real[][] A, real[][] B) {
         for (int c = 0; c < 2; ++c) {
             complex sum = (0.0, 0.0);
             for (int k = 0; k < 2; ++k) {
-                complex a = (A[2*r+k][0], A[2*r+k][1]);
-                complex b = (B[2*k+c][0], B[2*k+c][1]);
+                complex a = (A[2 * r + k][0], A[2 * r + k][1]);
+                complex b = (B[2 * k + c][0], B[2 * k + c][1]);
                 sum = sum + a * b;
             }
-            C[2*r+c][0] = sum.x;
-            C[2*r+c][1] = sum.y;
+            C[2 * r + c][0] = sum.x;
+            C[2 * r + c][1] = sum.y;
         }
     }
     return C;
@@ -5339,10 +5339,14 @@ real[][] matMul22(real[][] A, real[][] B) {
 private
 real[][] matIdentity22() {
     real[][] I = new real[4][2];
-    I[0][0] = 1.0; I[0][1] = 0.0;
-    I[1][0] = 0.0; I[1][1] = 0.0;
-    I[2][0] = 0.0; I[2][1] = 0.0;
-    I[3][0] = 1.0; I[3][1] = 0.0;
+    I[0][0] = 1.0;
+    I[0][1] = 0.0;
+    I[1][0] = 0.0;
+    I[1][1] = 0.0;
+    I[2][0] = 0.0;
+    I[2][1] = 0.0;
+    I[3][0] = 1.0;
+    I[3][1] = 0.0;
     return I;
 }
 
@@ -5351,26 +5355,21 @@ real[][] matIdentity22() {
 //   pol == 1: eta = n / cos(theta)   [p / TM]
 private
 complex thinFilmAdmittance(complex n, real sin_theta1, int pol) {
-    complex n2 = (n.x*n.x - n.y*n.y, 2.0*n.x*n.y);
-    complex cos2 = n2 - (sin_theta1*sin_theta1, 0.0);
+    complex n2 = (n.x * n.x - n.y * n.y, 2.0 * n.x * n.y);
+    complex cos2 = n2 - (sin_theta1 * sin_theta1, 0.0);
     complex cos_t = csqrt_outgoing(cos2 / n2);
     if (pol == 0) return n * cos_t;
-    real c2 = cmod2(cos_t);
+    real c2 = abs2(cos_t);
     if (c2 < config.math.solver_denominator_eps) return n;
-    return (n.x * cos_t.x + n.y * cos_t.y,
-            n.y * cos_t.x - n.x * cos_t.y) / c2;
+    return (n.x * cos_t.x + n.y * cos_t.y, n.y * cos_t.x - n.x * cos_t.y) / c2;
 }
 
 // Compute rs, rp, ts, tp for a thin-film stack using the transfer matrix.
 private
-FresnelAmplitudes thinFilmAmplitudes(ThinFilmLayer[] layers,
-                                     Medium med_in,
-                                     Medium med_out,
-                                     real cosi,
-                                     real lambda_nm,
-                                     pair p_hit) {
+FresnelAmplitudes
+thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real cosi, real lambda_nm, pair p_hit) {
     FresnelAmplitudes fa;
-    complex n1 = complexN(med_in,  p_hit, (1, 0), lambda_nm);
+    complex n1 = complexN(med_in, p_hit, (1, 0), lambda_nm);
     complex ns = complexN(med_out, p_hit, (1, 0), lambda_nm);
     real sin_theta1 = sqrt(max(0.0, 1.0 - cosi * cosi)) * n1.x; // Snell: n1*sin=kt
 
@@ -5398,12 +5397,12 @@ FresnelAmplitudes thinFilmAmplitudes(ThinFilmLayer[] layers,
         // r = (eta1*m00 + eta1*etas*m01 - m10 - etas*m11)
         //   / (eta1*m00 + eta1*etas*m01 + m10 + etas*m11)
         // t = 2*eta1 / (eta1*m00 + eta1*etas*m01 + m10 + etas*m11)
-        complex num_r = eta1*m00 + eta1*etas*m01 - m10 - etas*m11;
-        complex den   = eta1*m00 + eta1*etas*m01 + m10 + etas*m11;
+        complex num_r = eta1 * m00 + eta1 * etas * m01 - m10 - etas * m11;
+        complex den = eta1 * m00 + eta1 * etas * m01 + m10 + etas * m11;
         complex num_t_factor = 2.0 * eta1;
 
         complex r_amp, t_amp;
-        real den2 = cmod2(den);
+        real den2 = abs2(den);
         if (den2 > config.math.solver_denominator_eps) {
             r_amp = num_r / den;
             t_amp = num_t_factor / den;
@@ -5412,23 +5411,27 @@ FresnelAmplitudes thinFilmAmplitudes(ThinFilmLayer[] layers,
             t_amp = (0.0, 0.0);
         }
 
-        real R_pol = cmod2(r_amp);
+        real R_pol = abs2(r_amp);
         // Power transmittance: T = (Re(etas) / Re(eta1)) * |t|^2
         real T_pol = 0.0;
         if (eta1.x > config.math.eps) {
-            T_pol = (etas.x / eta1.x) * cmod2(t_amp);
+            T_pol = (etas.x / eta1.x) * abs2(t_amp);
         }
 
         if (pol == 0) {
-            fa.rs = r_amp; fa.ts = t_amp;
-            fa.Rs = R_pol; fa.Ts = T_pol;
+            fa.rs = r_amp;
+            fa.ts = t_amp;
+            fa.Rs = R_pol;
+            fa.Ts = T_pol;
         } else {
-            fa.rp = r_amp; fa.tp = t_amp;
-            fa.Rp = R_pol; fa.Tp = T_pol;
+            fa.rp = r_amp;
+            fa.tp = t_amp;
+            fa.Rp = R_pol;
+            fa.Tp = T_pol;
         }
     }
 
-    fa.q2 = (0.0, 0.0);          // not used externally for stack results
+    fa.q2 = (0.0, 0.0); // not used externally for stack results
     fa.evanescent = false;
     return fa;
 }
@@ -5448,18 +5451,17 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
     prop.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
         FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
         // Replace the amplitudes and power coefficients with the stack calculation.
-        FresnelAmplitudes fa = thinFilmAmplitudes(layers,
-                                                  res.source_medium,
-                                                  res.medium,
-                                                  res.cosi,
-                                                  r.lambda,
-                                                  h.p);
-        res.rs = fa.rs; res.rp = fa.rp;
-        res.ts = fa.ts; res.tp = fa.tp;
-        res.Rs = fa.Rs; res.Rp = fa.Rp;
-        res.Ts = fa.Ts; res.Tp = fa.Tp;
-        res.R  = weightedReflectance(r.pol, fa.Rs, fa.Rp);
-        res.T  = 1.0 - res.R;
+        FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
+        res.rs = fa.rs;
+        res.rp = fa.rp;
+        res.ts = fa.ts;
+        res.tp = fa.tp;
+        res.Rs = fa.Rs;
+        res.Rp = fa.Rp;
+        res.Ts = fa.Ts;
+        res.Tp = fa.Tp;
+        res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
+        res.T = 1.0 - res.R;
 
         Ray[] rays;
 
@@ -5477,14 +5479,13 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
         if (I_refl > config.physics.min_intensity &&
             (config.physics.trace_reflections || config.rendering.draw_reflections || res.tir)) {
             real phase_r = atan2(fa.rs.y, fa.rs.x);
-            Ray rr = spawnRay(r, h, res.reflected_direction, I_refl,
-                              res.source_medium, phase_r, res.reflected_wave_normal);
+            Ray rr =
+                spawnRay(r, h, res.reflected_direction, I_refl, res.source_medium, phase_r, res.reflected_wave_normal);
             // Propagate Stokes polarization through the reflection Mueller matrix
             real Ris = fa.Rs, Rip = fa.Rp;
             complex cross_rs_rp = fa.rs * conj(fa.rp);
             rr.pol.S0 = I_refl;
-            rr.pol.S1 = 0.5 * (Ris * r.pol.S0 + Ris * r.pol.S1 -
-                                Rip * r.pol.S0 + Rip * r.pol.S1);
+            rr.pol.S1 = 0.5 * (Ris * r.pol.S0 + Ris * r.pol.S1 - Rip * r.pol.S0 + Rip * r.pol.S1);
             rr.pol.S2 = cross_rs_rp.x * r.pol.S2 - cross_rs_rp.y * r.pol.S3;
             rr.pol.S3 = cross_rs_rp.y * r.pol.S2 + cross_rs_rp.x * r.pol.S3;
             rays.push(rr);
@@ -5497,11 +5498,8 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
 }
 
 // Convenience factory: single thin-film layer of specified thickness
-Property SingleLayerCoating(Medium layer_medium,
-                            real thickness_nm,
-                            Medium inside,
-                            Medium ambient = null) {
-    ThinFilmLayer[] layers = { ThinFilmLayer(layer_medium, thickness_nm) };
+Property SingleLayerCoating(Medium layer_medium, real thickness_nm, Medium inside, Medium ambient = null) {
+    ThinFilmLayer[] layers = {ThinFilmLayer(layer_medium, thickness_nm)};
     return ThinFilmStack(layers, inside, ambient);
 }
 
@@ -5513,7 +5511,7 @@ Property AntiReflectionCoating(Medium layer_medium,
     complex n_layer = complexN(layer_medium, lambda = design_lambda);
     real n_eff = max(config.math.eps, n_layer.x);
     real d_qw = design_lambda / (4.0 * n_eff);
-    ThinFilmLayer[] layers = { ThinFilmLayer(layer_medium, d_qw) };
+    ThinFilmLayer[] layers = {ThinFilmLayer(layer_medium, d_qw)};
     return ThinFilmStack(layers, inside, ambient);
 }
 
@@ -5537,7 +5535,6 @@ Property DistributedBraggReflector(Medium med_H,
     }
     return ThinFilmStack(layers, inside, ambient);
 }
-
 
 // Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
 // modes. This is deliberately not presented as a general anisotropic solver.
@@ -6101,15 +6098,15 @@ struct Lens {
     }
 
     static Element planoConcave(pair center,
-                               real angle,
-                               real R,
-                               real thickness,
-                               real diameter,
-                               Medium glass,
-                               Medium ambient = null,
-                               pen stroke = config.rendering.pen_lens,
-                               pen fill = nullpen,
-                               string name = "Plano-Concave Lens") {
+                                real angle,
+                                real R,
+                                real thickness,
+                                real diameter,
+                                Medium glass,
+                                Medium ambient = null,
+                                pen stroke = config.rendering.pen_lens,
+                                pen fill = nullpen,
+                                string name = "Plano-Concave Lens") {
         return thick(center, angle, -abs(R), 0.0, thickness, diameter, glass, ambient, stroke, fill, name);
     }
 
@@ -6137,7 +6134,8 @@ struct Lens {
     }
 }
 
-private path sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
+private path
+sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
     real R = 2.0 * abs(f);
     pair C = vertex + sgn(f) * R * N;
     real half = aSin(min(1.0, diameter / (2.0 * R)));
