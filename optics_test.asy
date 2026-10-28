@@ -392,7 +392,7 @@ write("");
 // ============================================================================
 write("Test Case 13: Faraday Rotation (Non-Reciprocal Polarization)");
 real V_verdet = 30.0 / geometryToUm(3.0); // deg / (Tesla * µm)
-pair B_field = (1.0, 0.0); // 1 Tesla along +x-axis
+pair B_field = (1.0, 0.0);                // 1 Tesla along +x-axis
 Medium faraday_medium = medium("Faraday Glass").add(FaradayRotator(V_verdet, B_field));
 
 // Forward propagation: d = (1, 0) over ds = 3.0 units. Expected rotation = +30 deg.
@@ -2017,7 +2017,10 @@ Element rg_slabIso = Crystal(box((0, -50), (rg_t, 50)),
                              uniaxialExtraordinary("e", 1.6, 1.6, (1, 0)),
                              Materials.VACUUM);
 Trace rg_tIso = system(rg_slabIso).trace(Ray((-5, 0), (1, 0), pol = Polarization.linear(90.0, 1.0)), far = 20);
-assert_near("Isotropic-limit e-ray OPL = n t", rg_tIso.incident(1).opl - rg_tIso.incident(0).opl, geometryToUm(1.6 * rg_t), 1e-9);
+assert_near("Isotropic-limit e-ray OPL = n t",
+            rg_tIso.incident(1).opl - rg_tIso.incident(0).opl,
+            geometryToUm(1.6 * rg_t),
+            1e-9);
 write("");
 
 // ============================================================================
@@ -2256,8 +2259,10 @@ Medium rg_axial = medium("rg axial")
                           new pair(pair p, real lambda) { return (1.0, 0.0); }));
 Trace rg_tAx = system(Interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
                    .trace(Ray((0, 0), (1, 0), rg_axial), ds = 0.05);
-assert_near("OPL = integral_0^0.73 (1 + x) dx", rg_tAx.interaction(0).incident.opl,
-            geometryToUm(0.73 + 0.73 ^ 2 / 2), 1e-9);
+assert_near("OPL = integral_0^0.73 (1 + x) dx",
+            rg_tAx.interaction(0).incident.opl,
+            geometryToUm(0.73 + 0.73 ^ 2 / 2),
+            1e-9);
 write("");
 
 // ============================================================================
@@ -2878,9 +2883,54 @@ assert_near("Mach-Zehnder quarter-wave delay 50% transmission (I == 0.5)", inter
 write("");
 
 // ============================================================================
-// Test Case 105: Fresnel–Arago Interference Laws
+// Test Case 105:
 // ============================================================================
-write("Test Case 105: Fresnel–Arago Interference Laws");
+// Detector intensity for two coherent contributions.
+// Each contribution carries 25% of the input power.
+write("Test Case 105: Mach-Zehnder detector interference regression");
+real detectorIntensity(real phase_a, real phase_b) {
+    Ray a = Ray(p = (0, 0),
+                d = (1, 0),
+                lambda = 632.8,
+                pol = Polarization.linear(0, 0.25),
+                phase = phase_a,
+                coherence_id = 1);
+    Ray b = Ray(p = (0, 0),
+                d = (1, 0),
+                lambda = 632.8,
+                pol = Polarization.linear(0, 0.25),
+                phase = phase_b,
+                coherence_id = 1);
+    return interfere(new Ray[]{a, b});
+}
+// Ideal balanced Mach-Zehnder detector outputs.
+// The second port has the opposite interference phase.
+real formatIntensity(real I, real tol = 1e-12) {
+    if (abs(I) < tol) return 0;
+    if (abs(I - 1.0) < tol) return 1;
+    return I;
+}
+void testPhase(real delta) {
+    real I1 = detectorIntensity(0, delta);
+    real I2 = detectorIntensity(0, delta + pi);
+    real expected1 = 0.5 * (1.0 + cos(delta));
+    real expected2 = 0.5 * (1.0 - cos(delta));
+    assert_near("port 1, phase = " + string(delta), formatIntensity(I1), expected1, 1e-6);
+    assert_near("port 2, phase = " + string(delta), formatIntensity(I2), expected2, 1e-6);
+    assert_near("power conservation, phase = " + string(delta), formatIntensity(I1 + I2), 1.0, 1e-6);
+}
+// Exercise constructive, balanced, and destructive interference.
+testPhase(0);
+testPhase(pi / 2);
+testPhase(pi);
+testPhase(3 * pi / 2);
+testPhase(2 * pi);
+write("");
+
+// ============================================================================
+// Test Case 106: Fresnel–Arago Interference Laws
+// ============================================================================
+write("Test Case 106: Fresnel–Arago Interference Laws");
 // Orthogonal polarizations (S vs P) from same coherent source
 Ray fa_s = Ray((0, 0), (1, 0), pol = Polarization.linear(0), coherence_id = 42);  // Pure S (Es=1, Ep=0)
 Ray fa_p = Ray((0, 0), (1, 0), pol = Polarization.linear(90), coherence_id = 42); // Pure P (Es=0, Ep=1)
@@ -2916,9 +2966,9 @@ assert_near("Different wavelengths do not interfere (I == 2.0)", interfere(diff_
 write("");
 
 // ============================================================================
-// Test Case 106: Physical scale is independent of geometry/rendering units
+// Test Case 107: Physical scale is independent of geometry/rendering units
 // ============================================================================
-write("Test Case 106: Physical geometry scale conversion");
+write("Test Case 107: Physical geometry scale conversion");
 real saved_meters_per_unit = config.physics.meters_per_unit;
 config.physics.meters_per_unit = 1e-6;
 Ray scale_a = propagate(Ray((0, 0), (1, 0), medium = Materials.VACUUM, lambda = 633.0), 10.0);
