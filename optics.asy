@@ -8181,3 +8181,45 @@ void distance(picture pic = currentpicture,
              bar = bar,
              margin = margin);
 }
+
+// Arrows pointing inward [-->-----<--]
+arrowbar InwardArrows(arrowhead arrowhead = DefaultHead,
+                      real size = 0,
+                      real angle = arrowangle,
+                      filltype filltype = null,
+                      real offset = size) {
+    return new bool(picture pic, path g, pen p, margin margin) {
+        real size = size == 0 ? arrowhead.arcsize(p) : size;
+        real offset = offset == 0 ? size : offset;
+        int L = length(g);
+        pair p0 = point(g, 0);
+        pair pN = point(g, L);
+        if (p0 == pN) {
+            warning("InwardArrows", "Cannot add inward arrows to a single pair.");
+            return false;
+        }
+
+        // First segment direction
+        pair dir0 = unit(dir(g, 0)); // Tangent direction at start
+        pair arrowStart = p0 - offset * dir0;
+        add(pic, arrow(arrowhead, arrowStart -- p0, p, size, angle, filltype, margin));
+
+        // Last segment direction
+        pair dirN = unit(dir(g, L)); // Tangent direction at end
+        pair arrowEnd = pN + offset * dirN;
+        add(pic, arrow(arrowhead, arrowEnd -- pN, p, size, angle, filltype, margin));
+
+        // Draw the original path
+        draw(pic, g, p);
+
+        return true;
+    };
+}
+
+arrowbar InArrows(arrowhead arrowhead = DefaultHead,
+                  real size = 0,
+                  real angle = arrowangle,
+                  filltype filltype = null,
+                  real offset = 4 * size) {
+    return InwardArrows(arrowhead, size, angle, filltype, offset);
+}
