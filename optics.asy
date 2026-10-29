@@ -3208,7 +3208,7 @@ makeTracer(FlatSurfaceRecord[] flat_surfaces, mediumResolver resolve, real ds, r
 // STATELESS OPTICAL SYSTEM
 struct OpticalSystem {
     Element[] elements;
-    Medium ambient = Materials.VACUUM;
+    Medium ambient = null;
     void add(Element e) { this.elements.push(e); }
     void add(Element[] eList) { this.elements.append(eList); }
     void add(OpticalSystem s) { this.add(s.elements); }
@@ -3240,14 +3240,14 @@ struct OpticalSystem {
 }
 
 OpticalSystem
-system(Element element, Medium ambient = Materials.VACUUM) {
+system(Element element, Medium ambient = null) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
     s.add(element);
     return s;
 }
 
-OpticalSystem system(Element[] elements, Medium ambient = Materials.VACUUM) {
+OpticalSystem system(Element[] elements, Medium ambient = null) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
     s.add(elements);
