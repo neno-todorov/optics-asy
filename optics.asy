@@ -5691,7 +5691,7 @@ Property IdealReflect(real f, real phase_shift = pi) {
 }
 
 // =========================================================================
-// 1. PROPERTY: can be used for "ideal" spherical interfaces
+// 1. PROPERTY: Used for ideal spherical interfaces with paraxial approximation
 // =========================================================================
 Property IdealRefract(real R, Medium m1_elem, Medium m2_elem, pair V, pair axis = (1, 0)) {
     Property p = new Property;
@@ -5895,6 +5895,34 @@ Element Interface(path boundary,
                    boundaryCenter(boundary),
                    boundaryAxis(boundary),
                    inside); // <-- Passes inside directly
+}
+
+private
+path sphericalArc(pair vertex, pair N, real R, real diameter) {
+    pair C = vertex + R * N;
+    real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
+    real theta = degrees(vertex - C);
+    return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
+}
+
+private
+path sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
+    return sphericalArc(vertex, N, 2.0 * f, diameter);
+}
+
+// Ideal Spherical interface using paraxial approximation
+Element SphericalInterface(pair vertex,
+                           real angle,
+                           real R,
+                           real diameter = 2R,
+                           Medium inside,
+                           Medium ambient = null,
+                           pen stroke = black,
+                           string name = "SphericalInterface") {
+    pair N = dir(angle);
+    Property[] props = {IdealRefract(R, inside, ambient, vertex, N)};
+    path boundary = sphericalArc(vertex, N, R, diameter);
+    return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
 }
 
 // Master Lens Factories
@@ -6187,19 +6215,6 @@ struct Lens {
                           string name = "Custom Lens") {
         return Interface(boundary, glass, ambient, stroke, fill, name);
     }
-}
-
-private path
-sphericalArc(pair vertex, pair N, real R, real diameter) {
-    pair C = vertex + R * N;
-    real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
-    real theta = degrees(vertex - C);
-    return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
-}
-
-private
-path sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
-    return sphericalArc(vertex, N, 2.0 * f, diameter);
 }
 
 // Master Mirror Factories
