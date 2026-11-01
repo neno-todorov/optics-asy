@@ -5690,6 +5690,61 @@ Property IdealReflect(real f, real phase_shift = pi) {
     return p;
 }
 
+// =========================================================================
+// 1. PROPERTY: can be used for "ideal" spherical interfaces
+// =========================================================================
+Property IdealRefract(real R, Medium m1_elem, Medium m2_elem, pair V, pair axis = (1, 0)) {
+    Property p = new Property;
+    p.name = "IdealRefract";
+
+    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+        if (abs(R) <= config.math.eps) return new Ray[];
+
+        real V_x = V.x;
+        real sgn = (r.d.x >= 0) ? 1.0 : -1.0;
+        Medium m_in = r.medium;
+        Medium m_out = (abs(m_in.n() - m1_elem.n()) < 1e-5) ? m2_elem : m1_elem;
+        real n1 = m_in.n();
+        real n2 = m_out.n();
+
+        real Phi = (n2 - n1) / (sgn * R);
+
+        real s1 = 0, s2 = 0, x_out = 0;
+        bool parallel_out = false;
+
+        if (abs(r.d.y) < config.math.eps) {
+            s2 = n2 / Phi;
+            x_out = V_x + sgn * s2;
+        } else {
+            real x_in = h.p.x - h.p.y * (r.d.x / r.d.y);
+            s1 = sgn * (V_x - x_in);
+            real inv_s2 = (Phi - n1 / s1) / n2;
+
+            if (abs(inv_s2) < 1e-8) {
+                parallel_out = true;
+            } else {
+                s2 = 1.0 / inv_s2;
+                x_out = V_x + sgn * s2;
+            }
+        }
+
+        pair v_out;
+        if (parallel_out) {
+            v_out = (sgn, 0);
+        } else {
+            pair dir_to_axis = (x_out - h.p.x, -h.p.y);
+            if (sgn * dir_to_axis.x < 0) dir_to_axis = -dir_to_axis;
+            v_out = unit(dir_to_axis);
+        }
+
+        Ray out = spawnRay(r, h, v_out, r.intensity(), m_out, 0);
+        return new Ray[]{out};
+    };
+
+    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; };
+    return p;
+}
+
 Property Focus(real f) {
     Property p = new Property;
     p.name = "Focus";
@@ -6135,12 +6190,16 @@ struct Lens {
 }
 
 private path
-sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
-    real R = 2.0 * abs(f);
-    pair C = vertex + sgn(f) * R * N;
-    real half = aSin(min(1.0, diameter / (2.0 * R)));
+sphericalArc(pair vertex, pair N, real R, real diameter) {
+    pair C = vertex + R * N;
+    real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
     real theta = degrees(vertex - C);
-    return Arc(C, R, theta - half, theta + half, config.geometry.arc_subdivisions);
+    return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
+}
+
+private
+path sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
+    return sphericalArc(vertex, N, 2.0 * f, diameter);
 }
 
 // Master Mirror Factories
@@ -6535,7 +6594,8 @@ pair visibleDirection(Ray r, pair O) {
     return unitOr(dot(r.p - O, r.d) >= -1e-9 ? r.d : -r.d);
 }
 
-real markAcute(Label L = "",
+real markAcute(picture pic = currentpicture,
+               Label L = "",
                int n = 1,
                real radius = 20,
                real space = 0,
@@ -6556,11 +6616,12 @@ real markAcute(Label L = "",
         v1 = v2;
         v2 = temp;
     }
-    markangle(L, n, radius, space, O + v1, O, O + v2, arrow, p);
+    markangle(pic, L, n, radius, space, O + v1, O, O + v2, arrow, p);
     return aCos(clamp(dot(v1, v2), -1.0, 1.0));
 }
 
-real markAcute(Label L = "",
+real markAcute(picture pic = currentpicture,
+               Label L = "",
                int n = 1,
                real radius = 20,
                real space = 0,
@@ -6570,10 +6631,11 @@ real markAcute(Label L = "",
                pen p = currentpen,
                arrowbar arrow = None,
                bool opposite = false) {
-    return markAcute(L, n, radius, space, O + visibleDirection(r, O), O, O + normal, p, arrow, opposite);
+    return markAcute(pic, L, n, radius, space, O + visibleDirection(r, O), O, O + normal, p, arrow, opposite);
 }
 
-real markAcute(Label L = "",
+real markAcute(picture pic = currentpicture,
+               Label L = "",
                int n = 1,
                real radius = 20,
                real space = 0,
@@ -6593,10 +6655,11 @@ real markAcute(Label L = "",
     if (r == null) return 0;
     pair O = inter.hit.p;
     pair v_ray = (ray_type == Ray.Incident) ? -unitOr(r.d) : unitOr(r.d);
-    return markAcute(L, n, radius, space, O + v_ray, O, O + inter.normal(), p, arrow, opposite);
+    return markAcute(pic, L, n, radius, space, O + v_ray, O, O + inter.normal(), p, arrow, opposite);
 }
 
-real markAcute(Label L = "",
+real markAcute(picture pic = currentpicture,
+               Label L = "",
                int n = 1,
                real radius = 20,
                real space = 0,
@@ -6607,7 +6670,8 @@ real markAcute(Label L = "",
                bool opposite = false) {
     pair O = lineIntersection(r1, r2);
     if (abs(O.x) == infinity) return 0;
-    return markAcute(L,
+    return markAcute(pic,
+                     L,
                      n,
                      radius,
                      space,
@@ -6619,7 +6683,8 @@ real markAcute(Label L = "",
                      opposite);
 }
 
-real markAcute(Label L = "",
+real markAcute(picture pic = currentpicture,
+               Label L = "",
                int n = 1,
                real radius = 20,
                real space = 0,
@@ -6654,7 +6719,7 @@ real markAcute(Label L = "",
         return 0.0;
     }
 
-    return markAcute(L, n, radius, space, O + v1, O, O + v2, p, arrow, opposite);
+    return markAcute(pic, L, n, radius, space, O + v1, O, O + v2, p, arrow, opposite);
 }
 
 real getAngle(Interaction inter, int ray_type = Ray.Incident, int ray_index = 0) {
