@@ -5691,9 +5691,9 @@ Property IdealReflect(real f, real phase_shift = pi) {
 }
 
 // =========================================================================
-// 1. PROPERTY: Used for ideal spherical interfaces with paraxial approximation
+// PROPERTY: Used for ideal spherical interfaces with paraxial approximation
 // =========================================================================
-Property IdealRefract(real R, Medium m1_elem, Medium m2_elem, pair V, pair axis = (1, 0)) {
+Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
     Property p = new Property;
     p.name = "IdealRefract";
 
@@ -5703,7 +5703,7 @@ Property IdealRefract(real R, Medium m1_elem, Medium m2_elem, pair V, pair axis 
         real V_x = V.x;
         real sgn = (r.d.x >= 0) ? 1.0 : -1.0;
         Medium m_in = r.medium;
-        Medium m_out = (abs(m_in.n() - m1_elem.n()) < 1e-5) ? m2_elem : m1_elem;
+        Medium m_out = (abs(m_in.n() - m1.n()) < 1e-5) ? m2 : m1;
         real n1 = m_in.n();
         real n2 = m_out.n();
 
@@ -5920,7 +5920,7 @@ Element SphericalInterface(pair vertex,
                            pen stroke = black,
                            string name = "SphericalInterface") {
     pair N = dir(angle);
-    Property[] props = {IdealRefract(R, inside, ambient, vertex, N)};
+    Property[] props = {IdealRefract(vertex, N, R, inside, ambient)};
     path boundary = sphericalArc(vertex, N, R, diameter);
     return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
 }
