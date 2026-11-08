@@ -1943,7 +1943,9 @@ assert_near("Absorbed elliptical state keeps azimuth", rg_ellOut.psi(), rg_ell.p
 Element rg_absSlab = Interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
 Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(30.0, 1.0)), far = 20).last();
 real rg_slab_distance = 10.0;
-real rg_slab_transmission = exp(-rg_alpha * geometryToUm(rg_slab_distance));
+real rg_k_slab = rg_alpha * (633.0 * nm_to_um) / (4.0 * pi);
+real rg_R_entry = (rg_k_slab ^ 2) / (4.0 + rg_k_slab ^ 2);
+real rg_slab_transmission = (1.0 - rg_R_entry) * exp(-rg_alpha * geometryToUm(rg_slab_distance));
 assert_near("Traced absorbed ray intensity", rg_absEnd.intensity(), rg_slab_transmission, 1e-9);
 assert_near("Traced absorbed ray DoP", rg_absEnd.pol.dop(), 1.0, 1e-9);
 assert_near("Traced absorbed ray azimuth (30 deg)", degrees(rg_absEnd.pol.psi()), 30.0, 1e-6);
@@ -2033,9 +2035,12 @@ Trace rg_tAbs = system(Interface(box((0, -10), (10, 10)), rg_absGlass, Materials
 Interaction rg_exitIx = rg_tAbs.interaction(1);
 assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
 assert_near("Exit-face R matches normal-incidence Fresnel", rg_exitIx.R, (0.5 / 2.5) ^ 2, 1e-9);
+real rg_alpha_val = 2.0 / geometryToUm(10.0);
+real rg_k_glass = rg_alpha_val * (633.0 * nm_to_um) / (4.0 * pi);
+real rg_R_glass_entry = ((1.5 - 1.0) ^ 2 + rg_k_glass ^ 2) / ((1.5 + 1.0) ^ 2 + rg_k_glass ^ 2);
 assert_near("Arriving intensity reported at the exit face",
             rg_exitIx.incident.intensity(),
-            (1 - 0.04) * exp(-2.0),
+            (1.0 - rg_R_glass_entry) * exp(-2.0),
             1e-9);
 write("");
 
@@ -3029,10 +3034,10 @@ write("");
 // ============================================================================
 write("Test Case 109: Complex-index materials and metals");
 
-// Verify complexN accessor
+// Verify complexN accessor (returns n - i*kappa per physics convention)
 complex n_au = complexN(Materials.GOLD);
 assert_near("Gold real index n == 0.197", n_au.x, 0.197, 1e-12);
-assert_near("Gold extinction kappa == 3.09", n_au.y, 3.09, 1e-12);
+assert_near("Gold extinction kappa == -3.09", n_au.y, -3.09, 1e-12);
 
 // Metal normal reflectances at 633 nm vs analytic Fresnel: R = ((n-1)^2 + k^2)/((n+1)^2 + k^2)
 FresnelAmplitudes fa_au = fresnelAmplitudesKernel(1.0, n_au, 1.0);
@@ -3174,6 +3179,51 @@ Property dbr_wrapper = DistributedBraggReflector(med_H, med_L, pairs = 4, inside
 Ray[] out_dbr_wrap = dbr_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("DistributedBraggReflector generates 2 rays", out_dbr_wrap.length == 2, true);
 assert_near("DistributedBraggReflector high reflectance (~95.1%)", out_dbr_wrap[1].intensity(), 0.95098536, 1e-5);
+write("");
+
+// ============================================================================
+// Test Case 112: Coupled Complex Index & Attenuation (Unified getN / alpha)
+// ============================================================================
+write("Test Case 112: Coupled Complex Index & Attenuation (Unified getN / alpha)");
+
+// 1. Medium with explicit kappa: getN() returns n - i*kappa, absorption() calculates 4*pi*kappa/lambda
+Medium m_gold = Materials.GOLD;
+complex n_gold_get = m_gold.getN(lambda = 633.0);
+assert_near("m_gold getN real part == 0.197", n_gold_get.x, 0.197, 1e-12);
+assert_near("m_gold getN imaginary part == -3.09", n_gold_get.y, -3.09, 1e-12);
+real expected_alpha_gold = (4.0 * pi * 3.09) / (633.0 * nm_to_um);
+assert_near("m_gold derived bulk alpha matches 4*pi*kappa/lambda", m_gold.absorption(lambda = 633.0), expected_alpha_gold, 1e-9);
+
+// 2. Medium with explicit alpha: getN() derives kappa = alpha * lambda / (4*pi)
+real test_alpha = 0.5; // um^-1
+Medium m_dye = medium("dye", 1.4, alpha = test_alpha);
+complex n_dye_get = m_dye.getN(lambda = 633.0);
+real expected_kappa_dye = test_alpha * (633.0 * nm_to_um) / (4.0 * pi);
+assert_near("m_dye getN real part == 1.4", n_dye_get.x, 1.4, 1e-12);
+assert_near("m_dye getN imaginary part derives kappa", n_dye_get.y, -expected_kappa_dye, 1e-12);
+assert_near("m_dye absorption() preserves explicit alpha", m_dye.absorption(lambda = 633.0), test_alpha, 1e-12);
+
+// 3. Lossless dielectric defaults cleanly to kappa = 0
+Medium m_bk7 = Materials.BK7;
+complex n_bk7_get = m_bk7.getN(lambda = 633.0);
+assert_near("m_bk7 getN imaginary part is zero", n_bk7_get.y, 0.0, 1e-12);
+assert_near("m_bk7 bulk absorption is zero", m_bk7.absorption(lambda = 633.0), 0.0, 1e-12);
+
+// 4. Skin-depth attenuation inside metal via trace
+// Light entering gold at normal incidence: Rs ~ 0.9282, T ~ 0.07176
+// Inside gold, it decays with skin depth delta = 1/alpha = lambda / (4*pi*kappa) ~ 0.0163 um
+Element gold_block = Interface(box((10, -10), (10.05, 10)), m_gold, Materials.VACUUM);
+Trace tr_gold = system(gold_block).trace(Ray((0, 0), (1, 0), lambda = 633.0), far = 20);
+// The ray inside gold penetrates 0.05 um (~3 skin depths) to the back interface
+Ray r_inside_gold = tr_gold.ray_tree[1];
+real dist_in_gold = 0.05;
+real expected_decay = exp(-expected_alpha_gold * geometryToUm(dist_in_gold));
+Polarization pol_at_back = m_gold.stepPolarization(r_inside_gold.pol, r_inside_gold.p, r_inside_gold.d, 633.0, dist_in_gold);
+assert_true("Light inside metal attenuates drastically over 50 nm", pol_at_back.intensity() < 0.005);
+assert_near("Attenuated intensity matches Fresnel transmission * Beer-Lambert",
+            pol_at_back.intensity(),
+            (1.0 - expected_R_au) * expected_decay,
+            1e-6);
 write("");
 
 // Summary

@@ -713,6 +713,7 @@ struct VolumeProperty {
     volumeModifierFunc phase_modifier = null; // Set for modifiers/perturbations
     volumeGradientFunc phase_gradient = null;
     volumeAbsorptionFunc attenuation = null;
+    volumeAbsorptionFunc extinction = null;
     volumeStepFunc polarization_step = null;
     groupDirectionFunc group_dir = null;
     waveNormalFunc wave_normal = null;
@@ -978,13 +979,58 @@ struct Medium {
     }
 
     // Cumulative Absorption/Gain
-    // The Beer–Lambert absorption coefficient alpha.
+    // The Beer–Lambert absorption coefficient alpha (in um^-1).
+    // If alpha was not explicitly set via attenuation, derives alpha from kappa:
+    //   alpha = (4 * pi * kappa) / lambda_um
     real absorption(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
         real total_alpha = 0.0;
+        bool has_explicit_attenuation = false;
         for (VolumeProperty vp : orderedProperties()) {
-            if (vp.attenuation != null) total_alpha += vp.attenuation(p, d, lambda, pol);
+            if (vp.attenuation != null) {
+                total_alpha += vp.attenuation(p, d, lambda, pol);
+                has_explicit_attenuation = true;
+            }
+        }
+        if (!has_explicit_attenuation) {
+            real total_kappa = 0.0;
+            for (VolumeProperty vp : orderedProperties()) {
+                if (vp.extinction != null) {
+                    total_kappa += vp.extinction(p, d, lambda, pol);
+                }
+            }
+            if (total_kappa > 0.0 && lambda > 0.0) {
+                real l_um = lambda * nm_to_um;
+                total_alpha = (4.0 * pi * total_kappa) / l_um;
+            }
         }
         return total_alpha;
+    }
+
+    // Unified complex refractive index resolver: returns n - i*kappa.
+    // Passive media convention: Im(getN) <= 0.
+    // If kappa was not explicitly given, derives kappa from alpha:
+    //   kappa = alpha * lambda_um / (4 * pi)
+    complex getN(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
+        real n_real = this.n(p, d, lambda, pol);
+        real kappa = 0.0;
+        bool has_explicit_kappa = false;
+
+        for (VolumeProperty vp : orderedProperties()) {
+            if (vp.extinction != null) {
+                kappa += vp.extinction(p, d, lambda, pol);
+                has_explicit_kappa = true;
+            }
+        }
+
+        if (!has_explicit_kappa) {
+            real alpha = this.absorption(p, d, lambda, pol);
+            if (alpha > 0.0 && lambda > 0.0) {
+                real l_um = lambda * nm_to_um;
+                kappa = alpha * l_um / (4.0 * pi);
+            }
+        }
+
+        return (n_real, -abs(kappa));
     }
     // Polarization & Loss Stepping (Chains all steps + Beer-Lambert decay)
     // Evolves the Stokes vector over a distance ds (applying dichroism, optical activity/rotation, and
@@ -1067,32 +1113,20 @@ struct Materials {
 private string COMPLEX_INDEX_TAG = "ComplexRefractiveIndex";
 
 // VolumeProperty that stores kappa alongside the real index.
-// complexN() reads this tag; Medium.n() ignores it entirely.
 private
 VolumeProperty ComplexRefractiveIndex(real kappa) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = COMPLEX_INDEX_TAG;
-    // kappa is smuggled through the attenuation closure for type compatibility.
-    // The ray tracer's Beer-Lambert path calls absorption() only inside
-    // stepPolarization, which is not triggered at a reflective metal boundary.
-    vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) { return kappa; };
+    vp.extinction = new real(pair p, pair d, real lambda, Polarization pol) { return kappa; };
     return vp;
 }
 
-// Return the complex refractive index n_tilde = n + i*kappa for a Medium.
-// Real part: Medium.n().  Imaginary part: from ComplexRefractiveIndex property.
-// Returns (n, 0) for dielectric media with no complex-index property.
+// Return the complex refractive index n_tilde = n - i*kappa for a Medium.
+// Real part: Medium.n().  Imaginary part: -kappa (<= 0 for passive media).
+// Returns (n, 0) for dielectric media with no extinction / absorption.
 complex complexN(Medium m, pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda) {
     if (m == null) return (1.0, 0.0);
-    real n_real = m.n(p, d, lambda);
-    real kappa = 0.0;
-    for (VolumeProperty vp : m.orderedProperties()) {
-        if (vp.name == COMPLEX_INDEX_TAG && vp.attenuation != null) {
-            kappa = vp.attenuation(p, d, lambda, null);
-            break;
-        }
-    }
-    return (n_real, kappa);
+    return m.getN(p, d, lambda);
 }
 
 // Factory: Medium with a complex refractive index n_tilde = n + i*kappa.
@@ -1304,11 +1338,9 @@ FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
     return fa;
 }
 
-// Standalone Maxwell boundary condition solver for isotropic interfaces.
-// Delegates amplitude calculation to fresnelAmplitudesKernel for full complex
-// generality; populates FresnelResult with the same fields as before.
-// Public interface and all field semantics are preserved.
-FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
+// Standalone Maxwell boundary condition solver for isotropic interfaces with complex indices.
+// Handles lossless dielectrics, absorbing media, and metals.
+FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_normal, pair N_into2, pair T_surf) {
     FresnelResult res = new FresnelResult;
     res.is_birefringent = false;
 
@@ -1320,15 +1352,14 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pa
     real kn1 = n1 * cosi;
     res.cosi = cosi;
     res.n1 = n1;
-    res.n2 = n2;
+    res.n2 = n2_in.x;
 
     // Reflected direction is always defined (geometric, real-valued)
     res.reflected_direction = unit(sini * T_surf - cosi * N_into2);
     res.reflected_wave_normal = res.reflected_direction;
 
     // Compute complex amplitudes via the unified kernel.
-    // n2 is real here (dielectric-only path for solveIsotropicInterface).
-    FresnelAmplitudes fa = fresnelAmplitudesKernel(n1, (n2, 0.0), cosi);
+    FresnelAmplitudes fa = fresnelAmplitudesKernel(n1, n2_in, cosi);
 
     res.rs = fa.rs;
     res.rp = fa.rp;
@@ -1348,12 +1379,12 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pa
         res.R = 1.0;
         res.T = 0.0;
     } else {
-        real sint_val = kt / n2;
-        real sin2_t = sint_val * sint_val;
-        real cost_val = sqrt(max(0.0, 1.0 - sin2_t));
-        res.cost = cost_val;
-        res.d = unit(sint_val * T_surf + cost_val * N_into2);
+        // Effective real transmitted direction from normal wavevector Re(q2)
+        real q2_real = max(0.0, fa.q2.x);
+        res.d = unitOr(kt * T_surf + q2_real * N_into2, res.reflected_direction);
         res.wave_normal = res.d;
+        real cost_val = dot(res.d, N_into2);
+        res.cost = max(0.0, cost_val);
         real R_unpol = 0.5 * (res.Rs + res.Rp);
         res.R = R_unpol;
         res.T = 1.0 - R_unpol;
@@ -1361,6 +1392,11 @@ FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pa
 
     res.sync();
     return res;
+}
+
+// Overload for real n2: delegates to complex solver
+FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
+    return solveIsotropicInterface(n1, (n2, 0.0), inc_wave_normal, N_into2, T_surf);
 }
 
 // Collision Packet
@@ -2373,10 +2409,10 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
 
     real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
 
-    real n2 = max(config.physics.min_refractive_index,
-                  (f.target_medium != null) ? f.target_medium.n(h.p, inc_wave_normal, r.lambda, r.pol) : 1.0);
+    complex n2_cx = (f.target_medium != null) ? f.target_medium.getN(h.p, inc_wave_normal, r.lambda, r.pol) : (1.0, 0.0);
+    if (n2_cx.x < config.physics.min_refractive_index) n2_cx = (config.physics.min_refractive_index, n2_cx.y);
 
-    FresnelResult res = solveIsotropicInterface(n1, n2, inc_wave_normal, N_into2, T_surf);
+    FresnelResult res = solveIsotropicInterface(n1, n2_cx, inc_wave_normal, N_into2, T_surf);
 
     res.normal = f.normal;
     res.source_medium = f.source_medium;
