@@ -7299,6 +7299,7 @@ void draw(picture pic = currentpicture,
     int num_segs = traces[0].segments().length;
     pair[] stageTips, stageBases;
     bool[] stageIsReal;
+    int[] stageSegIdx;
 
     for (int s = 1; s < num_segs; ++s) {
         Segment seg0 = traces[0].segments()[s];
@@ -7317,6 +7318,7 @@ void draw(picture pic = currentpicture,
         stageTips.push(tip);
         stageBases.push(base);
         stageIsReal.push(is_real);
+        stageSegIdx.push(s);
     }
 
     // Render Axis, Rays, Extensions & Arrows
@@ -7335,8 +7337,9 @@ void draw(picture pic = currentpicture,
 
     for (int k = 0; k < stageTips.length; ++k) {
         if (!stageIsReal[k]) {
+            int s_idx = stageSegIdx[k];
             for (Trace t : traces)
-                if (k + 1 < t.segments().length) draw(pic, t.segments()[k + 1].a -- stageTips[k], p_virtual);
+                if (s_idx < t.segments().length) draw(pic, t.segments()[s_idx].a -- stageTips[k], p_virtual);
         }
     }
 
