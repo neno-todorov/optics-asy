@@ -1010,6 +1010,8 @@ struct Medium {
     // Passive media convention: Im(getN) <= 0.
     // If kappa was not explicitly given, derives kappa from alpha:
     //   kappa = alpha * lambda_um / (4 * pi)
+    // Unified complex refractive index resolver: returns n - i*kappa.
+    // Passive media convention: Im(getN) <= 0.
     complex getN(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
         real n_real = this.n(p, d, lambda, pol);
         real kappa = 0.0;
@@ -1124,9 +1126,10 @@ VolumeProperty ComplexRefractiveIndex(real kappa) {
 // Return the complex refractive index n_tilde = n - i*kappa for a Medium.
 // Real part: Medium.n().  Imaginary part: -kappa (<= 0 for passive media).
 // Returns (n, 0) for dielectric media with no extinction / absorption.
-complex complexN(Medium m, pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda) {
+complex
+complexN(Medium m, pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
     if (m == null) return (1.0, 0.0);
-    return m.getN(p, d, lambda);
+    return m.getN(p, d, lambda, pol);
 }
 
 // Factory: Medium with a complex refractive index n_tilde = n + i*kappa.
@@ -1283,83 +1286,156 @@ struct FresnelAmplitudes {
 //
 // These reduce to the standard real Fresnel formulas when n2 is real and
 // cosi is above the critical angle.
-FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
+// FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
+//     FresnelAmplitudes fa;
+
+//     // Passive extinction convention: Im(n2) <= 0
+//     complex n2 = (n2_in.x, -abs(n2_in.y));
+
+//     // Conserved tangential wavevector component (real, same in both media)
+//     real kt2 = n1 * n1 * (1.0 - cosi * cosi); // = (n1 * sin_i)^2
+
+//     // Normal wavevector component squared in medium 2.
+//     // q2^2 = n2^2 - kt^2 (Snell's law in wavevector form).
+//     complex n2sq = (n2.x * n2.x - n2.y * n2.y, 2.0 * n2.x * n2.y);
+//     complex q2sq = n2sq - (kt2, 0.0);
+
+//     // Select outgoing branch: Re(q2) >= 0 and Im(q2) <= 0
+//     fa.q2 = csqrt_outgoing(q2sq);
+//     fa.evanescent = (abs(fa.q2.x) < config.math.eps && fa.q2.y < -config.math.eps);
+
+//     complex kn1 = (n1 * cosi, 0.0);
+
+//     // --- s-polarization ---
+//     complex denom_s = kn1 + fa.q2;
+//     if (abs2(denom_s) > config.math.solver_denominator_eps) {
+//         fa.rs = (kn1 - fa.q2) / denom_s;
+//         fa.ts = 2.0 * kn1 / denom_s;
+//     } else {
+//         fa.rs = (-1.0, 0.0);
+//         fa.ts = (0.0, 0.0);
+//     }
+
+//     // --- p-polarization (using n2^2 formulation, avoids explicit cos_t) ---
+//     complex denom_p = n2sq * (cosi, 0.0) + n1 * fa.q2;
+//     if (abs2(denom_p) > config.math.solver_denominator_eps) {
+//         fa.rp = (n2sq * (cosi, 0.0) - n1 * fa.q2) / denom_p;
+//         fa.tp = 2.0 * n1 * n2 * (cosi, 0.0) / denom_p;
+//     } else {
+//         fa.rp = (1.0, 0.0);
+//         fa.tp = (0.0, 0.0);
+//     }
+
+//     // Power reflectances
+//     fa.Rs = abs2(fa.rs);
+//     fa.Rp = abs2(fa.rp);
+
+//     // Power transmittances: T = (Re(q2) / (n1*cosi)) * |t|^2
+//     // Re(q2) / (n1*cosi) is the real normal energy-flux ratio.
+//     real flux_denom = max(config.math.eps, n1 * cosi);
+//     real flux_q2 = fa.q2.x; // Re(q2): positive for propagating, 0 for evanescent
+//     real flux = flux_q2 / flux_denom;
+//     fa.Ts = flux * abs2(fa.ts);
+//     fa.Tp = flux * abs2(fa.tp);
+
+//     return fa;
+// }
+// Symmetrized Complex Fresnel Kernel
+FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cosi) {
     FresnelAmplitudes fa;
 
-    // Passive extinction convention: Im(n2) <= 0
+    // Enforce passive convention: Im(n) <= 0
+    complex n1 = (n1_in.x, -abs(n1_in.y));
     complex n2 = (n2_in.x, -abs(n2_in.y));
 
-    // Conserved tangential wavevector component (real, same in both media)
-    real kt2 = n1 * n1 * (1.0 - cosi * cosi); // = (n1 * sin_i)^2
+    // Conserved tangential wavevector: determined by the real phase velocity of incident wave
+    real kt2 = (n1.x * n1.x) * (1.0 - cosi * cosi);
 
-    // Normal wavevector component squared in medium 2.
-    // q2^2 = n2^2 - kt^2 (Snell's law in wavevector form).
+    // Normal wavevector squared in medium 1: q1^2 = n1^2 - kt^2
+    complex n1sq = (n1.x * n1.x - n1.y * n1.y, 2.0 * n1.x * n1.y);
+    complex q1sq = n1sq - (kt2, 0.0);
+    complex q1 = csqrt_outgoing(q1sq);
+
+    // If medium 1 is a lossless dielectric, enforce pure real q1 = n1 * cosi
+    if (abs(n1.y) < config.math.eps) {
+        q1 = (n1.x * cosi, 0.0);
+    }
+
+    // Normal wavevector squared in medium 2: q2^2 = n2^2 - kt^2
     complex n2sq = (n2.x * n2.x - n2.y * n2.y, 2.0 * n2.x * n2.y);
     complex q2sq = n2sq - (kt2, 0.0);
-
-    // Select outgoing branch: Re(q2) >= 0 and Im(q2) <= 0
     fa.q2 = csqrt_outgoing(q2sq);
     fa.evanescent = (abs(fa.q2.x) < config.math.eps && fa.q2.y < -config.math.eps);
 
-    complex kn1 = (n1 * cosi, 0.0);
-
-    // --- s-polarization ---
-    complex denom_s = kn1 + fa.q2;
+    // --- s-polarization (TE) ---
+    complex denom_s = q1 + fa.q2;
     if (abs2(denom_s) > config.math.solver_denominator_eps) {
-        fa.rs = (kn1 - fa.q2) / denom_s;
-        fa.ts = 2.0 * kn1 / denom_s;
+        fa.rs = (q1 - fa.q2) / denom_s;
+        fa.ts = 2.0 * q1 / denom_s;
     } else {
         fa.rs = (-1.0, 0.0);
         fa.ts = (0.0, 0.0);
     }
 
-    // --- p-polarization (using n2^2 formulation, avoids explicit cos_t) ---
-    complex denom_p = n2sq * (cosi, 0.0) + n1 * fa.q2;
+    // --- p-polarization (TM) ---
+    complex num_p = n2sq * q1 - n1sq * fa.q2;
+    complex denom_p = n2sq * q1 + n1sq * fa.q2;
     if (abs2(denom_p) > config.math.solver_denominator_eps) {
-        fa.rp = (n2sq * (cosi, 0.0) - n1 * fa.q2) / denom_p;
-        fa.tp = 2.0 * n1 * n2 * (cosi, 0.0) / denom_p;
+        fa.rp = num_p / denom_p;
+        fa.tp = 2.0 * n1 * n2 * q1 / denom_p;
     } else {
-        fa.rp = (1.0, 0.0);
+        fa.rp = (-1.0, 0.0);
         fa.tp = (0.0, 0.0);
     }
 
-    // Power reflectances
+    // --- Power Reflectances ---
     fa.Rs = abs2(fa.rs);
     fa.Rp = abs2(fa.rp);
 
-    // Power transmittances: T = (Re(q2) / (n1*cosi)) * |t|^2
-    // Re(q2) / (n1*cosi) is the real normal energy-flux ratio.
-    real flux_denom = max(config.math.eps, n1 * cosi);
-    real flux_q2 = fa.q2.x; // Re(q2): positive for propagating, 0 for evanescent
-    real flux = flux_q2 / flux_denom;
-    fa.Ts = flux * abs2(fa.ts);
-    fa.Tp = flux * abs2(fa.tp);
+    // --- Power Transmittances ---
+    real re_q1 = max(config.math.eps, q1.x);
+    real re_q2 = max(0.0, fa.q2.x);
+    real flux_ratio = re_q2 / re_q1;
+
+    fa.Ts = flux_ratio * abs2(fa.ts);
+    fa.Tp = flux_ratio * abs2(fa.tp);
 
     return fa;
 }
 
-// Standalone Maxwell boundary condition solver for isotropic interfaces with complex indices.
-// Handles lossless dielectrics, absorbing media, and metals.
-FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_normal, pair N_into2, pair T_surf) {
+// Backward-compatible overload for real n1:
+FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
+    return fresnelAmplitudesKernel((n1, 0.0), n2_in, cosi);
+}
+
+// ============================================================================
+// Symmetric Isotropic Interface Solver (Complex n1 <-> Complex n2)
+// ============================================================================
+
+FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wave_normal, pair N_into2, pair T_surf) {
     FresnelResult res = new FresnelResult;
     res.is_birefringent = false;
+
+    // Enforce passive extinction convention: Im(n) <= 0
+    complex n1 = (n1_in.x, -abs(n1_in.y));
+    complex n2 = (n2_in.x, -abs(n2_in.y));
 
     pair u = unit(inc_wave_normal);
     real cosi = clamp(dot(u, N_into2), 0.0, 1.0);
     real sini = dot(u, T_surf);
 
-    real kt = n1 * sini;
-    real kn1 = n1 * cosi;
+    // Conserved tangential wavevector from incident real phase propagation
+    real kt = n1.x * sini;
     res.cosi = cosi;
-    res.n1 = n1;
-    res.n2 = n2_in.x;
+    res.n1 = n1.x;
+    res.n2 = n2.x;
 
     // Reflected direction is always defined (geometric, real-valued)
     res.reflected_direction = unit(sini * T_surf - cosi * N_into2);
     res.reflected_wave_normal = res.reflected_direction;
 
-    // Compute complex amplitudes via the unified kernel.
-    FresnelAmplitudes fa = fresnelAmplitudesKernel(n1, n2_in, cosi);
+    // Compute complex amplitudes via the symmetrized kernel
+    FresnelAmplitudes fa = fresnelAmplitudesKernel(n1, n2, cosi);
 
     res.rs = fa.rs;
     res.rp = fa.rp;
@@ -1379,12 +1455,13 @@ FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_norm
         res.R = 1.0;
         res.T = 0.0;
     } else {
-        // Effective real transmitted direction from normal wavevector Re(q2)
+        // Effective real transmitted phase direction from normal wavevector Re(q2)
         real q2_real = max(0.0, fa.q2.x);
         res.d = unitOr(kt * T_surf + q2_real * N_into2, res.reflected_direction);
         res.wave_normal = res.d;
         real cost_val = dot(res.d, N_into2);
         res.cost = max(0.0, cost_val);
+
         real R_unpol = 0.5 * (res.Rs + res.Rp);
         res.R = R_unpol;
         res.T = 1.0 - R_unpol;
@@ -1394,9 +1471,23 @@ FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_norm
     return res;
 }
 
-// Overload for real n2: delegates to complex solver
+// ----------------------------------------------------------------------------
+// Backward-Compatible Overloads
+// ----------------------------------------------------------------------------
+
+// Overload: real n1, complex n2
+FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_normal, pair N_into2, pair T_surf) {
+    return solveIsotropicInterface((n1, 0.0), n2_in, inc_wave_normal, N_into2, T_surf);
+}
+
+// Overload: complex n1, real n2
+FresnelResult solveIsotropicInterface(complex n1_in, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
+    return solveIsotropicInterface(n1_in, (n2, 0.0), inc_wave_normal, N_into2, T_surf);
+}
+
+// Overload: real n1, real n2
 FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
-    return solveIsotropicInterface(n1, (n2, 0.0), inc_wave_normal, N_into2, T_surf);
+    return solveIsotropicInterface((n1, 0.0), (n2, 0.0), inc_wave_normal, N_into2, T_surf);
 }
 
 // Collision Packet
@@ -2409,7 +2500,8 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
 
     real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
 
-    complex n2_cx = (f.target_medium != null) ? f.target_medium.getN(h.p, inc_wave_normal, r.lambda, r.pol) : (1.0, 0.0);
+    complex n2_cx =
+        (f.target_medium != null) ? f.target_medium.getN(h.p, inc_wave_normal, r.lambda, r.pol) : (1.0, 0.0);
     if (n2_cx.x < config.physics.min_refractive_index) n2_cx = (config.physics.min_refractive_index, n2_cx.y);
 
     FresnelResult res = solveIsotropicInterface(n1, n2_cx, inc_wave_normal, N_into2, T_surf);
@@ -2418,8 +2510,6 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     res.source_medium = f.source_medium;
     res.medium = res.tir ? f.source_medium : f.target_medium;
 
-    // Keep the physical Fresnel reflectance and complex amplitudes.
-    // Never replace these with an arbitrary coating reflectance here.
     res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
 
