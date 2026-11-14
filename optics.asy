@@ -833,7 +833,11 @@ VolumeProperty Sellmeier(real[] B, real[] C) {
     vp.phase_index = new real(pair p, pair d, real lambda, Polarization pol) {
         real l2 = (lambda * nm_to_um) ^ 2;
         real n2 = 1.0;
-        for (int i = 0; i < Bc.length; ++i) n2 += Bc[i] * l2 / (l2 - Cc[i]);
+        for (int i = 0; i < Bc.length; ++i) {
+            real denom = l2 - Cc[i];
+            if (abs(denom) <= config.math.solver_denominator_eps) abort("Sellmeier: wavelength hits resonance pole.");
+            n2 += Bc[i] * l2 / denom;
+        }
         return sqrt(max(0.0, n2));
     };
     return vp;
@@ -2202,7 +2206,8 @@ struct Surface {
                 continue;
             }
             if (d <= max_distance + config.geometry.eps_intersection && d < best_distance) {
-                if (d <= config.geometry.near_intersection_factor * config.geometry.eps_intersection ||
+                if ((d <= config.geometry.near_intersection_factor * config.geometry.eps_intersection &&
+                     dot(global_q, r.d) >= -config.geometry.eps_intersection) ||
                     dot(global_q, r.d) > config.geometry.eps) {
                     best_distance = d;
                     best_time = u;
@@ -3130,9 +3135,12 @@ struct Trace {
     }
     bool sameElement(Element a, Element b) {
         if (a == null || b == null) return false;
-        // OpticalSystem assembly may copy Element values, so object identity
-        // is not reliable across the user variables and trace metadata.
-        return a.name == b.name && a.center == b.center && a.axis == b.axis;
+        if (a == b) return true;
+        if (a.name != b.name || a.center != b.center || a.axis != b.axis) return false;
+        if (a.surfaces.length != b.surfaces.length) return false;
+        if (length(a.boundary) != length(b.boundary)) return false;
+        if (length(a.boundary) > 0 && point(a.boundary, 0) != point(b.boundary, 0)) return false;
+        return true;
     }
     Element[] rayElementHistory(Ray r) {
         Element[] reverse_history;
@@ -3211,18 +3219,40 @@ struct Trace {
     }
     Trace follow(string route_string) {
         int[] route_indices;
+        int curr_id = (root_id >= 0) ? root_id : ((root_ids.length > 0) ? root_ids[0] : -1);
+        bool tree_active = (curr_id >= 0 && curr_id < ray_tree.length);
+
         for (int i = 0; i < length(route_string); ++i) {
             string c = UpperCase(substr(route_string, i, 1));
-            if (c == "T")
-                route_indices.push(0);
-            else if (c == "R")
-                route_indices.push(1);
+            if (c != "T" && c != "R") continue;
+
+            if (tree_active && curr_id >= 0 && curr_id < ray_tree.length) {
+                Ray r = ray_tree[curr_id];
+                if (r.children_ids.length > 0 && r.hit != null && r.hit.valid) {
+                    pair N = dot(r.d, r.hit.normal) > 0 ? -r.hit.normal : r.hit.normal;
+                    int chosen = -1;
+                    for (int k = 0; k < r.children_ids.length; ++k) {
+                        Ray child = ray_tree[r.children_ids[k]];
+                        bool is_refl = (dot(child.d, N) > 0);
+                        if ((c == "R" && is_refl) || (c == "T" && !is_refl)) {
+                            chosen = k;
+                            break;
+                        }
+                    }
+                    if (chosen < 0) return null;
+                    route_indices.push(chosen);
+                    curr_id = r.children_ids[chosen];
+                    continue;
+                }
+            }
+            route_indices.push(c == "T" ? 0 : 1);
         }
+
         Trace out = new Trace;
         out.ray_tree = ray_tree;
         out.root_id = root_id;
-        out.root_ids = copy(root_ids);
         out.route = route_indices;
+        out.root_ids = copy(root_ids);
         out.is_reflection = is_reflection;
         out.system_elements = system_elements;
         return out;
@@ -4673,18 +4703,15 @@ void drawBundleInterference(picture pic = currentpicture, Trace t1, Trace t2, Ra
             if (length(hyperbola_path) > 0) {
                 if (wf.show_lines) draw(pic, hyperbola_path, wf.pen_line);
                 if (wf.show_labels && !isnan(last_pt.x)) {
-                    string lbl;
-                    if (offset == 0) {
-                        lbl = (m == 0) ? "$m=0$" : format("$m=%+d$", m);
-                    } else {
-                        lbl = (m >= 0) ? format("$m=%+d.5$", m) : format("$m=%d.5$", m + 1);
-                    }
+                    string lbl =
+                        (offset == 0) ? ((m == 0) ? "$m=0$" : format("$m=%+d$", m)) : format("$m=%+.1f$", m + offset);
                     label(pic, Label("\tiny " + lbl), last_pt, E, wf.pen_line);
                 }
             }
         }
     }
 }
+
 private
 void drawRaySegment(picture pic = currentpicture,
                     Label L = Label(""),
@@ -4706,8 +4733,7 @@ void drawRaySegment(picture pic = currentpicture,
         if (base_alpha == 0) base_alpha = 1.0;
         pen_line = p + opacity(base_alpha * start_i);
     }
-    arrowbar ab =
-        (arrow.visible && L_traj >= config.rendering.min_polarization_segment_length) ? (arrowbar)arrow : None;
+    arrowbar ab = (arrow.visible && L_traj >= config.rendering.min_drawable_length) ? (arrowbar)arrow : None;
 
     drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
     draw(pic, L, traj, pen_line, ab);
@@ -4944,11 +4970,11 @@ struct Renderer {
                                tr,
                                i,
                                segs.length,
-                               pen_eff,
+                               p,
                                current_arr,
                                polarization,
                                wavefronts,
-                               false);
+                               apply_op);
             }
         }
         // Branch rendering for reflections
@@ -4962,7 +4988,11 @@ struct Renderer {
             branch_renderer.after = after;
             branch_renderer.margin = margin;
             branch_renderer.draw_reflections = draw_reflections;
-            branch_renderer.polarization = polarization;
+            branch_renderer.polarization = copy(polarization);
+            branch_renderer.wavefronts = copy(wavefronts);
+            branch_renderer.intensity_opacity = intensity_opacity;
+            branch_renderer.draw_absorption_fading = draw_absorption_fading;
+            branch_renderer.fade_subpath_steps = fade_subpath_steps;
             branch_renderer.drawTrace(pic, br);
         }
     }
@@ -7170,40 +7200,45 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     Ray exit_fwd = t_fwd.last();
 
     // Directly intersect the exit ray with the optical axis line:
-    cp.F2 = lineIntersection(exit_fwd, axis_origin, cp.axis_dir);
-
-    if (abs(cp.F2.x) != infinity) {
-        // Principal plane = where the extended input and output rays meet,
-        // so f = h / tan(u) (not h / sin(u)).
-        real slope_exit = dot(exit_fwd.d, cp.axis_norm) / dot(exit_fwd.d, cp.axis_dir);
-        cp.f2 = -paraxial_h / slope_exit;
-        cp.H2 = cp.F2 - cp.f2 * cp.axis_dir;
+    if (exit_fwd != null && exit_fwd.alive) {
+        cp.F2 = lineIntersection(exit_fwd, axis_origin, cp.axis_dir);
     } else {
-        // Afocal / Flat window system
+        cp.F2 = (infinity, infinity);
+    }
+
+    if (abs(cp.F2.x) != infinity && abs(dot(exit_fwd.d, cp.axis_dir)) > config.math.eps) {
+        real slope_exit = dot(exit_fwd.d, cp.axis_norm) / dot(exit_fwd.d, cp.axis_dir);
+        cp.f2 = (abs(slope_exit) > config.math.eps) ? (-paraxial_h / slope_exit) : infinity;
+        cp.H2 = (abs(cp.f2) != infinity) ? (cp.F2 - cp.f2 * cp.axis_dir) : cp.V2;
+    } else {
         cp.f2 = infinity;
         cp.F2 = (infinity, infinity);
         cp.H2 = cp.V2;
     }
 
-    // -------------------------------------------------------------------------
-    // 3. BACKWARD TRACE: Front Focal Point F1 & Front Principal Point H1
-    // -------------------------------------------------------------------------
     Ray r_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm, d = -cp.axis_dir);
     Trace t_bwd = sys.trace(r_bwd, far = config.physics.far);
     Ray exit_bwd = t_bwd.last();
 
-    // Directly intersect the backward exit ray with the optical axis line:
-    cp.F1 = lineIntersection(exit_bwd, axis_origin, -cp.axis_dir);
+    if (exit_bwd != null && exit_bwd.alive) {
+        cp.F1 = lineIntersection(exit_bwd, axis_origin, -cp.axis_dir);
+    } else {
+        cp.F1 = (-infinity, -infinity);
+    }
 
-    if (abs(cp.F1.x) != infinity) {
+    if (abs(cp.F1.x) != infinity && abs(dot(exit_bwd.d, cp.axis_dir)) > config.math.eps) {
         real slope_bwd = dot(exit_bwd.d, cp.axis_norm) / abs(dot(exit_bwd.d, cp.axis_dir));
-        cp.f1 = -paraxial_h / slope_bwd;
-        cp.H1 = cp.F1 + cp.f1 * cp.axis_dir;
+        cp.f1 = (abs(slope_bwd) > config.math.eps) ? (-paraxial_h / slope_bwd) : infinity;
+        cp.H1 = (abs(cp.f1) != infinity) ? (cp.F1 + cp.f1 * cp.axis_dir) : cp.V1;
     } else {
         cp.f1 = infinity;
         cp.F1 = (-infinity, -infinity);
         cp.H1 = cp.V1;
     }
+
+    Ray launched = t_fwd.first();
+    real n_obj = (launched != null && launched.medium != null) ? launched.medium.n() : 1.0;
+    real n_img = (exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium.n() : 1.0;
 
     // -------------------------------------------------------------------------
     // 4. NODAL POINTS N1 & N2
@@ -7251,7 +7286,8 @@ Ray[] gaussianRays(OpticalSystem sys, pair obj_tip, real axis_angle = nan) {
     // Focal ray with aperture-clipping safeguard:
     Ray r_foc;
     if (abs(cp.F1.x) != infinity) {
-        r_foc = Ray.between(obj_tip, cp.F1);
+        pair d_foc = (dot(cp.F1 - obj_tip, axis) >= -config.math.eps) ? (cp.F1 - obj_tip) : (obj_tip - cp.F1);
+        r_foc = Ray(obj_tip, unitOr(d_foc, axis));
     } else {
         r_foc = Ray(obj_tip, axis);
     }
@@ -7482,10 +7518,14 @@ void draw(picture pic = currentpicture,
           pen p_points = heavyred) {
     if (abs(cp.f2) == infinity) return;
     // 1. Draw Optical Axis
-    real x_left = min(cp.F1.x, cp.V1.x) - 30.0;
-    real x_right = max(cp.F2.x, cp.V2.x) + 30.0;
-    pair ax_a = cp.axis_origin + x_left * cp.axis_dir;
-    pair ax_b = cp.axis_origin + x_right * cp.axis_dir;
+    real s_f1 = dot(cp.F1 - cp.axis_origin, cp.axis_dir);
+    real s_v1 = dot(cp.V1 - cp.axis_origin, cp.axis_dir);
+    real s_f2 = dot(cp.F2 - cp.axis_origin, cp.axis_dir);
+    real s_v2 = dot(cp.V2 - cp.axis_origin, cp.axis_dir);
+    real s_left = min(min(s_f1, s_v1), min(s_f2, s_v2)) - 30.0;
+    real s_right = max(max(s_f1, s_v1), max(s_f2, s_v2)) + 30.0;
+    pair ax_a = cp.axis_origin + s_left * cp.axis_dir;
+    pair ax_b = cp.axis_origin + s_right * cp.axis_dir;
     draw(pic, ax_a -- ax_b, p_axis);
     // 2. Draw Principal Planes (H1 & H2)
     pair H1_top = cp.H1 + (plane_height / 2.0) * cp.axis_norm;
