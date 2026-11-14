@@ -2820,7 +2820,6 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfa
                 }
             }
             Ray next_ray = step_result.ray;
-            applyAbsorption(next_ray, step);
             pair chord = next_ray.p - curr_ray.p;
             real chord_length = length(chord);
             Hit h;
@@ -2838,22 +2837,28 @@ PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfa
                 Ray incident_ray = solver.advance(curr_ray, min(step, hit_step)).ray;
                 incident_ray.p = h.p;
 
-                real n_hit = curr_ray.medium.n(0.5 * (curr_ray.p + h.p),
-                                               unitOr(curr_ray.d + incident_ray.d, curr_ray.d),
-                                               curr_ray.lambda,
-                                               curr_ray.pol);
+                pair hit_mid_p = 0.5 * (curr_ray.p + h.p);
+                pair hit_mid_d = unitOr(curr_ray.d + incident_ray.d, curr_ray.d);
+                real n_hit = curr_ray.medium.n(hit_mid_p, hit_mid_d, curr_ray.lambda, curr_ray.pol);
                 incident_ray.opl = curr_ray.opl + geometryToUm(hit_step) * n_hit;
-                applyAbsorption(incident_ray, hit_step);
+                if (curr_ray.medium != null && hit_step > 0) {
+                    incident_ray.pol =
+                        curr_ray.medium.stepPolarization(curr_ray.pol, hit_mid_p, hit_mid_d, curr_ray.lambda, hit_step);
+                }
                 traj = traj -- h.p;
                 return propagationResult(incident_ray, true, h, traj);
             } else {
+                pair mid_point = 0.5 * (curr_ray.p + next_ray.p);
+                pair mid_direction = unitOr(curr_ray.d + next_ray.d, curr_ray.d);
+                if (curr_ray.medium != null && step > 0) {
+                    next_ray.pol =
+                        curr_ray.medium.stepPolarization(curr_ray.pol, mid_point, mid_direction, curr_ray.lambda, step);
+                }
                 if (next_ray.intensity() <= config.physics.min_intensity) {
                     next_ray.alive = false;
                     traj = traj -- next_ray.p;
                     return propagationResult(next_ray, false, null, traj);
                 }
-                pair mid_point = 0.5 * (curr_ray.p + next_ray.p);
-                pair mid_direction = unitOr(curr_ray.d + next_ray.d, curr_ray.d);
                 real n_mid = curr_ray.medium.n(mid_point, mid_direction, curr_ray.lambda, curr_ray.pol);
                 curr_ray = next_ray;
                 curr_ray.opl += geometryToUm(step) * n_mid;
@@ -3058,7 +3063,7 @@ struct Trace {
             r.p = point(r.trajectory, end_t);
             r.d = dir(r.trajectory, end_t);
             r.wave_normal = r.medium.waveNormalFromGroup(r.d, r.p, r.lambda);
-            r.pol = resolvePolarizationAt(r, total_l);
+            r.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, total_l);
             if (r.terminated || !r.alive) {
                 r.alive = false;
                 r.pol.scaleTo(0.0);

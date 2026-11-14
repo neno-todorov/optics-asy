@@ -3234,6 +3234,255 @@ assert_near("Attenuated intensity matches Fresnel transmission * Beer-Lambert",
             1e-6);
 write("");
 
+// ============================================================================
+// Regression Suite: Polarization, Fresnel/TMM, Diffraction, Crystals, & Axes
+// ============================================================================
+write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & Axis Fixes");
+
+// 1. Polarization factories & applyDiattenuation consistency (Fixes 1 & 2)
+{
+    Polarization pe_amp = Polarization.elliptical(1.0, 0.5, theta = 30.0);
+    assert_near("elliptical default preserves S0 = a^2 + b^2", pe_amp.S0, 1.25, 1e-6);
+    assert_near("elliptical DoP = 1", pe_amp.dop(), 1.0, 1e-6);
+    assert_near("elliptical azimuth = 30 deg", degrees(pe_amp.psi()), 30.0, 1e-5);
+
+    Polarization pe_norm = Polarization.elliptical(1.0, 0.5, theta = 30.0, intensity = 1.0);
+    assert_near("elliptical explicit intensity = 1.0", pe_norm.S0, 1.0, 1e-6);
+    assert_near("elliptical explicit intensity azimuth = 30 deg", degrees(pe_norm.psi()), 30.0, 1e-5);
+
+    Polarization pe_zero = Polarization.elliptical(0.0, 0.0);
+    assert_near("elliptical(0, 0) stays zero intensity", pe_zero.S0, 0.0, 1e-9);
+
+    Polarization pe_ang = Polarization.ellipticalFromAngles(30.0, -20.0, 1.0);
+    assert_near("ellipticalFromAngles S0 = 1", pe_ang.S0, 1.0, 1e-6);
+    assert_near("ellipticalFromAngles psi = 30 deg", degrees(pe_ang.psi()), 30.0, 1e-5);
+    assert_near("ellipticalFromAngles chi = -20 deg", degrees(pe_ang.chi()), -20.0, 1e-5);
+
+    Polarization p45 = Polarization.linear(45.0);
+    Polarization qwp = copy(p45);
+    applyDiattenuation(qwp, p45, (1.0, 0.0), (0.0, 1.0));
+    Polarization j_ref = Polarization.jones((1.0 / sqrt(2.0), 0.0), (0.0, 1.0 / sqrt(2.0)));
+    assert_near("applyDiattenuation QWP matches Polarization.jones S3", qwp.S3, j_ref.S3, 1e-6);
+}
+
+// 2. Oblique metal energy conservation (Rp + Tp == 1) (Fix 3)
+{
+    for (real ang : new real[]{0.0, 45.0, 70.0}) {
+        FresnelAmplitudes fa_au = fresnelAmplitudesKernel(1.0, (0.197, -3.09), cos(radians(ang)));
+        assert_near(format("Gold Rs+Ts == 1 at %.0f deg", ang), fa_au.Rs + fa_au.Ts, 1.0, 1e-6);
+        assert_near(format("Gold Rp+Tp == 1 at %.0f deg", ang), fa_au.Rp + fa_au.Tp, 1.0, 1e-6);
+    }
+}
+
+// 3. Refract pure-p phase & time-harmonic interference phase sign (Fixes 2 & 3)
+{
+    bool old_refl = config.physics.trace_reflections;
+    real old_min_i = config.physics.min_intensity;
+    config.physics.trace_reflections = true;
+    config.physics.min_intensity = 1e-3;
+
+    Medium glass15 = medium("TestGlass15", 1.5);
+    // Open line (0,-5)--(0,5) has normal (+1,0): left = VACUUM, right = glass15
+    OpticalSystem sys_if = system(Interface((0, -5) -- (0, 5), Materials.VACUUM, glass15), Materials.VACUUM);
+
+    Ray r_s = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(0.0));
+    Ray r_p = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(90.0));
+
+    Ray ref_s = sys_if.trace(r_s).reflected(0);
+    Ray ref_p = sys_if.trace(r_p).reflected(0);
+
+    assert_near("Normal reflection pure-s alive", (ref_s != null) ? 1.0 : 0.0, 1.0, 1e-9);
+    assert_near("Normal reflection pure-p alive", (ref_p != null) ? 1.0 : 0.0, 1.0, 1e-9);
+    assert_near("Normal reflection pure-s phase = pi", ref_s.phase, pi, 1e-6);
+    assert_near("Normal reflection pure-p phase = 0", ref_p.phase, 0.0, 1e-6);
+
+    // Pure-p TIR phase differs from pure-s TIR phase (left = glass15, right = VACUUM)
+    OpticalSystem sys_tir = system(Interface((0, -10) -- (0, 10), glass15, Materials.VACUUM), glass15);
+    Ray tir_s = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(0.0))).reflected(0);
+    Ray tir_p = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(90.0))).reflected(0);
+    assert_near("TIR s reflection alive", (tir_s != null) ? 1.0 : 0.0, 1.0, 1e-9);
+    assert_near("TIR p reflection alive", (tir_p != null) ? 1.0 : 0.0, 1.0, 1e-9);
+    assert_near("TIR p phase != s phase", (abs(tir_p.phase - tir_s.phase) > 0.1) ? 1.0 : 0.0, 1.0, 1e-9);
+
+    // OPL half-wave destructive interference under exp(i * (phase - k0 * opl))
+    real um_per_unit = geometryToUm(1.0);
+    Ray ra = propagate(Ray((0, 0), (1, 0), Materials.VACUUM, lambda = 500.0, pol = Polarization.linear(0.0)),
+                       0.25 / um_per_unit);
+    Ray rb = Ray((0, 0), (1, 0), Materials.VACUUM, lambda = 500.0, pol = Polarization.linear(0.0));
+    assert_near("Half-wave OPL destructive interference", interfere(ra, rb), 0.0, 1e-5);
+
+    config.physics.trace_reflections = old_refl;
+    config.physics.min_intensity = old_min_i;
+}
+
+// 4. ThinFilmStack: 0-layer match, n1 != 1 TIR, thick Gold R < 1, transmission diattenuation (Fix 4)
+{
+    bool old_refl = config.physics.trace_reflections;
+    real old_min_i = config.physics.min_intensity;
+    config.physics.trace_reflections = true;
+    config.physics.min_intensity = 1e-3;
+
+    // 4a. 0-layer ThinFilmStack matches bare Interface at 35 deg (AIR -> BK7)
+    Element bare_if = Interface((0, -10) -- (0, 10), Materials.AIR, Materials.BK7);
+    Element tf0_if =
+        element((0, -10) -- (0, 10),
+                                     properties(ThinFilmStack(new ThinFilmLayer[]{}, Materials.AIR, Materials.BK7)),
+                                     medium = Materials.BK7);
+    Ray r_ob = Ray.angle((-1, 0), 35.0, Materials.AIR, pol = Polarization.linear(45.0));
+    Trace t_bare = system(bare_if, Materials.AIR).trace(r_ob);
+    Trace t_tf0 = system(tf0_if, Materials.AIR).trace(r_ob);
+    assert_near("0-layer TMM R == Fresnel R", t_tf0.interaction(0).R, t_bare.interaction(0).R, 1e-6);
+    assert_near("0-layer TMM refl S1 == Fresnel refl S1", t_tf0.reflected(0).pol.S1, t_bare.reflected(0).pol.S1, 1e-6);
+    assert_near("0-layer TMM refl phase == Fresnel refl phase",
+                t_tf0.reflected(0).phase,
+                t_bare.reflected(0).phase,
+                1e-5);
+
+    // 4b. n1 != 1 TIR (BK7 -> Air at 45 deg with a 100nm MgF2 film must still undergo TIR)
+    ThinFilmLayer[] mgf2 = {ThinFilmLayer(medium("MgF2", 1.38), 100.0)};
+    Element tf_tir = element((0, -10) -- (0, 10),
+                                                  properties(ThinFilmStack(mgf2, Materials.BK7, Materials.AIR)),
+                                                  medium = Materials.AIR);
+    Trace t_tir = system(tf_tir, Materials.BK7).trace(Ray.angle((-1, 0), 45.0, Materials.BK7));
+    assert_near("BK7->Air 45 deg coated stack TIR R == 1", t_tir.interaction(0).R, 1.0, 1e-6);
+    assert_near("BK7->Air 45 deg coated stack has no transmitted ray",
+                (t_tir.transmitted(0) == null) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+
+    // 4c. Thick Gold film must have R < 1 (no -i*sin(delta) blowup)
+    ThinFilmLayer[] thick_au = {ThinFilmLayer(Materials.GOLD, 5000.0)};
+    Element tf_au = element((0, -10) -- (0, 10),
+                                                 properties(ThinFilmStack(thick_au, Materials.AIR, Materials.BK7)),
+                                                 medium = Materials.BK7);
+    Trace t_au = system(tf_au, Materials.AIR).trace(Ray.angle((-1, 0), 45.0, Materials.AIR));
+    assert_near("Thick Gold TMM R < 1", (t_au.interaction(0).R < 1.0) ? 1.0 : 0.0, 1.0, 1e-9);
+
+    // 4d. Transmission diattenuation on oblique high-index quarter-wave film
+    ThinFilmLayer[] tio2 = {ThinFilmLayer(medium("TiO2", 2.4), 633.0 / (4.0 * 2.4))};
+    Element tf_diat = element((0, -10) -- (0, 10),
+                                                   properties(ThinFilmStack(tio2, Materials.AIR, Materials.BK7)),
+                                                   medium = Materials.BK7);
+    Trace t_diat =
+        system(tf_diat, Materials.AIR).trace(Ray.angle((-1, 0), 50.0, Materials.AIR, pol = Polarization.linear(45.0)));
+    assert_near("ThinFilmStack transmitted ray has nonzero diattenuation |S1|",
+                (abs(t_diat.transmitted(0).pol.S1) > 0.01) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+
+    config.physics.trace_reflections = old_refl;
+    config.physics.min_intensity = old_min_i;
+}
+
+// 5. 2-node curved lens area nesting (Fix 5)
+{
+    path big_2node = (-6, 0) .. controls(-3, 8) and
+                     (3, 8) .. (6, 0) .. controls(3, -8) and (-3, -8) .. cycle;
+    Element outer_2node = Interface(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
+    Element inner_box = Interface(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
+    OpticalSystem nested_sys = outer_2node + inner_box;
+    // Ray starting inside SmallBox must resolve Inner17 (1.7), not Outer14 (1.4)
+    Trace t_nest = nested_sys.trace(Ray((0, 0), (1, 0), lambda = 633.0));
+    assert_near("Inner polygon beats enclosing 2-node curved lens", t_nest.first().medium.n(), 1.7, 1e-5);
+}
+
+// 6. Bidirectional Grating + align(), rotated SphericalInterface (Fixes 6 & 7)
+{
+    Element gr = Grating((0, 0), 20.0, 90.0, 500.0, reflective = false, orders = new int[]{1});
+    Trace t_up = system(gr).trace(Ray((0, -2), (0, 1), lambda = 633.0));
+    Trace t_dn = system(gr).trace(Ray((0, 2), (0, -1), lambda = 633.0));
+    assert_near("Bidirectional grating keeps +x deflection from above", t_dn.last().d.x, t_up.last().d.x, 1e-6);
+
+    Element gr_al = align(Grating((0, 0), 20.0, 0.0, 500.0, reflective = false, orders = new int[]{1}),
+                          (-10, 0),
+                          (10, 10 * tan(radians(30))),
+                          lambda = 633.0);
+    pair d_al = system(gr_al).trace(Ray((-10, 0), (1, 0), lambda = 633.0)).last().d;
+    pair d_exp = unit((10, 10 * tan(radians(30))));
+    assert_near("Grating align() error norm", length(d_al - d_exp), 0.0, 1e-4);
+
+    Element si_rot = SphericalInterface((0, 0), 90.0, 20.0, 15.0, Materials.BK7, Materials.AIR);
+    Ray si_out = system(si_rot, Materials.AIR).trace(Ray((2.0, -10.0), (0, 1))).last();
+    assert_near("Rotated SphericalInterface bends toward axis (d.x < 0)", (si_out.d.x < -0.01) ? 1.0 : 0.0, 1.0, 1e-9);
+}
+
+// 7. DoubleRefraction exit reflection & Trace.follow("R") on crystal (Fix 9 & 14)
+{
+    bool old_refl = config.physics.trace_reflections;
+    config.physics.trace_reflections = true;
+
+    Element cal = UniaxialCrystal(box((-2, -10), (2, 10)),
+                                  no = 1.658,
+                                  ne = 1.486,
+                                  optic_axis = dir(35.0),
+                                  ambient = Materials.AIR,
+                                  name = "CalciteTest");
+    Trace t_cal =
+        system(cal, Materials.AIR).trace(Ray.angle((-5, 0), 25.0, Materials.AIR, pol = Polarization.linear(45.0)));
+    Ray cal_refl = t_cal.follow("R").last();
+    assert_near("Trace.follow('R') on crystal follows reflected ray (d.x < 0)",
+                (cal_refl != null && cal_refl.d.x < 0) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+
+    config.physics.trace_reflections = old_refl;
+}
+
+// 8. GRIN polarization persistence along curved trajectories (Fix 10)
+{
+    Medium grin_faraday = medium(
+                              "GRINFaraday",
+                              1.5,
+                              n_profile = new real(pair p, real lam) { return 1.0 - 0.01 * p.y * p.y; },
+                              grad_profile = new pair(pair p, real lam) { return (0.0, -0.02 * p.y); })
+                              .add(FaradayRotator(10.0, (0, 1)));
+
+    // 8a. Absorbed trace: incident.pol carries integrated rotation, last().pol is zeroed
+    Element exit_plate = Absorber((5, -5) -- (5, 5), name = "GRINStop");
+    Trace t_gf =
+        system(exit_plate, grin_faraday).trace(Ray((0, 1.0), (1, 0), grin_faraday, pol = Polarization.linear(0.0)));
+    real dy_hit = t_gf.hit(0).y - 1.0;
+    real th_hit = radians(10.0 * dy_hit);
+    assert_near("GRIN curved Faraday incident.pol S2 matches V*dy",
+                t_gf.interaction(0).incident.pol.S2,
+                sin(2.0 * th_hit),
+                1e-4);
+    assert_near("GRIN Absorber Trace.last().pol intensity is zeroed", t_gf.last().pol.intensity(), 0.0, 1e-9);
+
+    // 8b. Un-terminated trace: Trace.last().pol preserves integrated rotation (not initial dot(B, d)=0)
+    Trace t_free = system(new Element[]{}, grin_faraday)
+                       .trace(Ray((0, 1.0), (1, 0), grin_faraday, pol = Polarization.linear(0.0)), far = 5.0);
+    real dy_free = t_free.last().p.y - 1.0;
+    real th_free = radians(10.0 * dy_free);
+    assert_near("GRIN Trace.last().pol S1 matches cos(2*V*dy)", t_free.last().pol.S1, cos(2.0 * th_free), 1e-4);
+    assert_near("GRIN Trace.last().pol S2 matches sin(2*V*dy)", t_free.last().pol.S2, sin(2.0 * th_free), 1e-4);
+}
+
+// 9. Virtual-object gaussianRays, rotated CardinalPoints, & unnamed sameElement (Fix 13 & 14)
+{
+    Element tl = Lens.thin((10, 5), 30.0, 20.0, 30.0);
+    CardinalPoints cp_rot = cardinalPoints(system(tl), (10, 5), dir(30.0));
+    assert_near("Rotated CardinalPoints f2 == 20", cp_rot.f2, 20.0, 1e-4);
+    assert_near("Rotated CardinalPoints F2 error", length(cp_rot.F2 - ((10, 5) + 20.0 * dir(30.0))), 0.0, 1e-4);
+    picture tmp_cp;
+    draw(tmp_cp, cp_rot);
+    assert_near("Rotated CardinalPoints draw succeeds", (!tmp_cp.empty()) ? 1.0 : 0.0, 1.0, 1e-9);
+
+    Ray[] v_rays = gaussianRays(system(Lens.thin((0, 0), 0.0, 20.0, 30.0)), (-10, 5));
+    assert_near("Virtual-object focal ray shoots forward (d.x > 0)", (v_rays[2].d.x > 0.0) ? 1.0 : 0.0, 1.0, 1e-9);
+
+    Element m1 = Mirror.flat((0, 0), 0.0, 10.0, name = "");
+    Element m2 = Mirror.flat((5, 0), 0.0, 10.0, name = "");
+    m1.center = (0, 0);
+    m2.center = (0, 0);
+    Trace t_mm = (m1 + m2).trace(Ray((2, 0), (1, 0)));
+    Trace t_follow_m2 = t_mm.follow(m2);
+    assert_near("Unnamed element follow distinguishes m2 from m1",
+                (t_follow_m2 != null && length(t_follow_m2.hit(0) - (5, 0)) < 1e-6) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
