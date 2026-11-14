@@ -1258,7 +1258,7 @@ applyDiattenuation(s_jones, s_in, (0, 1), (1, 0));
 
 assert_near("Jones overload S0 = 1", s_jones.S0, 1.0, 1e-5);
 assert_near("Jones overload S2 = 0", s_jones.S2, 0.0, 1e-5);
-assert_near("Jones overload S3 = 1", s_jones.S3, 1.0, 1e-5);
+assert_near("Jones overload S3 = -1", s_jones.S3, -1.0, 1e-5);
 
 // 4. Unpolarized light through an ideal polarizer
 Polarization s_unpol = Polarization.unpolarized(1.0);
@@ -3007,10 +3007,8 @@ real[] test_angles = {15.0, 30.0, 45.0, 60.0, 75.0};
 for (real deg_i : test_angles) {
     real cosi = Cos(deg_i);
     FresnelAmplitudes fa_oblique = fresnelAmplitudesKernel(1.0, (1.5, 0.0), cosi);
-    assert_near("Power conservation Rs + Ts at " + string(deg_i) + " deg",
-                fa_oblique.Rs + fa_oblique.Ts, 1.0, 1e-12);
-    assert_near("Power conservation Rp + Tp at " + string(deg_i) + " deg",
-                fa_oblique.Rp + fa_oblique.Tp, 1.0, 1e-12);
+    assert_near("Power conservation Rs + Ts at " + string(deg_i) + " deg", fa_oblique.Rs + fa_oblique.Ts, 1.0, 1e-12);
+    assert_near("Power conservation Rp + Tp at " + string(deg_i) + " deg", fa_oblique.Rp + fa_oblique.Tp, 1.0, 1e-12);
 }
 
 // 3. Brewster angle: tan(theta_B) = n2 / n1 = 1.5 -> theta_B ~ 56.30993 deg
@@ -3041,17 +3039,17 @@ assert_near("Gold extinction kappa == -3.09", n_au.y, -3.09, 1e-12);
 
 // Metal normal reflectances at 633 nm vs analytic Fresnel: R = ((n-1)^2 + k^2)/((n+1)^2 + k^2)
 FresnelAmplitudes fa_au = fresnelAmplitudesKernel(1.0, n_au, 1.0);
-real expected_R_au = ((0.197 - 1.0)^2 + 3.09^2) / ((0.197 + 1.0)^2 + 3.09^2);
+real expected_R_au = ((0.197 - 1.0) ^ 2 + 3.09 ^ 2) / ((0.197 + 1.0) ^ 2 + 3.09 ^ 2);
 assert_near("Gold normal reflectance matches analytic formula (~92.8%)", fa_au.Rs, expected_R_au, 1e-12);
 
 complex n_ag = complexN(Materials.SILVER);
 FresnelAmplitudes fa_ag = fresnelAmplitudesKernel(1.0, n_ag, 1.0);
-real expected_R_ag = ((0.135 - 1.0)^2 + 3.99^2) / ((0.135 + 1.0)^2 + 3.99^2);
+real expected_R_ag = ((0.135 - 1.0) ^ 2 + 3.99 ^ 2) / ((0.135 + 1.0) ^ 2 + 3.99 ^ 2);
 assert_near("Silver normal reflectance matches analytic formula (~96.9%)", fa_ag.Rs, expected_R_ag, 1e-12);
 
 complex n_al = complexN(Materials.ALUMINUM);
 FresnelAmplitudes fa_al = fresnelAmplitudesKernel(1.0, n_al, 1.0);
-real expected_R_al = ((1.38 - 1.0)^2 + 7.62^2) / ((1.38 + 1.0)^2 + 7.62^2);
+real expected_R_al = ((1.38 - 1.0) ^ 2 + 7.62 ^ 2) / ((1.38 + 1.0) ^ 2 + 7.62 ^ 2);
 assert_near("Aluminum normal reflectance matches analytic formula (~91.3%)", fa_al.Rs, expected_R_al, 1e-12);
 
 // Custom absorbing medium with n=2.0, kappa=1.0: R = ((2-1)^2 + 1) / ((2+1)^2 + 1) = 2/10 = 0.2
@@ -3071,9 +3069,7 @@ hit_tf.p = (0, 0);
 hit_tf.normal = (-1, 0);
 hit_tf.tangent = (0, 1);
 hit_tf.entering = true;
-mediumResolver resolve_tf = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
-    return glass_lossless;
-};
+mediumResolver resolve_tf = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) { return glass_lossless; };
 
 // 1. Empty stack (0 layers): must reproduce bare Fresnel interface
 ThinFilmLayer[] empty_stack = new ThinFilmLayer[];
@@ -3089,7 +3085,7 @@ assert_near("Empty ThinFilmStack reflected intensity == 0.04", out_empty[1].inte
 real n_ar = sqrt(1.5);
 real d_ar = 633.0 / (4.0 * n_ar);
 Medium med_ar = medium("ar_coating", n_ar);
-ThinFilmLayer[] ar_stack = { ThinFilmLayer(med_ar, d_ar) };
+ThinFilmLayer[] ar_stack = {ThinFilmLayer(med_ar, d_ar)};
 Property prop_ar = ThinFilmStack(ar_stack, glass_lossless, Materials.VACUUM);
 Ray[] out_ar = prop_ar.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("AR coating eliminates reflection (only transmitted ray generated)", out_ar.length == 1, true);
@@ -3137,7 +3133,7 @@ assert_bool("Meniscus lens has surfaces", l_men.surfaces.length > 0, true);
 
 // 3. Parabolic mirror: exact geometric focus without spherical aberration
 Element pm = Mirror.parabolic((50, 0), 180.0, 50.0, 40.0);
-Trace tr_pm = system(pm).trace(new Ray[]{ Ray((0, 10), (1, 0)), Ray((0, 20), (1, 0)) });
+Trace tr_pm = system(pm).trace(new Ray[]{Ray((0, 10), (1, 0)), Ray((0, 20), (1, 0))});
 Ray r1_pm = tr_pm.ray_tree[1];
 Ray r2_pm = tr_pm.ray_tree[3];
 real x_cross_1 = r1_pm.p.x - r1_pm.p.y * (r1_pm.d.x / r1_pm.d.y);
@@ -3150,7 +3146,10 @@ Element pbs_cube = BeamSplitter.pbs((0, 0), 0.0, 20.0);
 Trace tr_pbs = system(pbs_cube).trace(Ray((-20, 0), (1, 0), pol = Polarization.linear(45.0, 1.0)), far = 40);
 // Ray 3 is transmitted through diagonal (pure p-pol: S1 < 0, S1/S0 == -1)
 Ray r_pbs_trans = tr_pbs.ray_tree[3];
-assert_near("PBS transmitted ray is pure p-polarized (S1/S0 == -1)", r_pbs_trans.pol.S1 / r_pbs_trans.pol.S0, -1.0, 1e-6);
+assert_near("PBS transmitted ray is pure p-polarized (S1/S0 == -1)",
+            r_pbs_trans.pol.S1 / r_pbs_trans.pol.S0,
+            -1.0,
+            1e-6);
 assert_near("PBS transmitted direction is forward (d.x == 1)", r_pbs_trans.d.x, 1.0, 1e-6);
 // Ray 4 is reflected from diagonal (pure s-pol: S1 > 0, S1/S0 == +1)
 Ray r_pbs_refl = tr_pbs.ray_tree[4];
@@ -3175,7 +3174,12 @@ Ray[] out_ar_wrap = ar_prop_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("AntiReflectionCoating eliminates reflection", out_ar_wrap.length == 1, true);
 assert_near("AntiReflectionCoating transmitted intensity == 1.0", out_ar_wrap[0].intensity(), 1.0, 1e-10);
 
-Property dbr_wrapper = DistributedBraggReflector(med_H, med_L, pairs = 4, inside = glass_lossless, ambient = Materials.VACUUM, design_lambda = 633.0);
+Property dbr_wrapper = DistributedBraggReflector(med_H,
+                                                 med_L,
+                                                 pairs = 4,
+                                                 inside = glass_lossless,
+                                                 ambient = Materials.VACUUM,
+                                                 design_lambda = 633.0);
 Ray[] out_dbr_wrap = dbr_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("DistributedBraggReflector generates 2 rays", out_dbr_wrap.length == 2, true);
 assert_near("DistributedBraggReflector high reflectance (~95.1%)", out_dbr_wrap[1].intensity(), 0.95098536, 1e-5);
@@ -3192,7 +3196,10 @@ complex n_gold_get = m_gold.getN(lambda = 633.0);
 assert_near("m_gold getN real part == 0.197", n_gold_get.x, 0.197, 1e-12);
 assert_near("m_gold getN imaginary part == -3.09", n_gold_get.y, -3.09, 1e-12);
 real expected_alpha_gold = (4.0 * pi * 3.09) / (633.0 * nm_to_um);
-assert_near("m_gold derived bulk alpha matches 4*pi*kappa/lambda", m_gold.absorption(lambda = 633.0), expected_alpha_gold, 1e-9);
+assert_near("m_gold derived bulk alpha matches 4*pi*kappa/lambda",
+            m_gold.absorption(lambda = 633.0),
+            expected_alpha_gold,
+            1e-9);
 
 // 2. Medium with explicit alpha: getN() derives kappa = alpha * lambda / (4*pi)
 real test_alpha = 0.5; // um^-1
@@ -3218,7 +3225,8 @@ Trace tr_gold = system(gold_block).trace(Ray((0, 0), (1, 0), lambda = 633.0), fa
 Ray r_inside_gold = tr_gold.ray_tree[1];
 real dist_in_gold = 0.05;
 real expected_decay = exp(-expected_alpha_gold * geometryToUm(dist_in_gold));
-Polarization pol_at_back = m_gold.stepPolarization(r_inside_gold.pol, r_inside_gold.p, r_inside_gold.d, 633.0, dist_in_gold);
+Polarization pol_at_back =
+    m_gold.stepPolarization(r_inside_gold.pol, r_inside_gold.p, r_inside_gold.d, 633.0, dist_in_gold);
 assert_true("Light inside metal attenuates drastically over 50 nm", pol_at_back.intensity() < 0.005);
 assert_near("Attenuated intensity matches Fresnel transmission * Beer-Lambert",
             pol_at_back.intensity(),
