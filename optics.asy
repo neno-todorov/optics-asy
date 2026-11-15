@@ -1962,6 +1962,7 @@ mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol =
     return res;
 }
 
+// Replace grinAdvanceRK4 and grinAdvanceRK45 (Chunk 1):
 private
 GRINStep grinAdvanceRK4(Ray r, real step) {
     GRINStep res = new GRINStep;
@@ -3749,6 +3750,38 @@ pair diffractionOutputDir(pair N, pair T, real k_out, bool reflective) {
     return k_out * T + (reflective ? k_normal * N : -k_normal * N);
 }
 
+private
+void emitFresnelChild(Ray[] out_rays, Ray r, Hit h, pair d, pair wn, Medium med, complex js, complex jp) {
+    Polarization child_pol = copy(r.pol);
+    applyDiattenuation(child_pol, r.pol, js, jp);
+    real intensity = child_pol.intensity();
+    if (intensity > config.physics.min_intensity) {
+        Ray child = spawnRay(r, h, d, intensity, med, jonesPhaseShift(r.pol, js, jp), wn);
+        child.pol = child_pol;
+        out_rays.push(child);
+    }
+}
+
+private
+Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
+    Ray[] rays;
+    if (!res.tir) {
+        pair[] jt = fluxTransmissionJones(res.ts, res.tp, res.Ts, res.Tp);
+        emitFresnelChild(rays, r, h, res.d, res.wave_normal, res.medium, jt[0], jt[1]);
+    }
+    if (res.tir || config.physics.trace_reflections || config.rendering.draw_reflections) {
+        emitFresnelChild(rays,
+                         r,
+                         h,
+                         res.reflected_direction,
+                         res.reflected_wave_normal,
+                         res.source_medium,
+                         res.rs,
+                         res.rp);
+    }
+    return rays;
+}
+
 // Surface Property: Refract (Updated with Complex Fresnel Phase Retardance)
 Property Refract(Medium inside, Medium ambient = null) {
     Property p = new Property;
@@ -4529,47 +4562,55 @@ Property Retard(real delta, real fast_axis = 0.0) {
 struct Beam {
     void operator init() {}
 
+  private
+    static Ray[] sweepLinear(pair start,
+                             pair step,
+                             int count,
+                             pair d,
+                             Medium medium,
+                             real lambda,
+                             Polarization pol,
+                             real phase,
+                             int coherence_id) {
+        Ray[] rays;
+        for (int i = 0; i < count; ++i) rays.push(Ray(start + i * step, d, medium, lambda, pol, phase, coherence_id));
+        return rays;
+    }
+
+  private
+    static Ray[] sweepAngular(pair anchor,
+                              pair d,
+                              real angle,
+                              real back_dist,
+                              int count,
+                              Medium medium,
+                              real lambda,
+                              Polarization pol,
+                              real phase,
+                              int coherence_id) {
+        pair u_d = unitOr(d);
+        if (count <= 1) return new Ray[]{Ray(anchor - back_dist * u_d, u_d, medium, lambda, pol, phase, coherence_id)};
+        Ray[] rays;
+        for (int i = 0; i < count; ++i) {
+            real a = -angle / 2 + angle * i / (count - 1);
+            pair ray_d = rotate(a) * u_d;
+            rays.push(Ray(anchor - back_dist * ray_d, ray_d, medium, lambda, pol, phase, coherence_id));
+        }
+        return rays;
+    }
+
     static Ray[] parallel(pair start,
                           pair step,
                           int count,
                           pair d,
-                          Medium medium = null, // null: resolved at the start point by the tracer
+                          Medium medium = null,
                           real lambda = config.physics.lambda,
                           Polarization pol = Polarization.unpolarized(),
                           real phase = 0,
                           int coherence_id = 0) {
-        Ray[] rays;
-        for (int i = 0; i < count; ++i) {
-            rays.push(Ray(start + i * step, d, medium, lambda, pol, phase, coherence_id));
-        }
-
-        return rays;
+        return sweepLinear(start, step, count, d, medium, lambda, pol, phase, coherence_id);
     }
 
-    static Ray[] diverging(pair source,
-                           pair d,
-                           real angle,
-                           int count,
-                           Medium medium = null, // null: resolved at the source by the tracer
-                           real lambda = config.physics.lambda,
-                           Polarization pol = Polarization.unpolarized(),
-                           real phase = 0,
-                           int coherence_id = 0) {
-        Ray[] rays;
-        if (count <= 1) {
-            rays.push(Ray(source, d, medium, lambda, pol, phase, coherence_id));
-            return rays;
-        }
-
-        for (int i = 0; i < count; ++i) {
-            real a = -angle / 2 + angle * i / (count - 1);
-            rays.push(Ray(source, rotate(a) * d, medium, lambda, pol, phase, coherence_id));
-        }
-
-        return rays;
-    }
-
-    // Collimated beam of parallel rays symmetrically distributed around a center
     static Ray[] collimated(pair center,
                             pair d,
                             real width,
@@ -4579,24 +4620,32 @@ struct Beam {
                             Polarization pol = Polarization.unpolarized(),
                             real phase = 0,
                             int coherence_id = 0) {
-        Ray[] rays;
         pair u_d = unitOr(d);
-        pair u_trans = (-u_d.y, u_d.x);
-        if (count <= 1) {
-            rays.push(Ray(center, u_d, medium, lambda, pol, phase, coherence_id));
-            return rays;
-        }
-
-        real step_len = width / (count - 1);
-        pair start = center - 0.5 * width * u_trans;
-        for (int i = 0; i < count; ++i) {
-            rays.push(Ray(start + i * step_len * u_trans, u_d, medium, lambda, pol, phase, coherence_id));
-        }
-
-        return rays;
+        if (count <= 1) return new Ray[]{Ray(center, u_d, medium, lambda, pol, phase, coherence_id)};
+        pair step = (width / (count - 1)) * (-u_d.y, u_d.x);
+        return sweepLinear(center - 0.5 * width * (-u_d.y, u_d.x),
+                           step,
+                           count,
+                           u_d,
+                           medium,
+                           lambda,
+                           pol,
+                           phase,
+                           coherence_id);
     }
 
-    // Converging fan of rays aimed at a focal target point
+    static Ray[] diverging(pair source,
+                           pair d,
+                           real angle,
+                           int count,
+                           Medium medium = null,
+                           real lambda = config.physics.lambda,
+                           Polarization pol = Polarization.unpolarized(),
+                           real phase = 0,
+                           int coherence_id = 0) {
+        return sweepAngular(source, d, angle, 0.0, count, medium, lambda, pol, phase, coherence_id);
+    }
+
     static Ray[] converging(pair target,
                             pair d,
                             real angle,
@@ -4607,19 +4656,7 @@ struct Beam {
                             Polarization pol = Polarization.unpolarized(),
                             real phase = 0,
                             int coherence_id = 0) {
-        Ray[] rays;
-        pair u_d = unitOr(d);
-        if (count <= 1) {
-            rays.push(Ray(target - distance * u_d, u_d, medium, lambda, pol, phase, coherence_id));
-            return rays;
-        }
-
-        for (int i = 0; i < count; ++i) {
-            real a = -angle / 2 + angle * i / (count - 1);
-            pair ray_d = rotate(a) * u_d;
-            rays.push(Ray(target - distance * ray_d, ray_d, medium, lambda, pol, phase, coherence_id));
-        }
-        return rays;
+        return sweepAngular(target, d, angle, distance, count, medium, lambda, pol, phase, coherence_id);
     }
 }
 
