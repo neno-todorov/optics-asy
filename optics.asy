@@ -706,18 +706,22 @@ Polarization operator cast(real angle) { return Polarization.linear(angle); }
 // ============================================================================
 // Volume Properties (Medium Components)
 // Anisotropic Boundary Packet & Function Types
+// In struct AnisotropicTransmission:
 struct AnisotropicTransmission {
     bool valid = false;
     pair wave_normal;
     pair group_direction;
     real phase_index;
+    complex tm_impedance = (0.0, 0.0);
 }
 
+// In struct PhaseMatch:
 struct PhaseMatch {
     bool tir = false;
     pair wave_normal;
     pair group_direction;
     real n;
+    complex tm_impedance = (0.0, 0.0);
 }
 
 // Function signatures
@@ -900,9 +904,6 @@ struct Medium {
 // Approach B: kappa drives interface amplitude physics only.  Bulk attenuation
 // remains the job of the existing Beer-Lambert `absorption` property.
 // This avoids double-counting when both properties are present.
-
-// Internal tag identifying a ComplexRefractiveIndex VolumeProperty.
-private string COMPLEX_INDEX_TAG = "ComplexRefractiveIndex";
 VolumeProperty volumeProperty(string name, int priority = 0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = name;
@@ -1049,6 +1050,8 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0))
         real discriminant = b * b - 4.0 * a * cc;
 
         if (a <= config.math.eps) return out;
+        real reduced_disc = discriminant / 4.0;
+        out.tm_impedance = csqrt_outgoing((reduced_disc, 0.0));
 
         // Phase 4: Exact Anisotropic TIR (no isotropic fallback!)
         if (discriminant < -config.math.eps) {
@@ -1172,7 +1175,7 @@ Medium uniaxialExtraordinary(string name, real no, real ne, pair optic_axis = (1
 private
 VolumeProperty ComplexRefractiveIndex(real kappa) {
     VolumeProperty vp = new VolumeProperty;
-    vp.name = COMPLEX_INDEX_TAG;
+    vp.name = "ComplexRefractiveIndex";
     vp.extinction = new real(pair p, pair d, real lambda, Polarization pol) { return kappa; };
     return vp;
 }
@@ -2535,8 +2538,7 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
     PhaseMatch pm;
     real local_n = m.n(p, forward, lambda);
     pm.n = local_n;
-    // A constitutive anisotropic solver defines the dispersion relation; two
-    // independent solvers cannot be composed without an explicit model.
+
     anisotropicSolverFunc solver = null;
     for (VolumeProperty vp : m.orderedProperties()) {
         if (vp.anisotropic_solver != null) {
@@ -2544,23 +2546,26 @@ PhaseMatch solvePhaseMatch(Medium m, pair N, pair T, real kt, pair forward, pair
             solver = vp.anisotropic_solver;
         }
     }
-
     if (solver != null) {
         AnisotropicTransmission at = solver(N, T, kt, forward, p, lambda);
         pm.tir = !at.valid;
         pm.wave_normal = at.wave_normal;
         pm.group_direction = at.group_direction;
         pm.n = (at.phase_index > 0) ? at.phase_index : local_n;
+        pm.tm_impedance = at.tm_impedance;
         return pm;
     }
 
-    // Isotropic dispersion sphere
+    complex n_cx = m.getN(p, forward, lambda);
+    complex n2 = n_cx * n_cx;
+    complex q = csqrt_outgoing(n2 - (kt * kt, 0.0));
+    pm.tm_impedance = (abs2(n2) > config.math.solver_denominator_eps) ? (q / n2) : (0.0, 0.0);
+
     real kn2 = local_n * local_n - kt * kt;
     if (kn2 < 0) {
         pm.tir = true;
         return pm;
     }
-
     real kn = sqrt(max(0.0, kn2));
     real sign = (dot(N, forward) >= 0) ? 1.0 : -1.0;
     pair k_vec = kt * T + (sign * kn) * N;
@@ -2652,38 +2657,18 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     res.tir_e = trans_e.tir;
     res.medium_e = med_e;
 
-    if (!res.tir_e) {
-        real dn = abs(dot(trans_e.group_direction, N));
-        real we_dot_de = abs(dot(trans_e.n * trans_e.wave_normal, trans_e.group_direction));
-        real Ze = (we_dot_de > config.math.eps) ? (dn / we_dot_de) : (1.0 / trans_e.n);
-        real dn_in = abs(dot(r.d, N));
-        real wi_dot_di = abs(dot(n1 * inc_wave_normal, r.d));
-        real Zi = (wi_dot_di > config.math.eps) ? (dn_in / wi_dot_di) : (kn_in / (n1 * n1));
-
-        real denom_p = Zi + Ze;
-        res.rp = (denom_p > config.math.eps) ? ((Zi - Ze) / denom_p, 0.0) : (-1.0, 0.0);
-        res.tp = (denom_p > config.math.eps) ? ((2.0 * Zi) / denom_p, 0.0) : (0.0, 0.0);
-        res.Rp = res.rp.x * res.rp.x;
-        res.Te = 1.0 - res.Rp;
+    complex Zi = refl_match.tm_impedance;
+    complex Ze = trans_e.tm_impedance;
+    complex denom_p = Zi + Ze;
+    if (abs2(denom_p) > config.math.solver_denominator_eps) {
+        res.rp = (Zi - Ze) / denom_p;
+        res.tp = (!res.tir_e) ? ((2.0 * Zi) / denom_p) : (0.0, 0.0);
     } else {
-        real ne = med_e.n(h.p, inc_wave_normal, r.lambda, r.pol);
-        real sint_e = kt / ne;
-        real sin2t = sint_e * sint_e;
-
-        if (sin2t > 1.0) {
-            real k_im = sqrt(sin2t - 1.0);
-            pair cosi = (f.cosi, 0.0);
-            pair cost = (0.0, -k_im);
-            pair denom_p = ne * cosi + n1 * cost;
-            res.rp = (abs(denom_p) > config.math.eps) ? (ne * cosi - n1 * cost) / denom_p : (1.0, 0.0);
-        } else {
-            res.rp = (-1.0, 0.0);
-        }
-
+        res.rp = (-1.0, 0.0);
         res.tp = (0.0, 0.0);
-        res.Rp = 1.0;
-        res.Te = 0.0;
     }
+    res.Rp = abs2(res.rp);
+    res.Te = res.tir_e ? 0.0 : max(0.0, 1.0 - res.Rp);
 
     res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
@@ -4110,11 +4095,39 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
                 pair T = (-N.y, N.x);
                 pair inc_wn = unitOr(r.wave_normal, r.d);
                 real kt = res.n1 * dot(inc_wn, T);
+
                 PhaseMatch refl_match = solvePhaseMatch(src_med, N, T, kt, N, h.p, r.lambda);
                 if (!refl_match.tir) {
                     res.reflected_direction = refl_match.group_direction;
                     res.reflected_wave_normal = refl_match.wave_normal;
                 }
+
+                Medium target_med = (f.target_medium != null) ? f.target_medium : Materials.VACUUM;
+                PhaseMatch trans_match = solvePhaseMatch(target_med, N, T, kt, -N, h.p, r.lambda);
+
+                complex Zi = refl_match.tm_impedance;
+                complex Z2 = trans_match.tm_impedance;
+                complex denom_p = Zi + Z2;
+                if (abs2(denom_p) > config.math.solver_denominator_eps) {
+                    res.rp = (Zi - Z2) / denom_p;
+                    res.tp = (!trans_match.tir) ? ((2.0 * Zi) / denom_p) : (0.0, 0.0);
+                } else {
+                    res.rp = (-1.0, 0.0);
+                    res.tp = (0.0, 0.0);
+                }
+                res.Rp = abs2(res.rp);
+                res.Tp = trans_match.tir ? 0.0 : max(0.0, 1.0 - res.Rp);
+                res.tir = trans_match.tir;
+                if (!res.tir) {
+                    res.d = trans_match.group_direction;
+                    res.wave_normal = trans_match.wave_normal;
+                } else {
+                    res.d = res.reflected_direction;
+                    res.wave_normal = res.reflected_wave_normal;
+                }
+                res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
+                res.T = 1.0 - res.R;
+                res.sync();
             }
 
             if (!res.tir) {
@@ -5504,16 +5517,19 @@ pair imagePoint(OpticalSystem sys, pair P, real delta_angle = config.physics.dif
 }
 
 // Numerical Paraxial Solver: Traces forward and backward paraxial rays
-// Numerical Paraxial Solver: Traces forward and backward paraxial rays
 CardinalPoints cardinalPoints(OpticalSystem sys,
                               pair axis_origin = (0, 0),
                               pair axis_dir = (1, 0),
-                              real paraxial_h = config.physics.paraxial_height) {
+                              real paraxial_h = config.physics.paraxial_height,
+                              Medium object_medium = null,
+                              Medium image_medium = null) {
     CardinalPoints cp;
     cp.axis_origin = axis_origin;
     cp.axis_dir = unit(axis_dir);
-    cp.axis_norm = (-cp.axis_dir.y, cp.axis_dir.x); // Transverse axis
+    cp.axis_norm = (-cp.axis_dir.y, cp.axis_dir.x);
     if (sys.elements.length == 0) return cp;
+
+    Medium obj_med = (object_medium != null) ? object_medium : sys.ambient;
 
     real launch_distance = 0.5 * config.physics.far;
     real min_proj = infinity;
@@ -5543,30 +5559,20 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     // -------------------------------------------------------------------------
     // 1. RESOLVE VERTICES V1 & V2 (Axial intercepts of front & rear surfaces)
     // -------------------------------------------------------------------------
-    Ray r_axis_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir, d = cp.axis_dir);
+    Ray r_axis_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir, d = cp.axis_dir, medium = obj_med);
     Trace t_axis_fwd = sys.trace(r_axis_fwd, far = config.physics.far);
     if (t_axis_fwd.segments().length > 1) {
-        cp.V1 = t_axis_fwd.segments()[1].a; // First surface hit point
+        cp.V1 = t_axis_fwd.segments()[1].a;
     } else {
         cp.V1 = sys.elements[0].center;
     }
 
-    Ray r_axis_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir, d = -cp.axis_dir);
-    Trace t_axis_bwd = sys.trace(r_axis_bwd, far = config.physics.far);
-    if (t_axis_bwd.segments().length > 1) {
-        cp.V2 = t_axis_bwd.segments()[1].a; // Rear surface hit point
-    } else {
-        cp.V2 = sys.elements[sys.elements.length - 1].center;
-    }
-
-    // -------------------------------------------------------------------------
-    // 2. FORWARD TRACE: Rear Focal Point F2 & Rear Principal Point H2
-    // -------------------------------------------------------------------------
-    Ray r_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm, d = cp.axis_dir);
+    Ray r_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm,
+                    d = cp.axis_dir,
+                    medium = obj_med);
     Trace t_fwd = sys.trace(r_fwd, far = config.physics.far);
     Ray exit_fwd = t_fwd.last();
 
-    // Directly intersect the exit ray with the optical axis line:
     if (exit_fwd != null && exit_fwd.alive) {
         cp.F2 = lineIntersection(exit_fwd, axis_origin, cp.axis_dir);
     } else {
@@ -5583,7 +5589,21 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
         cp.H2 = cp.V2;
     }
 
-    Ray r_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm, d = -cp.axis_dir);
+    Medium img_med = (image_medium != null)
+                         ? image_medium
+                         : ((exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium : obj_med);
+
+    Ray r_axis_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir, d = -cp.axis_dir, medium = img_med);
+    Trace t_axis_bwd = sys.trace(r_axis_bwd, far = config.physics.far);
+    if (t_axis_bwd.segments().length > 1) {
+        cp.V2 = t_axis_bwd.segments()[1].a;
+    } else {
+        cp.V2 = sys.elements[sys.elements.length - 1].center;
+    }
+
+    Ray r_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm,
+                    d = -cp.axis_dir,
+                    medium = img_med);
     Trace t_bwd = sys.trace(r_bwd, far = config.physics.far);
     Ray exit_bwd = t_bwd.last();
 

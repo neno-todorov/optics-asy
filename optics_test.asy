@@ -3513,6 +3513,52 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("stepPolarization(ds=0) does not alias input Polarization", p_orig.intensity(), 1.0, 1e-9);
 }
 
+// 11. Exact anisotropic evanescent TIR phase & crystal exit impedance
+{
+    bool old_refl = config.physics.trace_reflections;
+    config.physics.trace_reflections = true;
+
+    // 11a. Tilted crystal exit below critical angle (away from Brewster): asymmetric reflection + R + T == 1
+    Element cal_exit = UniaxialCrystal(box((-2, -10), (2, 10)),
+                                       no = 1.658,
+                                       ne = 1.486,
+                                       optic_axis = dir(35.0),
+                                       ambient = Materials.AIR);
+    Trace t_cal =
+        system(cal_exit, Materials.AIR).trace(Ray.angle((-5, 0), 10.0, Materials.AIR, pol = Polarization.linear(90.0)));
+    // Follow the transmitted e-ray to the exit face at x = 2
+    Interaction ix_exit = t_cal.follow("T").interaction(1);
+    assert_near("Tilted crystal exit e-ray R + T == 1", ix_exit.R + ix_exit.T, 1.0, 1e-6);
+    Ray e_refl = ix_exit.reflected[0];
+    Ray e_inc = ix_exit.incident;
+    assert_near("Tilted crystal internal e-ray reflection is asymmetric (|dx_r| != |dx_i|)",
+                (abs(abs(e_refl.d.x) - abs(e_inc.d.x)) > 1e-3) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+
+    // 11b. Internal TIR of extraordinary wave inside tilted crystal yields R == 1 and complex phase
+    Trace t_tir_e =
+        system(cal_exit, Materials.AIR).trace(Ray.angle((-5, 0), 55.0, Materials.AIR, pol = Polarization.linear(90.0)));
+    // Use steep ray starting inside crystal hitting exit face above critical angle
+    Medium cal_e = uniaxialExtraordinary("CalE", 1.658, 1.486, dir(35.0));
+    Element exit_wall =
+        element((2, -10) -- (2, 10),
+                                     properties(DoubleRefraction(medium("CalO", 1.658), cal_e, Materials.AIR)),
+                                     medium = Materials.AIR);
+    pair wn_in = dir(55.0);
+    Ray r_in_e = Ray((0, 0), cal_e.groupDirection(wn_in), cal_e, pol = Polarization.linear(90.0));
+    r_in_e.wave_normal = wn_in;
+    Trace t_e_tir = system(exit_wall, cal_e).trace(r_in_e);
+    assert_near("Extraordinary exit TIR R == 1", t_e_tir.interaction(0).R, 1.0, 1e-6);
+    real ph = t_e_tir.reflected(0).phase;
+    assert_near("Extraordinary exit TIR yields nontrivial complex phase",
+                (abs(ph) > 1e-3 && abs(abs(ph) - pi) > 1e-3) ? 1.0 : 0.0,
+                1.0,
+                1e-9);
+
+    config.physics.trace_reflections = old_refl;
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
