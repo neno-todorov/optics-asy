@@ -1963,15 +1963,6 @@ mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol =
 }
 
 private
-pair grinDirectionDerivative(Ray r, pair p, pair d) {
-    pair u = (length(d) > config.math.eps) ? unit(d) : r.d;
-    IndexAndGradient ig = mediumIndexAndGradient(r.medium, p, u, r.lambda, r.pol);
-    if (ig.n <= config.physics.min_refractive_index) return (0, 0);
-    return (ig.grad - dot(ig.grad, u) * u) / ig.n;
-}
-
-// Replace grinAdvanceRK4 and grinAdvanceRK45 (Chunk 1):
-private
 GRINStep grinAdvanceRK4(Ray r, real step) {
     GRINStep res = new GRINStep;
     res.ray = copy(r);
@@ -3918,81 +3909,33 @@ Property PolarizingCoating(Medium inside,
 
 ThinFilmLayer thinFilmLayer(Medium medium, real thickness_nm) { return ThinFilmLayer(medium, thickness_nm); }
 
-// Multiply two 2x2 complex matrices stored as real[4][2].
 private
-real[][] matMul22(real[][] A, real[][] B) {
-    real[][] C = new real[4][2];
-    // C[row*2+col] = sum_k A[row*2+k] * B[k*2+col]  (complex multiply)
-    for (int r = 0; r < 2; ++r) {
-        for (int c = 0; c < 2; ++c) {
-            complex sum = (0.0, 0.0);
-            for (int k = 0; k < 2; ++k) {
-                complex a = (A[2 * r + k][0], A[2 * r + k][1]);
-                complex b = (B[2 * k + c][0], B[2 * k + c][1]);
-                sum = sum + a * b;
-            }
-            C[2 * r + c][0] = sum.x;
-            C[2 * r + c][1] = sum.y;
-        }
-    }
-    return C;
+complex[] matIdentity22() { return new complex[]{(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)}; }
+
+private
+complex[] matMul22(complex[] A, complex[] B) {
+    return new complex[]{A[0] * B[0] + A[1] * B[2],
+                         A[0] * B[1] + A[1] * B[3],
+                         A[2] * B[0] + A[3] * B[2],
+                         A[2] * B[1] + A[3] * B[3]};
 }
 
-// Identity 2x2 complex matrix.
 private
-real[][] matIdentity22() {
-    real[][] I = new real[4][2];
-    I[0][0] = 1.0;
-    I[0][1] = 0.0;
-    I[1][0] = 0.0;
-    I[1][1] = 0.0;
-    I[2][0] = 0.0;
-    I[2][1] = 0.0;
-    I[3][0] = 1.0;
-    I[3][1] = 0.0;
-    return I;
-}
-
-// Replace thinFilmLayerMatrix, thinFilmAdmittance, thinFilmAmplitudes, and ThinFilmStack (Chunk 4):
-private
-real[][] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, real kt, int pol) {
+complex[] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, real kt, int pol) {
     complex n2 = n_j * n_j;
     complex q_j = csqrt_outgoing(n2 - (kt * kt, 0.0));
+    complex eta_j = (pol == 0) ? q_j : ((abs2(q_j) > config.math.solver_denominator_eps) ? (n2 / q_j) : (n2.x, 0.0));
 
-    complex eta_j;
-    if (pol == 0) {
-        eta_j = q_j;
-    } else {
-        eta_j = (abs2(q_j) > config.math.solver_denominator_eps) ? (n2 / q_j) : (n2.x, 0.0);
-    }
+    complex delta = q_j * ((2.0 * pi / lambda_nm) * d_nm, 0.0);
+    real im_c = clamp(delta.y, -300.0, 300.0);
+    complex exp_p = (cos(delta.x) * exp(-im_c), sin(delta.x) * exp(-im_c));
+    complex exp_m = (cos(delta.x) * exp(im_c), -sin(delta.x) * exp(im_c));
+    complex cos_d = 0.5 * (exp_p + exp_m);
+    complex sin_d = (exp_p - exp_m) / (0.0, 2.0);
+    complex i_sin_d = (-sin_d.y, sin_d.x);
 
-    real k0_nm = 2.0 * pi / lambda_nm;
-    complex delta = q_j * (k0_nm * d_nm, 0.0);
-    real im_clamped = clamp(delta.y, -300.0, 300.0);
-
-    complex exp_pdelta = (cos(delta.x) * exp(-im_clamped), sin(delta.x) * exp(-im_clamped));
-    complex exp_mdelta = (cos(delta.x) * exp(im_clamped), -sin(delta.x) * exp(im_clamped));
-    complex cos_d = 0.5 * (exp_pdelta + exp_mdelta);
-    complex sin_d = (exp_pdelta - exp_mdelta) / (0.0, 2.0);
-
-    // Under exp(+i*(w*t - k*z)), off-diagonal terms carry +i*sin(delta)
-    complex pos_i_sin_d = (-sin_d.y, sin_d.x);
-
-    real[][] M = new real[4][2];
-    M[0][0] = cos_d.x;
-    M[0][1] = cos_d.y;
-
-    complex sin_d_over_eta = (abs2(eta_j) > config.math.solver_denominator_eps) ? (pos_i_sin_d / eta_j) : (0.0, 0.0);
-    M[1][0] = sin_d_over_eta.x;
-    M[1][1] = sin_d_over_eta.y;
-
-    complex i_eta_sin = eta_j * pos_i_sin_d;
-    M[2][0] = i_eta_sin.x;
-    M[2][1] = i_eta_sin.y;
-
-    M[3][0] = cos_d.x;
-    M[3][1] = cos_d.y;
-    return M;
+    complex off01 = (abs2(eta_j) > config.math.solver_denominator_eps) ? (i_sin_d / eta_j) : (0.0, 0.0);
+    return new complex[]{cos_d, off01, eta_j * i_sin_d, cos_d};
 }
 
 private
@@ -4019,22 +3962,15 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
         complex eta1 = thinFilmAdmittance(n1, kt, pol);
         complex etas = thinFilmAdmittance(ns, kt, pol);
 
-        real[][] M = matIdentity22();
+        complex[] M = matIdentity22();
         for (ThinFilmLayer lyr : layers) {
             if (lyr == null || lyr.medium == null) continue;
             complex nj_in = complexN(lyr.medium, p_hit, (1, 0), lambda_nm);
-            complex nj = (nj_in.x, -abs(nj_in.y));
-            real[][] Mj = thinFilmLayerMatrix(nj, lyr.thickness_nm, lambda_nm, kt, pol);
-            M = matMul22(M, Mj);
+            M = matMul22(M, thinFilmLayerMatrix((nj_in.x, -abs(nj_in.y)), lyr.thickness_nm, lambda_nm, kt, pol));
         }
 
-        complex m00 = (M[0][0], M[0][1]);
-        complex m01 = (M[1][0], M[1][1]);
-        complex m10 = (M[2][0], M[2][1]);
-        complex m11 = (M[3][0], M[3][1]);
-
-        complex num_r = eta1 * m00 + eta1 * etas * m01 - m10 - etas * m11;
-        complex den = eta1 * m00 + eta1 * etas * m01 + m10 + etas * m11;
+        complex num_r = eta1 * M[0] + eta1 * etas * M[1] - M[2] - etas * M[3];
+        complex den = eta1 * M[0] + eta1 * etas * M[1] + M[2] + etas * M[3];
 
         complex r_amp, t_amp;
         real T_pol = 0.0;
@@ -4806,7 +4742,53 @@ struct BeamSplitter {
         return element(boundary, props, stroke, nullpen, name, center, A);
     }
 
-    // Cube Beam Splitter (Glass cube with internal beam-splitting coating)
+  private
+    static Element makeCube(pair center,
+                            real angle,
+                            real size,
+                            Property diag_prop,
+                            Medium glass,
+                            Medium ambient,
+                            pen stroke,
+                            pen fill,
+                            string name) {
+        real h = size / 2.0;
+        transform T = shift(center) * rotate(angle);
+        path box_p =
+            ensureCCW(T * ((-h, -h) -- (h, -h) -- (h, h) -- (-h, h) -- cycle));
+        pair ax = dir(angle);
+
+        Element e = new Element;
+        e.name = name;
+        e.stroke = stroke;
+        e.fill = fill;
+        e.center = center;
+        e.axis = ax;
+        e.boundary = box_p;
+        e.medium = glass;
+
+        Surface s_outer = new Surface;
+        s_outer.name = name + " Outer";
+        s_outer.p = box_p;
+        s_outer.stroke = stroke;
+        s_outer.fill = fill;
+        s_outer.center = center;
+        s_outer.axis = ax;
+        s_outer.add(Refract(glass, ambient));
+        e.add(s_outer);
+
+        Surface s_diag = new Surface;
+        s_diag.name = name + " Coating";
+        s_diag.p = T * ((-h, -h) -- (h, h));
+        s_diag.stroke = stroke;
+        s_diag.fill = nullpen;
+        s_diag.center = center;
+        s_diag.axis = ax;
+        s_diag.add(diag_prop);
+        e.add(s_diag);
+        return e;
+    }
+
     static Element cube(pair center,
                         real angle,
                         real size,
@@ -4817,43 +4799,9 @@ struct BeamSplitter {
                         pen fill = 0.08paleblue + white,
                         string name = "Cube Beam Splitter") {
         if (R < 0.0 || R > 1.0) abort("BeamSplitter.cube: R must be between 0 and 1.");
-        real h = size / 2.0;
-        // Local boundaries
-        path local_box = (-h, -h) -- (h, -h) -- (h, h) -- (-h, h) -- cycle;
-        path local_diag = (-h, -h) -- (h, h); // Bottom-left to top-right (Reflects +X rays UPWARD)
-        transform T = shift(center) * rotate(angle);
-        Element e = new Element;
-        e.name = name;
-        e.stroke = stroke;
-        e.fill = fill;
-        e.center = center;
-        e.axis = dir(angle);
-        e.boundary = T * local_box;
-        e.medium = glass;
-        // Surface 1: Outer Glass Cube Boundary (Glass <-> Ambient)
-        Surface s_outer = new Surface;
-        s_outer.name = name + " Outer";
-        s_outer.p = ensureCCW(T * local_box);
-        s_outer.stroke = stroke;
-        s_outer.fill = fill;
-        s_outer.center = center;
-        s_outer.axis = e.axis;
-        s_outer.add(Refract(glass, ambient)); // Standard Refraction
-        e.add(s_outer);
-        // Surface 2: Internal Coating (Glass <-> Glass with specified R ratio!)
-        Surface s_diag = new Surface;
-        s_diag.name = name + " Coating";
-        s_diag.p = T * local_diag;
-        s_diag.stroke = stroke;
-        s_diag.fill = nullpen;
-        s_diag.center = center;
-        s_diag.axis = e.axis;
-        s_diag.add(Coating(glass, glass, R)); // Custom Ratio Refraction!
-        e.add(s_diag);
-        return e;
+        return makeCube(center, angle, size, Coating(glass, glass, R), glass, ambient, stroke, fill, name);
     }
 
-    // Polarizing Beam Splitter Cube (transmits TM/p, reflects TE/s)
     static Element pbs(pair center,
                        real angle,
                        real size,
@@ -4864,39 +4812,15 @@ struct BeamSplitter {
                        pen stroke = gray(0.3),
                        pen fill = 0.08paleblue + white,
                        string name = "Polarizing Beam Splitter") {
-        real h = size / 2.0;
-        path local_box = (-h, -h) -- (h, -h) -- (h, h) -- (-h, h) -- cycle;
-        path local_diag = (-h, -h) -- (h, h);
-        transform T = shift(center) * rotate(angle);
-        Element e = new Element;
-        e.name = name;
-        e.stroke = stroke;
-        e.fill = fill;
-        e.center = center;
-        e.axis = dir(angle);
-        e.boundary = T * local_box;
-        e.medium = glass;
-
-        Surface s_outer = new Surface;
-        s_outer.name = name + " Outer";
-        s_outer.p = ensureCCW(T * local_box);
-        s_outer.stroke = stroke;
-        s_outer.fill = fill;
-        s_outer.center = center;
-        s_outer.axis = e.axis;
-        s_outer.add(Refract(glass, ambient));
-        e.add(s_outer);
-
-        Surface s_diag = new Surface;
-        s_diag.name = name + " PBS Coating";
-        s_diag.p = T * local_diag;
-        s_diag.stroke = stroke;
-        s_diag.fill = nullpen;
-        s_diag.center = center;
-        s_diag.axis = e.axis;
-        s_diag.add(PolarizingCoating(glass, glass, Rs = Rs, Rp = Rp));
-        e.add(s_diag);
-        return e;
+        return makeCube(center,
+                        angle,
+                        size,
+                        PolarizingCoating(glass, glass, Rs = Rs, Rp = Rp),
+                        glass,
+                        ambient,
+                        stroke,
+                        fill,
+                        name);
     }
 }
 
