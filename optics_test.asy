@@ -3483,6 +3483,36 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                 1e-9);
 }
 
+// 10. Batch 4 checks: GRIN energy/momentum conservation, non-uniform scale normals, & copy semantics
+{
+    // 10a. Parabolic GRIN waveguided ray conserves optical invariant n(y) * d.x
+    Medium grin_wg = medium(
+        "GRINWaveguide",
+        1.5,
+        n_profile = new real(pair p, real lam) { return 1.0 - 0.02 * p.y * p.y; },
+        grad_profile = new pair(pair p, real lam) { return (0.0, -0.04 * p.y); });
+    Ray r_wg0 = Ray((0, 1.0), (1, 0), grin_wg);
+    real n_init_dx = grin_wg.n(r_wg0.p, r_wg0.d) * r_wg0.d.x;
+    Ray r_wg_end = system(new Element[]{}, grin_wg).trace(r_wg0, far = 8.0).last();
+    real n_end_dx = grin_wg.n(r_wg_end.p, r_wg_end.d) * r_wg_end.d.x;
+    assert_near("GRIN RK45 conserves Bouguer/Snell invariant n(y)*dx",
+                n_end_dx,
+                n_init_dx,
+                config.physics.eps_integration);
+
+    // 10b. Non-uniform scaling xscale(2) preserves perpendicularity dot(h.tangent, h.normal) == 0
+    Element scaled_el = xscale(2.0) * yscale(0.5) * Lens.custom(unitcircle, Materials.BK7, Materials.AIR);
+    Trace t_sc = system(scaled_el, Materials.AIR).trace(Ray((-5, 0.25), (1, 0)));
+    Hit h_sc = t_sc.interaction(0).hit;
+    assert_near("Non-uniform scaled surface normal orthogonal to tangent", dot(h_sc.tangent, h_sc.normal), 0.0, 1e-6);
+
+    // 10c. stepPolarization(ds <= 0) returns distinct copy
+    Polarization p_orig = Polarization.linear(20.0);
+    Polarization p_step0 = Materials.AIR.stepPolarization(p_orig, (0, 0), (1, 0), 633.0, 0.0);
+    p_step0.scaleTo(0.25);
+    assert_near("stepPolarization(ds=0) does not alias input Polarization", p_orig.intensity(), 1.0, 1e-9);
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
