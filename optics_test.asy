@@ -3559,6 +3559,40 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     config.physics.trace_reflections = old_refl;
 }
 
+// 12. Asymmetric cardinalPoints, Trace.arrivals, Trace.leaves, & Trace.subtraces
+{
+    // 12a. Asymmetric immersion thick lens (nL = 1.0, n0 = 1.62, nR = 1.33)
+    Medium mL = medium("L", 1.0), m0 = medium("G", 1.62), mR = medium("R", 1.33);
+    real d_th = 24.6, R1 = 19.5, R2 = -16.0;
+    OpticalSystem asym_sys = system(new Element[]{SphericalInterface((-d_th / 2, 0), 0, R1, 2 * R1, mL, m0),
+                                                  SphericalInterface((d_th / 2, 0), 0, R2, 2 * R1, mR, m0)});
+    CardinalPoints cp_asym = cardinalPoints(asym_sys, object_medium = mL, paraxial_h = 1e-3);
+    real Phi1 = (1.62 - 1.0) / R1, Phi2 = (1.33 - 1.62) / R2;
+    real Phi = Phi1 + Phi2 - (d_th / 1.62) * Phi1 * Phi2;
+    assert_near("Asymmetric cardinalPoints f1", cp_asym.f1, 1.0 / Phi, 1e-5);
+    assert_near("Asymmetric cardinalPoints f2", cp_asym.f2, 1.33 / Phi, 1e-5);
+    assert_near("Asymmetric cardinalPoints H1.x", cp_asym.H1.x, -d_th / 2 + (1.0 * d_th * Phi2) / (1.62 * Phi), 1e-5);
+    assert_near("Asymmetric cardinalPoints N1.x - H1.x == f2 - f1",
+                cp_asym.N1.x - cp_asym.H1.x,
+                cp_asym.f2 - cp_asym.f1,
+                1e-5);
+
+    // 12b. Trace.arrivals() & Trace.subtraces()
+    Element bs_c = BeamSplitter.cube((0, 0), 0, 20, R = 0.5, glass = Materials.BK7, ambient = Materials.AIR);
+    Element m1_c = Mirror.flat((60, 0), 135, 25);
+    Element m2_c = Mirror.flat((0, 60), -45, 25);
+    Element bs2_c = BeamSplitter.cube((60, 60), 0, 20, R = 0.5, glass = Materials.BK7, ambient = Materials.AIR);
+    Element det_c = Absorber((45, 90) -- (75, 90), name = "Det");
+    OpticalSystem mzi = Materials.AIR + bs_c + m1_c + m2_c + bs2_c + det_c;
+    Trace tm = mzi.trace(Ray((-30, 0), (1, 0), coherence_id = 1));
+    Ray[] arr = tm.arrivals(det_c);
+    assert_near("Trace.arrivals collects both MZI arms at detector", arr.length, 2, 1e-9);
+
+    Trace t_multi = system(Lens.thin((10, 0), 0, 20, 30)).trace(Beam.collimated((0, 0), (1, 0), 10, 3));
+    assert_near("Trace.subtraces returns 3 roots", t_multi.subtraces().length, 3, 1e-9);
+    assert_near("Trace.leaves returns 3 surviving exit rays", t_multi.leaves().length, 3, 1e-9);
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");

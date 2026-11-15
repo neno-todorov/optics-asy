@@ -699,7 +699,7 @@ void applyMirrorPolarization(Polarization pol) {
 
 // 4. Angle-to-Polarization Cast Operator
 // Usage: Ray r = Ray(p, d, pol = 45); // Automatically creates linear polarization at 45 degrees
-Polarization operator cast(real angle) { return Polarization.linear(angle); }
+// Polarization operator cast(real angle) { return Polarization.linear(angle); }
 
 // ============================================================================
 // SECTION 03: CONSTITUTIVE MEDIA & VOLUME PROPERTIES
@@ -3333,10 +3333,82 @@ struct Trace {
 
     if (compareVersion(VERSION, "3.11") < 0) {
         Trace get(int i) { return subtrace(i); }
-
     } else {
         // Native Subscript Operator: t[i] returns Trace view for i-th ray in a beam!
         Trace operator[](int i) { return subtrace(i); }
+    }
+    Trace[] subtraces() {
+        Trace[] out;
+        if (root_ids.length > 0) {
+            for (int i = 0; i < root_ids.length; ++i) out.push(subtrace(i));
+        } else if (root_id >= 0 && root_id < ray_tree.length) {
+            out.push(this);
+        }
+        return out;
+    }
+
+  private
+    int[] scopedRootIds() {
+        if (root_id >= 0 && root_id < ray_tree.length) return new int[]{root_id};
+        return root_ids;
+    }
+
+    Ray[] arrivals(Element target) {
+        Ray[] out;
+        if (target == null || ray_tree.length == 0) return out;
+        int[] q = copy(scopedRootIds());
+        int head = 0;
+        while (head < q.length) {
+            int id = q[head];
+            ++head;
+            if (id < 0 || id >= ray_tree.length) continue;
+            Ray r = ray_tree[id];
+            if (r.hit != null && r.hit.valid && sameElement(getElement(r.hit), target)) {
+                Ray inc = copy(r);
+                inc.p = r.hit.p;
+                if (length(r.trajectory) > 0) {
+                    inc.d = dir(r.trajectory, length(r.trajectory));
+                }
+                inc.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
+                out.push(inc);
+            }
+            for (int c_id : r.children_ids) q.push(c_id);
+        }
+        return out;
+    }
+
+    Ray[] leaves() {
+        Ray[] out;
+        if (ray_tree.length == 0) return out;
+        int[] q = copy(scopedRootIds());
+        int head = 0;
+        while (head < q.length) {
+            int id = q[head];
+            ++head;
+            if (id < 0 || id >= ray_tree.length) continue;
+            Ray r = ray_tree[id];
+            if (r.children_ids.length == 0) {
+                if (r.alive && !r.terminated) {
+                    Ray leaf = copy(r);
+                    if (r.hit != null && r.hit.valid) {
+                        leaf.p = r.hit.p;
+                        leaf.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
+                    } else if (length(r.trajectory) > 0) {
+                        real end_t = length(r.trajectory);
+                        leaf.p = point(r.trajectory, end_t);
+                        leaf.d = dir(r.trajectory, end_t);
+                        if (leaf.medium != null)
+                            leaf.wave_normal = leaf.medium.waveNormalFromGroup(leaf.d, leaf.p, leaf.lambda);
+                        leaf.pol =
+                            (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, arclength(r.trajectory));
+                    }
+                    out.push(leaf);
+                }
+            } else {
+                for (int c_id : r.children_ids) q.push(c_id);
+            }
+        }
+        return out;
     }
 
 }
@@ -5548,7 +5620,6 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
             }
         }
     }
-
     if (min_proj < infinity && max_proj > -infinity) {
         real extent = max(max_proj - min_proj, 1.0);
         real margin = max(min(20.0, 2.0 * extent), 0.2 * extent);
@@ -5556,16 +5627,9 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
         launch_distance = min(safe_dist, 0.5 * config.physics.far);
     }
 
-    // -------------------------------------------------------------------------
-    // 1. RESOLVE VERTICES V1 & V2 (Axial intercepts of front & rear surfaces)
-    // -------------------------------------------------------------------------
     Ray r_axis_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir, d = cp.axis_dir, medium = obj_med);
     Trace t_axis_fwd = sys.trace(r_axis_fwd, far = config.physics.far);
-    if (t_axis_fwd.segments().length > 1) {
-        cp.V1 = t_axis_fwd.segments()[1].a;
-    } else {
-        cp.V1 = sys.elements[0].center;
-    }
+    cp.V1 = (t_axis_fwd.segments().length > 1) ? t_axis_fwd.segments()[1].a : sys.elements[0].center;
 
     Ray r_fwd = Ray(p = axis_origin - launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm,
                     d = cp.axis_dir,
@@ -5573,12 +5637,17 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     Trace t_fwd = sys.trace(r_fwd, far = config.physics.far);
     Ray exit_fwd = t_fwd.last();
 
-    if (exit_fwd != null && exit_fwd.alive) {
-        cp.F2 = lineIntersection(exit_fwd, axis_origin, cp.axis_dir);
-    } else {
-        cp.F2 = (infinity, infinity);
-    }
+    Medium img_med = (image_medium != null)
+                         ? image_medium
+                         : ((exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium : obj_med);
 
+    Ray r_axis_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir, d = -cp.axis_dir, medium = img_med);
+    Trace t_axis_bwd = sys.trace(r_axis_bwd, far = config.physics.far);
+    cp.V2 =
+        (t_axis_bwd.segments().length > 1) ? t_axis_bwd.segments()[1].a : sys.elements[sys.elements.length - 1].center;
+
+    cp.F2 = (exit_fwd != null && exit_fwd.alive) ? lineIntersection(exit_fwd, axis_origin, cp.axis_dir)
+                                                 : (infinity, infinity);
     if (abs(cp.F2.x) != infinity && abs(dot(exit_fwd.d, cp.axis_dir)) > config.math.eps) {
         real slope_exit = dot(exit_fwd.d, cp.axis_norm) / dot(exit_fwd.d, cp.axis_dir);
         cp.f2 = (abs(slope_exit) > config.math.eps) ? (-paraxial_h / slope_exit) : infinity;
@@ -5589,30 +5658,14 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
         cp.H2 = cp.V2;
     }
 
-    Medium img_med = (image_medium != null)
-                         ? image_medium
-                         : ((exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium : obj_med);
-
-    Ray r_axis_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir, d = -cp.axis_dir, medium = img_med);
-    Trace t_axis_bwd = sys.trace(r_axis_bwd, far = config.physics.far);
-    if (t_axis_bwd.segments().length > 1) {
-        cp.V2 = t_axis_bwd.segments()[1].a;
-    } else {
-        cp.V2 = sys.elements[sys.elements.length - 1].center;
-    }
-
     Ray r_bwd = Ray(p = axis_origin + launch_distance * cp.axis_dir + paraxial_h * cp.axis_norm,
                     d = -cp.axis_dir,
                     medium = img_med);
     Trace t_bwd = sys.trace(r_bwd, far = config.physics.far);
     Ray exit_bwd = t_bwd.last();
 
-    if (exit_bwd != null && exit_bwd.alive) {
-        cp.F1 = lineIntersection(exit_bwd, axis_origin, -cp.axis_dir);
-    } else {
-        cp.F1 = (-infinity, -infinity);
-    }
-
+    cp.F1 = (exit_bwd != null && exit_bwd.alive) ? lineIntersection(exit_bwd, axis_origin, -cp.axis_dir)
+                                                 : (-infinity, -infinity);
     if (abs(cp.F1.x) != infinity && abs(dot(exit_bwd.d, cp.axis_dir)) > config.math.eps) {
         real slope_bwd = dot(exit_bwd.d, cp.axis_norm) / abs(dot(exit_bwd.d, cp.axis_dir));
         cp.f1 = (abs(slope_bwd) > config.math.eps) ? (-paraxial_h / slope_bwd) : infinity;
@@ -5624,31 +5677,17 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     }
 
     Ray launched = t_fwd.first();
-    real n_obj = (launched != null && launched.medium != null) ? launched.medium.n() : 1.0;
-    real n_img = (exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium.n() : 1.0;
-
-    // -------------------------------------------------------------------------
-    // 4. NODAL POINTS N1 & N2
-    // -------------------------------------------------------------------------
-    // In Gaussian optics: N1 = H1 + (1 - n1/n2) * f2 * axis_dir
-    // When immersed in the same medium on both sides (n1 == n2): N1 == H1, N2 == H2
-    // Object-space medium as resolved by the tracer (the launch ray itself
-    // carries medium == null until traced).
-    Ray launched = t_fwd.first();
-    real n_obj = (launched != null && launched.medium != null) ? launched.medium.n() : 1.0;
-    real n_img = (exit_fwd.medium != null) ? exit_fwd.medium.n() : 1.0;
+    real n_obj =
+        (launched != null && launched.medium != null) ? launched.medium.n() : ((obj_med != null) ? obj_med.n() : 1.0);
+    real n_img =
+        (exit_fwd != null && exit_fwd.medium != null) ? exit_fwd.medium.n() : ((img_med != null) ? img_med.n() : 1.0);
     real nodal_shift = (abs(n_img) > config.math.eps) ? (1.0 - n_obj / n_img) * cp.f2 : 0.0;
 
     cp.N1 = cp.H1 + nodal_shift * cp.axis_dir;
     cp.N2 = cp.H2 + nodal_shift * cp.axis_dir;
-
-    // -------------------------------------------------------------------------
-    // 5. DISTANCES (BFL, FFL) & THICKNESS FLAG
-    // -------------------------------------------------------------------------
     cp.BFL = dot(cp.F2 - cp.V2, cp.axis_dir);
     cp.FFL = dot(cp.V1 - cp.F1, cp.axis_dir);
     cp.is_thick = (length(cp.H2 - cp.H1) > config.geometry.eps);
-
     return cp;
 }
 
@@ -7277,6 +7316,7 @@ struct Renderer {
     real after = nan;
     real margin = 0;
     bool draw_reflections = config.rendering.draw_reflections;
+    bool intensity_opacity = config.rendering.use_intensity_opacity;
     void drawTrace(picture pic = currentpicture, Trace T) {
         Segment[] segs = T.segments();
         Trace[] brs = T.branches();
@@ -7288,7 +7328,7 @@ struct Renderer {
             bool is_first = (i == 0);
             bool is_last = (i == segs.length - 1);
             ResolvedArrow current_arr = arrows.getArrow(i, segs.length);
-            bool apply_op = config.rendering.use_intensity_opacity && intensity_opacity;
+            bool apply_op = intensity_opacity;
             pen pen_eff = resolveRayPen(p, s.before, apply_op);
             // Special Case: Single unhit segment passing entirely through space
             if (is_first && is_last && (before == infinity || before == -infinity) && after == infinity) {
@@ -7411,17 +7451,19 @@ struct Renderer {
 
 }
 
-// Global Public Trace Drawing Wrapper
-void draw(picture pic = currentpicture,
-          Trace T,
-          real before = nan,
-          real after = nan,
-          real margin = 0,
-          pen p = currentpen,
-          RayArrows arrows = rayArrows(),
-          RayPolarization polarization = rayPolarization(),
-          RayWavefront wavefronts = rayWavefront(),
-          bool draw_reflections = config.rendering.draw_reflections) {
+private void
+drawSingleTrace(picture pic = currentpicture,
+                Trace T,
+                real before = nan,
+                real after = nan,
+                real margin = 0,
+                pen p = currentpen,
+                RayArrows arrows = rayArrows(),
+                RayPolarization polarization = rayPolarization(),
+                RayWavefront wavefronts = rayWavefront(),
+                bool draw_reflections = config.rendering.draw_reflections,
+                bool intensity_opacity = config.rendering.use_intensity_opacity) {
+    if (T == null) return;
     Renderer r = new Renderer;
     r.p = p;
     r.before = before;
@@ -7431,10 +7473,10 @@ void draw(picture pic = currentpicture,
     r.polarization = polarization;
     r.wavefronts = wavefronts;
     r.draw_reflections = draw_reflections;
+    r.intensity_opacity = intensity_opacity;
     r.drawTrace(pic, T);
 }
 
-// Global Public Trace Bundle Drawing Wrapper
 void draw(picture pic = currentpicture,
           Trace[] traces,
           real before = nan,
@@ -7444,47 +7486,89 @@ void draw(picture pic = currentpicture,
           RayArrows arrows = rayArrows(),
           RayPolarization polarization = rayPolarization(),
           RayWavefront wavefronts = rayWavefront(),
-          bool draw_reflections = config.rendering.draw_reflections) {
-    // 1. Draw wavefronts before rays so rays and arrows remain legible on top.
-    // Phase-locked bundles draw common OPL contours instead of crest bars.
+          bool draw_reflections = config.rendering.draw_reflections,
+          bool intensity_opacity = config.rendering.use_intensity_opacity) {
     RayWavefront individual_wavefronts = wavefronts;
-    // Wavelet arcs are intentionally retained as a visual Huygens overlay;
-    // only ordinary per-ray crest bars are replaced by common OPL contours.
     if (wavefronts.phase_locked) individual_wavefronts.visible = false;
     if (individual_wavefronts.visible) {
         for (Trace t : traces) {
-            draw(pic,
-                 t,
-                 before,
-                 after,
-                 margin,
-                 nullpen,
-                 rayArrows(visible = false),
-                 rayPolarization(visible = false),
-                 individual_wavefronts,
-                 draw_reflections);
+            drawSingleTrace(pic,
+                            t,
+                            before,
+                            after,
+                            margin,
+                            nullpen,
+                            rayArrows(visible = false),
+                            rayPolarization(visible = false),
+                            individual_wavefronts,
+                            draw_reflections,
+                            intensity_opacity);
         }
     }
-
     if (wavefronts.phase_locked && wavefronts.wavelets) {
         drawPhaseLockedWavelets(pic, traces, wavefronts);
     }
-
     RayWavefront no_wavefronts = wavefronts;
     no_wavefronts.visible = false;
     for (Trace t : traces) {
-        draw(pic, t, before, after, margin, p, arrows, polarization, no_wavefronts, draw_reflections);
+        drawSingleTrace(pic,
+                        t,
+                        before,
+                        after,
+                        margin,
+                        p,
+                        arrows,
+                        polarization,
+                        no_wavefronts,
+                        draw_reflections,
+                        intensity_opacity);
     }
-
-    // 2. Bundle iso-OPL contours
     if ((wavefronts.contours || wavefronts.phase_locked) && !wavefronts.wavelets && traces.length >= 2) {
         drawBundleContours(pic, traces, wavefronts);
     }
-
-    // 3. Interference lines between the first two traces
     if ((wavefronts.antinodes || wavefronts.nodes) && traces.length >= 2) {
         drawBundleInterference(pic, traces[0], traces[1], wavefronts);
     }
+}
+
+void draw(picture pic = currentpicture,
+          Trace T,
+          real before = nan,
+          real after = nan,
+          real margin = 0,
+          pen p = currentpen,
+          RayArrows arrows = rayArrows(),
+          RayPolarization polarization = rayPolarization(),
+          RayWavefront wavefronts = rayWavefront(),
+          bool draw_reflections = config.rendering.draw_reflections,
+          bool intensity_opacity = config.rendering.use_intensity_opacity) {
+    if (T == null) return;
+    if (T.root_ids.length > 1 &&
+        (wavefronts.contours || wavefronts.phase_locked || wavefronts.antinodes || wavefronts.nodes)) {
+        draw(pic,
+             T.subtraces(),
+             before,
+             after,
+             margin,
+             p,
+             arrows,
+             polarization,
+             wavefronts,
+             draw_reflections,
+             intensity_opacity);
+        return;
+    }
+    drawSingleTrace(pic,
+                    T,
+                    before,
+                    after,
+                    margin,
+                    p,
+                    arrows,
+                    polarization,
+                    wavefronts,
+                    draw_reflections,
+                    intensity_opacity);
 }
 
 void draw(picture pic = currentpicture, Element e) {
@@ -8551,6 +8635,44 @@ Inset InterferenceInset(Trace[] traces,
     }
 
     return InterferenceInset(sources,
+                             screen_center,
+                             screen_axis,
+                             span,
+                             vis_lambda,
+                             periods,
+                             samples,
+                             collimated,
+                             pos,
+                             target,
+                             size,
+                             title,
+                             tag,
+                             pen_laser,
+                             border,
+                             fill,
+                             badge_text,
+                             rotation);
+}
+
+Inset InterferenceInset(Trace trace,
+                        pair screen_center = (0, 0),
+                        pair screen_axis = (0, 1),
+                        real span = nan,
+                        real vis_lambda = nan,
+                        int periods = 5,
+                        int samples = 400,
+                        bool collimated = false,
+                        pair pos = (nan, nan),
+                        pair target = (nan, nan),
+                        real size = 28.0,
+                        string title = "Screen Interference",
+                        string tag = "",
+                        pen pen_laser = Red(1.0),
+                        pen border = rgb(0.0, 0.2, 0.6),
+                        pen fill = white,
+                        pen badge_text = white,
+                        real rotation = 0.0) {
+    return InterferenceInset(trace.subtraces(),
                              screen_center,
                              screen_axis,
                              span,
