@@ -134,9 +134,9 @@ struct RenderingConfig {
     real min_polarization_segment_length = 0.40;    // Segments shorter than this show 0 markers
     real min_polarization_marker_separation = 0.25; // Minimum distance between consecutive markers
     real arrow_size = 5pt;
-    real arrow_pol_size = arrow_size / 3;
+    real arrow_pol_size = nan;
     arrowhead arrow_head = HookHead;
-    arrowhead arrow_pol_head = arrow_head;
+    arrowhead arrow_pol_head = null;
     real polarization_inset_min_arrow_fraction = 0.18;
     real polarization_inset_unpolarized_threshold = 1e-4;
     int polarization_inset_unpolarized_spokes = 4;
@@ -151,6 +151,44 @@ struct Config {
     PhysicsConfig physics;
     GeometryConfig geometry;
     RenderingConfig rendering;
+}
+
+Config
+defaultConfig() {
+    Config c = new Config;
+    c.math = new MathConfig;
+    c.physics = new PhysicsConfig;
+    c.geometry = new GeometryConfig;
+    c.rendering = new RenderingConfig;
+    return c;
+}
+
+Config config = defaultConfig();
+
+// Validate mutable global configuration before it reaches geometry or physics
+// code.  This keeps failures local and descriptive instead of producing
+// invalid steps, runaway rendering loops, or numerical overflows later.
+void validateConfig() {
+    if (config.physics.meters_per_unit <= 0) abort("config.physics.meters_per_unit must be positive.");
+    if (config.physics.lambda <= 0) abort("config.physics.lambda must be positive (nm).");
+    if (config.physics.ds <= 0) abort("config.physics.ds must be positive geometry units.");
+    if (config.physics.far <= 0) abort("config.physics.far must be positive geometry units.");
+    if (config.physics.min_refractive_index <= 0) abort("config.physics.min_refractive_index must be positive.");
+    if (config.physics.max_depth < 1 || config.physics.max_branches < 1)
+        abort("config.physics.max_depth and max_branches must be at least 1.");
+    if (config.geometry.max_bisection_steps < 1 || config.geometry.arc_subdivisions < 4)
+        abort("config.geometry iteration and subdivision limits are too small.");
+    if (config.rendering.fade_subpath_steps < 1 || config.rendering.wavefront_max_orders < 0 ||
+        config.rendering.wavefront_max_dist <= 0 || config.rendering.wavefront_max_markers < 1)
+        abort("config.rendering wavefront/fading limits are invalid.");
+}
+
+real effectivePolArrowSize() {
+    return !isnan(config.rendering.arrow_pol_size) ? config.rendering.arrow_pol_size
+                                                   : (config.rendering.arrow_size / 3.0);
+}
+arrowhead effectivePolArrowHead() {
+    return (config.rendering.arrow_pol_head != null) ? config.rendering.arrow_pol_head : config.rendering.arrow_head;
 }
 
 // Complex number type alias and arithmetic helpers
@@ -202,35 +240,6 @@ int compareVersion(string v1, string v2) {
         if (i2 < length(v2)) ++i2;
     }
     return 0;
-}
-
-Config defaultConfig() {
-    Config c = new Config;
-    c.math = new MathConfig;
-    c.physics = new PhysicsConfig;
-    c.geometry = new GeometryConfig;
-    c.rendering = new RenderingConfig;
-    return c;
-}
-
-Config config = defaultConfig();
-
-// Validate mutable global configuration before it reaches geometry or physics
-// code.  This keeps failures local and descriptive instead of producing
-// invalid steps, runaway rendering loops, or numerical overflows later.
-void validateConfig() {
-    if (config.physics.meters_per_unit <= 0) abort("config.physics.meters_per_unit must be positive.");
-    if (config.physics.lambda <= 0) abort("config.physics.lambda must be positive (nm).");
-    if (config.physics.ds <= 0) abort("config.physics.ds must be positive geometry units.");
-    if (config.physics.far <= 0) abort("config.physics.far must be positive geometry units.");
-    if (config.physics.min_refractive_index <= 0) abort("config.physics.min_refractive_index must be positive.");
-    if (config.physics.max_depth < 1 || config.physics.max_branches < 1)
-        abort("config.physics.max_depth and max_branches must be at least 1.");
-    if (config.geometry.max_bisection_steps < 1 || config.geometry.arc_subdivisions < 4)
-        abort("config.geometry iteration and subdivision limits are too small.");
-    if (config.rendering.fade_subpath_steps < 1 || config.rendering.wavefront_max_orders < 0 ||
-        config.rendering.wavefront_max_dist <= 0 || config.rendering.wavefront_max_markers < 1)
-        abort("config.rendering wavefront/fading limits are invalid.");
 }
 
 // Wavelengths are expressed in nm at the public API; geometric lengths use um.
@@ -694,12 +703,9 @@ void applyMirrorPolarization(Polarization pol) {
     pol.S3 = -pol.S3;
 }
 
-// 3. Transformation Operator (*) is defined next to OpticalSystem:
-// Usage: OpticalSystem shifted_sys = shift(10, 0) * rotate(45) * sys;
-
 // 4. Angle-to-Polarization Cast Operator
 // Usage: Ray r = Ray(p, d, pol = 45); // Automatically creates linear polarization at 45 degrees
-// Polarization operator cast(real angle) { return Polarization.linear(angle); }
+Polarization operator cast(real angle) { return Polarization.linear(angle); }
 
 // ============================================================================
 // SECTION 03: CONSTITUTIVE MEDIA & VOLUME PROPERTIES
@@ -765,22 +771,17 @@ struct Medium {
     VolumeProperty[] props;
 
     Medium add(VolumeProperty prop) {
-        if (prop != null) this.props.push(prop);
+        if (prop == null) return this;
+        this.props.push(prop);
+        int j = this.props.length - 2;
+        while (j >= 0 && this.props[j].priority > prop.priority) {
+            this.props[j + 1] = this.props[j]; -- j;
+        }
+        this.props[j + 1] = prop;
         return this;
     }
 
-    VolumeProperty[] orderedProperties() {
-        VolumeProperty[] ordered = copy(this.props);
-        for (int i = 1; i < ordered.length; ++i) {
-            VolumeProperty key = ordered[i];
-            int j = i - 1;
-            while (j >= 0 && ordered[j].priority > key.priority) {
-                ordered[j + 1] = ordered[j]; -- j;
-            }
-            ordered[j + 1] = key;
-        }
-        return ordered;
-    }
+    VolumeProperty[] orderedProperties() { return this.props; }
 
     real n(pair p = (0, 0), pair d = (1, 0), real lambda = config.physics.lambda, Polarization pol = null) {
         real val = 1.0;
@@ -1133,6 +1134,10 @@ Medium medium(string name = "",
     if (A != 1.0 || B != 0.0 || n_profile != null) m.add(RefractiveIndex(A, B, n_profile, grad_profile));
     if (alpha != 0) m.add(Absorption(alpha));
     return m;
+}
+
+Medium grinMedium(string name, indexProfile n_profile, gradientProfile grad_profile = null, real alpha = 0.0) {
+    return medium(name, 1.0, 0.0, alpha, n_profile, grad_profile);
 }
 
 struct Materials {
@@ -2202,13 +2207,25 @@ struct Surface {
     pen fill = nullpen;
     pair center;
     pair axis;
-    Surface add(Property p) {
+
+  private
+    void insertSorted(Property p) {
+        if (p == null) return;
         props.push(p);
+        int j = props.length - 2;
+        while (j >= 0 && (props[j].stage > p.stage || (props[j].stage == p.stage && props[j].priority > p.priority))) {
+            props[j + 1] = props[j]; -- j;
+        }
+        props[j + 1] = p;
+    }
+
+    Surface add(Property p) {
+        insertSorted(p);
         return this;
     }
 
     Surface properties( ... Property[] pList) {
-        for (Property p : pList) props.push(p);
+        for (Property p : pList) insertSorted(p);
         return this;
     }
 
@@ -2267,27 +2284,10 @@ struct Surface {
     // Ordered, composable interaction pipeline. Actions are stable-sorted by
     // stage and priority; equal keys retain declaration order.
     InteractionResult interact(Ray r, Hit h, mediumResolver resolve) {
-        // If surface has no properties, ray is absorbed by default:
         if (this.props.length == 0) return interactionResult(new Ray[], 0, true);
 
-        // Sort properties by stage and priority:
-        Property[] ordered = copy(this.props);
-        for (int i = 1; i < ordered.length; ++i) {
-            Property key = ordered[i];
-            int j = i - 1;
-            while (j >= 0 && (ordered[j].stage > key.stage ||
-                              (ordered[j].stage == key.stage && ordered[j].priority > key.priority))) {
-                ordered[j + 1] = ordered[j]; -- j;
-            }
-
-            ordered[j + 1] = key;
-        }
-
-        // Seed the ray at the boundary.  The wave normal must be carried
-        // over explicitly: for extraordinary rays it differs from r.d and
-        // determines the conserved tangential wavevector.
         Ray[] active = {spawnRay(r, h, r.d, r.intensity(), r.medium, 0.0, r.wave_normal)};
-        for (Property p : ordered) {
+        for (Property p : this.props) {
             if (active.length == 0) break;
             if (p.generate == null) continue;
 
@@ -2296,14 +2296,9 @@ struct Surface {
                 Ray[] produced = p.generate(ray, h, resolve);
                 next.append(produced);
             }
-
             active = next;
         }
 
-        // Return clean InteractionResult packet:
-        // - active: the spawned child rays
-        // - default_index: 0 (default ray to follow in tree)
-        // - absorbed: true if all rays were consumed/extinguished
         return interactionResult(active, 0, active.length == 0);
     }
 }
@@ -2443,7 +2438,7 @@ Element element(path boundary,
     s.p = ensureCCW(boundary);
     s.stroke = stroke;
     s.fill = fill;
-    s.props = copy(props);
+    for (Property prop : props) s.add(prop);
     s.center = center;
     s.axis = unitOr(axis);
     Element e = new Element;
@@ -3522,12 +3517,74 @@ makeTracer(FlatSurfaceRecord[] flat_surfaces, mediumResolver resolve, real ds, r
 struct OpticalSystem {
     Element[] elements;
     Medium ambient = null;
-    int length() { return elements.length; }
-    void add(Element e) { this.elements.push(e); }
-    void add(Element[] eList) { this.elements.append(eList); }
-    void add(OpticalSystem s) { this.add(s.elements); }
+  private
+    FlatSurfaceRecord[] cached_surfaces;
+  private
+    transform[] cached_transforms;
+  private
+    int[] cached_surf_counts;
+  private
+    int[] cached_child_counts;
+  private
+    int[] cached_prop_counts;
+  private
+    bool cache_valid = false;
 
-    // STATELESS NATIVE TRACING
+    void invalidateCache() {
+        this.cache_valid = false;
+        this.cached_surfaces = new FlatSurfaceRecord[];
+    }
+    void add(Element e) {
+        this.elements.push(e);
+        this.invalidateCache();
+    }
+    void add(Element[] eList) {
+        this.elements.append(eList);
+        this.invalidateCache();
+    }
+    void add(OpticalSystem s) { this.add(s.elements); }
+    int length() { return elements.length; }
+
+  private
+    int elementPropCount(Element e) {
+        if (e == null) return 0;
+        int total = 0;
+        for (Surface s : e.surfaces) total += s.props.length;
+        for (Element child : e.children) total += elementPropCount(child);
+        return total;
+    }
+
+    FlatSurfaceRecord[] flatSurfaces() {
+        bool valid = this.cache_valid && (this.cached_transforms.length == this.elements.length);
+        if (valid) {
+            for (int i = 0; i < this.elements.length; ++i) {
+                Element e = this.elements[i];
+                if (e == null || e.T != this.cached_transforms[i] || e.surfaces.length != this.cached_surf_counts[i] ||
+                    e.children.length != this.cached_child_counts[i] ||
+                    elementPropCount(e) != this.cached_prop_counts[i]) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (!valid) {
+            this.cached_surfaces = prepareFlatSurfaces(this.elements);
+            this.cached_transforms = new transform[this.elements.length];
+            this.cached_surf_counts = new int[this.elements.length];
+            this.cached_child_counts = new int[this.elements.length];
+            this.cached_prop_counts = new int[this.elements.length];
+            for (int i = 0; i < this.elements.length; ++i) {
+                Element e = this.elements[i];
+                this.cached_transforms[i] = (e != null) ? e.T : identity();
+                this.cached_surf_counts[i] = (e != null) ? e.surfaces.length : 0;
+                this.cached_child_counts[i] = (e != null) ? e.children.length : 0;
+                this.cached_prop_counts[i] = elementPropCount(e);
+            }
+            this.cache_valid = true;
+        }
+        return this.cached_surfaces;
+    }
+
     Trace trace(Ray[] rays,
                 real ds = config.physics.ds,
                 real far = config.physics.far,
@@ -3535,7 +3592,7 @@ struct OpticalSystem {
         validateConfig();
         if (ds <= 0 || far <= 0 || max_depth < 1)
             abort("OpticalSystem.trace requires positive ds/far and max_depth >= 1.");
-        FlatSurfaceRecord[] flat_surfaces = prepareFlatSurfaces(elements);
+        FlatSurfaceRecord[] flat_surfaces = this.flatSurfaces();
         Element[] trace_elements = elements;
         Medium trace_ambient = ambient;
         mediumResolver resolve = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
@@ -3545,7 +3602,6 @@ struct OpticalSystem {
         result.system_elements = elements;
         return result;
     }
-
     Trace trace(Ray ray,
                 real ds = config.physics.ds,
                 real far = config.physics.far,
@@ -3555,17 +3611,32 @@ struct OpticalSystem {
 }
 
 OpticalSystem
-system(Element element, Medium ambient = null) {
+system(Element[] elements, Medium ambient = null) {
+    OpticalSystem s = new OpticalSystem;
+    s.ambient = ambient;
+    s.add(elements);
+    return s;
+}
+
+OpticalSystem system(Element element, Medium ambient) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
     s.add(element);
     return s;
 }
 
-OpticalSystem system(Element[] elements, Medium ambient = null) {
+OpticalSystem system(Medium ambient, Element first ... Element[] rest) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
-    s.add(elements);
+    s.add(first);
+    s.add(rest);
+    return s;
+}
+
+OpticalSystem system(Element first ... Element[] rest) {
+    OpticalSystem s = new OpticalSystem;
+    s.add(first);
+    s.add(rest);
     return s;
 }
 
@@ -4303,7 +4374,7 @@ Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
 
         real n1 = n_in;
         real n2 = m_out.n(h.p, r.d, r.lambda, r.pol);
-        real Phi = (n2 - n1) / (sgn * R);
+        real Phi = (abs(R) <= config.math.eps || abs(R) == infinity) ? 0.0 : (n2 - n1) / (sgn * R);
 
         pair rel = h.p - V;
         real hx = dot(rel, A);
@@ -4729,11 +4800,10 @@ struct BeamSplitter {
                          pen stroke = gray(0.3),
                          string name = "Plate Beam Splitter") {
         // angle = tilt angle (e.g. 45 deg tilts the plate to reflect horizontal rays UPWARD at 90 deg!)
-        pair A = dir(-angle);
+        pair A = dir(angle);
         path boundary = linearBoundary(center, A, diameter);
-        // Attach a Refract property with a custom 'R' override!
         Property[] props = {Coating(left, right, R)};
-        return element(boundary, props, stroke, nullpen, name, center, dir(-angle));
+        return element(boundary, props, stroke, nullpen, name, center, A);
     }
 
     // Cube Beam Splitter (Glass cube with internal beam-splitting coating)
@@ -5070,6 +5140,59 @@ struct Lens {
         Element e = element(boundary, props, stroke, nullpen, name, center, A);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
+        return e;
+    }
+
+    static Element idealThick(pair center,
+                              real angle,
+                              real R1,
+                              real R2,
+                              real thickness,
+                              real diameter,
+                              Medium glass,
+                              Medium ambient = null,
+                              pen stroke = config.rendering.pen_lens,
+                              pen fill = Blue(0.12),
+                              string name = "Ideal Thick Lens") {
+        real t_safe = max(thickness, config.geometry.eps);
+        transform T = shift(center) * rotate(angle);
+        pair ax = dir(angle);
+        pair V1 = T * (-t_safe / 2.0, 0);
+        pair V2 = T * (t_safe / 2.0, 0);
+
+        Element e = new Element;
+        e.name = name;
+        e.center = center;
+        e.axis = ax;
+        e.boundary = ensureCCW(T * LensPath.thickLens(R1, R2, t_safe, diameter));
+        e.medium = glass;
+        e.stroke = stroke;
+        e.fill = fill;
+
+        if (abs(R1) > config.math.eps && abs(R1) != infinity) {
+            e.add(SphericalInterface(V1, angle, R1, diameter, glass, ambient, stroke, name + " Front"));
+        } else {
+            e.add(element(T * ((-t_safe / 2.0, -diameter / 2.0) -- (-t_safe / 2.0, diameter / 2.0)),
+                               properties(IdealRefract(V1, ax, 0.0, glass, ambient)),
+                               stroke,
+                               nullpen,
+                               name + " Front",
+                               V1,
+                               ax,
+                               glass));
+        }
+        if (abs(R2) > config.math.eps && abs(R2) != infinity) {
+            e.add(SphericalInterface(V2, angle, R2, diameter, glass, ambient, stroke, name + " Back"));
+        } else {
+            e.add(element(T * ((t_safe / 2.0, -diameter / 2.0) -- (t_safe / 2.0, diameter / 2.0)),
+                               properties(IdealRefract(V2, ax, 0.0, glass, ambient)),
+                               stroke,
+                               nullpen,
+                               name + " Back",
+                               V2,
+                               ax,
+                               glass));
+        }
         return e;
     }
 
@@ -5606,7 +5729,7 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     real launch_distance = 0.5 * config.physics.far;
     real min_proj = infinity;
     real max_proj = -infinity;
-    FlatSurfaceRecord[] recs = prepareFlatSurfaces(sys.elements);
+    FlatSurfaceRecord[] recs = sys.flatSurfaces();
     for (FlatSurfaceRecord rec : recs) {
         if (rec.min_bound.x < infinity && rec.max_bound.x > -infinity) {
             pair[] pts = {rec.min_bound,
@@ -6366,8 +6489,8 @@ void drawPolarizationMarker(frame f, pair pos, pair d, real As, real Ap, real sc
         path line = polarizationMarkerLine(pos, d, Ap, pol, scale);
         real line_len = arclength(line);
         // Resolve effective arrow size and head safely
-        real arrow_sz = (pol.size > 0 && !isnan(pol.size)) ? pol.size : config.rendering.arrow_pol_size;
-        arrowhead h = (pol.head != null) ? pol.head : config.rendering.arrow_pol_head;
+        real arrow_sz = (pol.size > 0 && !isnan(pol.size)) ? pol.size : effectivePolArrowSize();
+        arrowhead h = (pol.head != null) ? pol.head : effectivePolArrowHead();
         // Condition: Line must fit at least 2 arrowheads (one on each side)
         //    Otherwise draw a clean plain line (None) to avoid overlapping arrow blobs
         real min_len_needed = max(config.rendering.min_polarization_marker_with_arrow, 2.0 * arrow_sz);
@@ -7698,6 +7821,22 @@ real markAcute(picture pic = currentpicture,
                int n = 1,
                real radius = 20,
                real space = 0,
+               Trace t,
+               int ix_index = 0,
+               int ray_type = Ray.Incident,
+               int ray_index = 0,
+               pen p = currentpen,
+               arrowbar arrow = None,
+               bool opposite = false) {
+    if (t == null) return 0;
+    return markAcute(pic, L, n, radius, space, t.interaction(ix_index), ray_type, ray_index, p, arrow, opposite);
+}
+
+real markAcute(picture pic = currentpicture,
+               Label L = "",
+               int n = 1,
+               real radius = 20,
+               real space = 0,
                Ray r1,
                Ray r2,
                pen p = currentpen,
@@ -7920,49 +8059,121 @@ void draw(picture pic = currentpicture,
 void draw(picture pic = currentpicture,
           CardinalPoints cp,
           real plane_height = 35.0,
-          pen p_axis = gray(0.5) + dashed + 0.6bp,
-          pen p_planes = rgb(0.1, 0.4, 0.8) + dashed + 0.8bp,
-          pen p_points = heavyred) {
-    if (abs(cp.f2) == infinity) return;
-    // 1. Draw Optical Axis
+          real y_min = nan,
+          real y_max = nan,
+          real axis_margin = nan,
+          bool show_axis = true,
+          bool show_principal_planes = true,
+          bool show_focal_planes = false,
+          bool show_vertices = true,
+          bool3 show_nodal = default,
+          bool show_plane_labels = true,
+          bool show_point_labels = true,
+          bool show_focal_dimension = true,
+          pen p_axis = gray(0.5) + dashed,
+          pen p_planes = DarkBlue(1.0) + dashed,
+          pen p_focal_planes = gray(0.5) + dashed,
+          pen p_points = DarkBlue(1.0),
+          pen p_nodal = black) {
+    if (abs(cp.f2) == infinity || isnan(cp.f2)) return;
+
+    real lo = !isnan(y_min) ? y_min : -0.5 * plane_height;
+    real hi = !isnan(y_max) ? y_max : 0.5 * plane_height;
+    if (lo > hi) {
+        real tmp = lo;
+        lo = hi;
+        hi = tmp;
+    }
+
+    bool draw_nodal = (show_nodal == default)
+                          ? (length(cp.N1 - cp.H1) > config.geometry.eps || length(cp.N2 - cp.H2) > config.geometry.eps)
+                          : (bool)show_nodal;
+
     real s_f1 = dot(cp.F1 - cp.axis_origin, cp.axis_dir);
-    real s_v1 = dot(cp.V1 - cp.axis_origin, cp.axis_dir);
     real s_f2 = dot(cp.F2 - cp.axis_origin, cp.axis_dir);
+    real s_v1 = dot(cp.V1 - cp.axis_origin, cp.axis_dir);
     real s_v2 = dot(cp.V2 - cp.axis_origin, cp.axis_dir);
-    real s_left = min(min(s_f1, s_v1), min(s_f2, s_v2)) - 30.0;
-    real s_right = max(max(s_f1, s_v1), max(s_f2, s_v2)) + 30.0;
-    pair ax_a = cp.axis_origin + s_left * cp.axis_dir;
-    pair ax_b = cp.axis_origin + s_right * cp.axis_dir;
-    draw(pic, ax_a -- ax_b, p_axis);
-    // 2. Draw Principal Planes (H1 & H2)
-    pair H1_top = cp.H1 + (plane_height / 2.0) * cp.axis_norm;
-    pair H1_bot = cp.H1 - (plane_height / 2.0) * cp.axis_norm;
-    pair H2_top = cp.H2 + (plane_height / 2.0) * cp.axis_norm;
-    pair H2_bot = cp.H2 - (plane_height / 2.0) * cp.axis_norm;
-    draw(pic, H1_bot -- H1_top, p_planes);
-    draw(pic, H2_bot -- H2_top, p_planes);
-    label(pic, "\small $\mathbf{H}_1$", H1_top, N, rgb(0.1, 0.4, 0.8));
-    label(pic, "\small $\mathbf{H}_2$", H2_top, N, rgb(0.1, 0.4, 0.8));
-    // 3. Mark Cardinal Points on Axis
+    real s_h1 = dot(cp.H1 - cp.axis_origin, cp.axis_dir);
+    real s_h2 = dot(cp.H2 - cp.axis_origin, cp.axis_dir);
+    real s_min_pt = min(min(min(s_f1, s_f2), min(s_v1, s_v2)), min(s_h1, s_h2));
+    real s_max_pt = max(max(max(s_f1, s_f2), max(s_v1, s_v2)), max(s_h1, s_h2));
+    if (draw_nodal) {
+        real s_n1 = dot(cp.N1 - cp.axis_origin, cp.axis_dir);
+        real s_n2 = dot(cp.N2 - cp.axis_origin, cp.axis_dir);
+        s_min_pt = min(s_min_pt, min(s_n1, s_n2));
+        s_max_pt = max(s_max_pt, max(s_n1, s_n2));
+    }
+
+    real margin_s = !isnan(axis_margin) ? axis_margin : max(3.5, 0.15 * max(10.0, s_max_pt - s_min_pt));
+    if (show_axis) {
+        pair ax_a = cp.axis_origin + (s_min_pt - margin_s) * cp.axis_dir;
+        pair ax_b = cp.axis_origin + (s_max_pt + margin_s) * cp.axis_dir;
+        draw(pic, ax_a -- ax_b, p_axis);
+    }
+
+    pair n_up = cp.axis_norm;
+    pair n_dn = -cp.axis_norm;
+    pair d_fwd = cp.axis_dir;
+    pair d_bwd = -cp.axis_dir;
+
+    if (show_principal_planes) {
+        pair H1_bot = cp.H1 + lo * n_up, H1_top = cp.H1 + hi * n_up;
+        pair H2_bot = cp.H2 + lo * n_up, H2_top = cp.H2 + hi * n_up;
+        draw(pic, H1_bot -- H1_top, p_planes);
+        draw(pic, H2_bot -- H2_top, p_planes);
+        if (show_plane_labels) {
+            label(pic, "\small $\mathcal{H}_1$", H1_top, n_up, p_planes + solid);
+            label(pic, "\small $\mathcal{H}_2$", H2_top, n_up, p_planes + solid);
+        }
+    }
+
+    if (show_focal_planes) {
+        pair F1_bot = cp.F1 + lo * n_up, F1_top = cp.F1 + hi * n_up;
+        pair F2_bot = cp.F2 + lo * n_up, F2_top = cp.F2 + hi * n_up;
+        draw(pic, F1_bot -- F1_top, p_focal_planes);
+        draw(pic, F2_bot -- F2_top, p_focal_planes);
+        if (show_plane_labels) {
+            label(pic, "\small $\mathcal{F}_1$", F1_top, n_up, p_focal_planes + solid);
+            label(pic, "\small $\mathcal{F}_2$", F2_top, n_up, p_focal_planes + solid);
+        }
+    }
+
     dot(pic, cp.F1, p_points + 3pt);
     dot(pic, cp.F2, p_points + 3pt);
-    dot(pic, cp.H1, blue + 3pt);
-    dot(pic, cp.H2, blue + 3pt);
-    label(pic, "\small $\mathbf{F}_1$", cp.F1, 2S, p_points);
-    label(pic, "\small $\mathbf{F}_2$", cp.F2, 2S, p_points);
-    label(pic, "\small $H_1$", cp.H1, 2S, blue);
-    label(pic, "\small $H_2$", cp.H2, 2S, blue);
-    // 4. Mark Vertices
-    dot(pic, cp.V1, black + 2pt);
-    dot(pic, cp.V2, black + 2pt);
-    label(pic, "\tiny $V_1$", cp.V1, NW, gray(0.3));
-    label(pic, "\tiny $V_2$", cp.V2, NE, gray(0.3));
-    // 5. Dimension Line for Effective Focal Length (EFL)
-    real dim_y = (plane_height / 2.0) + 12.0;
-    pair dim_a = cp.H2 + dim_y * cp.axis_norm;
-    pair dim_b = cp.F2 + dim_y * cp.axis_norm;
-    draw(pic, dim_a -- dim_b, p_points + 0.6bp, Arrows(HookHead, 2.5pt));
-    label(pic, format("\small $f = %#.2f$", cp.f2), midpoint(dim_a -- dim_b), N, p_points);
+    dot(pic, cp.H1, p_planes + solid + 3pt);
+    dot(pic, cp.H2, p_planes + solid + 3pt);
+    if (show_point_labels) {
+        label(pic, "\small $F_1$", cp.F1, 2 * n_dn, p_points);
+        label(pic, "\small $F_2$", cp.F2, 2 * n_dn, p_points);
+        label(pic, "\small $H_1$", cp.H1, unit(d_bwd + n_up), p_planes + solid);
+        label(pic, "\small $H_2$", cp.H2, unit(d_fwd + n_up), p_planes + solid);
+    }
+
+    if (show_vertices) {
+        dot(pic, cp.V1, black + 2pt);
+        dot(pic, cp.V2, black + 2pt);
+        if (show_point_labels) {
+            label(pic, "\tiny $V_1$", cp.V1, unit(d_bwd + n_up), gray(0.3));
+            label(pic, "\tiny $V_2$", cp.V2, unit(d_fwd + n_up), gray(0.3));
+        }
+    }
+
+    if (draw_nodal) {
+        dot(pic, cp.N1, p_nodal + 2.5pt);
+        dot(pic, cp.N2, p_nodal + 2.5pt);
+        if (show_point_labels) {
+            label(pic, "\small $N_1$", cp.N1, 1.5 * n_dn, p_nodal);
+            label(pic, "\small $N_2$", cp.N2, 1.5 * n_up, p_nodal);
+        }
+    }
+
+    if (show_focal_dimension) {
+        real dim_y = hi + 0.35 * (hi - lo);
+        pair dim_a = cp.H2 + dim_y * n_up;
+        pair dim_b = cp.F2 + dim_y * n_up;
+        draw(pic, dim_a -- dim_b, p_points + 0.6bp, Arrows(HookHead, 2.5pt));
+        label(pic, format("\small $f_2 = %#.2f$", cp.f2), midpoint(dim_a -- dim_b), n_up, p_points);
+    }
 }
 
 real resolveSegmentOffset(Segment seg,
@@ -8710,7 +8921,7 @@ void distance(picture pic = currentpicture,
               arrowbar arrow = Arrows(HookHead, 5pt),
               arrowbar bar = Bars,
               margin margin = PenMargins) {
-    real D = abs(B - A) / 1mm;
+    real D = abs(B - A);
     add(
         pic,
         new void(frame f, transform t) {

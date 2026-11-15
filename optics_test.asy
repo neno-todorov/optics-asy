@@ -3593,6 +3593,68 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("Trace.leaves returns 3 surviving exit rays", t_multi.leaves().length, 3, 1e-9);
 }
 
+// 13. OpticalSystem cache invalidation on element add & in-place transform mutation
+{
+    Element m_c = Mirror.flat((10, 0), 0, 10);
+    OpticalSystem sys_c = system(m_c);
+    assert_near("Initial mirror hit at x = 10", sys_c.trace(Ray((0, 0), (1, 0))).hit(0).x, 10.0, 1e-6);
+
+    // Mutate element transform in place after trace cached it
+    m_c.T = shift(5, 0) * m_c.T;
+    assert_near("Cache invalidates on element T mutation (hit at x = 15)",
+                sys_c.trace(Ray((0, 0), (1, 0))).hit(0).x,
+                15.0,
+                1e-6);
+
+    // Add an absorber in front of the mirror
+    sys_c.add(Absorber((4, -5) -- (4, 5)));
+    assert_near("Cache invalidates on sys.add() (hit at x = 4)", sys_c.trace(Ray((0, 0), (1, 0))).hit(0).x, 4.0, 1e-6);
+}
+
+// 14. Ergonomics batch: variadic system(), medium(name, indexProfile), dynamic arrow_pol_size, markAcute(Trace), &
+// idealThick
+{
+    Medium m_grin_fn = medium("SimpleGRIN", new real(pair p, real lam) { return 1.4 + 0.01 * p.y; });
+    assert_near("medium(name, indexProfile) evaluates at y = 2", m_grin_fn.n((0, 2)), 1.42, 1e-9);
+
+    Element s_a = Mirror.flat((10, 0), 0, 10);
+    Element s_b = Absorber((2, -5) -- (2, 5));
+    assert_near("Variadic system(e1, e2) works", system(s_a, s_b).length(), 2, 1e-9);
+    assert_near("Variadic system(ambient, e1, e2) sets ambient",
+                system(Materials.WATER, s_a, s_b).ambient.n(),
+                Materials.WATER.n(),
+                1e-9);
+
+    real old_asz = config.rendering.arrow_size;
+    config.rendering.arrow_size = 9pt;
+    assert_near("effectivePolArrowSize tracks arrow_size dynamically", effectivePolArrowSize(), 3pt, 1e-6);
+    config.rendering.arrow_size = old_asz;
+
+    Medium m15 = medium("Glass15", 1.5);
+    Element itl = Lens.idealThick((0, 0), 0, 20.0, -20.0, 4.0, 16.0, m15);
+    CardinalPoints cp_it = cardinalPoints(system(itl, Materials.AIR), paraxial_h = 1e-3);
+    real n_a = Materials.AIR.n();
+    real phi1 = (1.5 - n_a) / 20.0, phi2 = (n_a - 1.5) / (-20.0);
+    real phi_tot = phi1 + phi2 - (4.0 / 1.5) * phi1 * phi2;
+    assert_near("Lens.idealThick cardinalPoints f2 matches Lensmaker", cp_it.f2, n_a / phi_tot, 1e-5);
+
+    Trace t_mk = system(Interface((0, -5) -- (0, 5), Materials.AIR, m15)).trace(Ray.angle((-2, 0), 20.0));
+    picture p_mk;
+    real ang_mk = markAcute(p_mk, "", 1, 10, t_mk, 0, Ray.Incident);
+    assert_near("markAcute(Trace, ...) returns 20 deg", ang_mk, 20.0, 1e-5);
+}
+
+// 15. Upgraded draw(CardinalPoints) with asymmetric y bounds & nodal points
+{
+    Medium mL_d = medium("L_d", 1.0), m0_d = medium("G_d", 1.62), mR_d = medium("R_d", 1.33);
+    OpticalSystem asym_d = system(SphericalInterface((-10, 0), 0, 20, 30, mL_d, m0_d),
+                                  SphericalInterface((10, 0), 0, -16, 30, mR_d, m0_d));
+    CardinalPoints cp_d = cardinalPoints(asym_d, object_medium = mL_d, paraxial_h = 1e-3);
+    picture p_cp;
+    draw(p_cp, cp_d, y_min = -2.0, y_max = 10.0, axis_margin = 3.5, show_focal_planes = true);
+    assert_near("draw(CardinalPoints) renders with nodal & focal planes", (!p_cp.empty()) ? 1.0 : 0.0, 1.0, 1e-9);
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");
