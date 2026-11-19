@@ -1,5 +1,6 @@
 *.asy_bak
 *.py
+!rename_asy_api.py
 *.md
 *.html
 *.eps
