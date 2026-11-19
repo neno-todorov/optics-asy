@@ -3655,6 +3655,22 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("draw(CardinalPoints) renders with nodal & focal planes", (!p_cp.empty()) ? 1.0 : 0.0, 1.0, 1e-9);
 }
 
+// 16. Screen interference profile & PhaseFocus coherent focusing
+{
+    Ray[] slits = {
+        Ray((0, -5), (1, 0), lambda = 500.0, pol = Polarization.linear(0.0)),
+        Ray((0,  5), (1, 0), lambda = 500.0, pol = Polarization.linear(0.0))
+    };
+    InterferenceProfile prof = screenInterference(slits, screen_center = (100, 0), periods = 3, samples = 200);
+    assert_near("Young 2-slit central constructive peak = 4", prof.intensities[100], 4.0, 1e-4);
+
+    Element pf_lens = Lens.phaseThin((0, 0), 0.0, 50.0, 30.0);
+    Element screen = Absorber((50, -20) -- (50, 20));
+    Trace tf = system(pf_lens, screen).trace(Beam.collimated((-10, 0), (1, 0), 16.0, 5, pol = Polarization.linear(0.0), coherence_id = 1));
+    Ray[] at_focus = tf.arrivals(screen);
+    assert_near("PhaseFocus rays arrive at screen and interfere constructively at focus (I = 25)", interfere(at_focus), 25.0, 1e-3);
+}
+
 // Summary
 write("================================================================================");
 write(" TEST SUITE COMPLETED: " + string(passed_tests) + " / " + string(total_tests) + " TESTS PASSED");

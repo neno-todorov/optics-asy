@@ -2753,117 +2753,125 @@ bool requiresNumericalIntegration(Medium m) {
 }
 
 private
-PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far, real ds) {
-    if (requiresNumericalIntegration(medium)) {
-        real t_total = 0;
-        Ray curr_ray = copy(r);
-        guide traj = curr_ray.p;
-        Integrator solver = (config.physics.grin_solver == GRINSolverType.RK4) ? Integrator.RK4() : Integrator.RK45();
-        real max_ds = 0.075, min_ds = 1e-5;
-        real current_ds = max(min_ds, min(ds, max_ds));
-        real tol = config.physics.eps_integration;
-        Ray test_ray = new Ray;
-        while (t_total < far && curr_ray.alive) {
-            real n_center = curr_ray.medium.n(curr_ray.p, curr_ray.d, curr_ray.lambda, curr_ray.pol);
-            if (n_center <= config.physics.min_refractive_index) {
-                curr_ray.alive = false;
-                break;
-            }
-
-            real step = min(current_ds, far - t_total);
-            GRINStep step_result = solver.advance(curr_ray, step);
-            if (solver.is_adaptive) {
-                if (step_result.error > tol && step > min_ds) {
-                    current_ds *= 0.5;
-                    continue;
-                }
-
-                if (step_result.error > 0) {
-                    real scale_factor = 0.9 * (tol / step_result.error) ^ 0.2;
-                    current_ds = min(max_ds, current_ds * max(0.2, min(2.0, scale_factor)));
-                } else {
-                    current_ds = min(max_ds, current_ds * 2.0);
-                }
-            }
-
-            Ray next_ray = step_result.ray;
-            pair chord = next_ray.p - curr_ray.p;
-            real chord_length = length(chord);
-            Hit h;
-            bool hit_valid = false;
-
-            if (chord_length > config.geometry.eps) {
-                test_ray.p = curr_ray.p;
-                test_ray.d = chord / chord_length;
-                test_ray.ignored_flat_indices = copy(curr_ray.ignored_flat_indices);
-                h = nearestIntersection(test_ray, flat_surfaces, chord_length);
-                hit_valid = h.valid;
-            }
-
-            if (hit_valid) {
-                real hit_step = step * (h.t / chord_length);
-                Ray incident_ray = solver.advance(curr_ray, min(step, hit_step)).ray;
-                incident_ray.p = h.p;
-
-                pair hit_mid_p = 0.5 * (curr_ray.p + h.p);
-                pair hit_mid_d = unitOr(curr_ray.d + incident_ray.d, curr_ray.d);
-                real n_hit = curr_ray.medium.n(hit_mid_p, hit_mid_d, curr_ray.lambda, curr_ray.pol);
-                incident_ray.opl = curr_ray.opl + geometryToUm(hit_step) * n_hit;
-                if (curr_ray.medium != null && hit_step > 0) {
-                    incident_ray.pol =
-                        curr_ray.medium.stepPolarization(curr_ray.pol, hit_mid_p, hit_mid_d, curr_ray.lambda, hit_step);
-                }
-
-                traj = traj -- h.p;
-                return propagationResult(incident_ray, true, h, traj);
-            } else {
-                pair mid_point = 0.5 * (curr_ray.p + next_ray.p);
-                pair mid_direction = unitOr(curr_ray.d + next_ray.d, curr_ray.d);
-                if (curr_ray.medium != null && step > 0) {
-                    next_ray.pol =
-                        curr_ray.medium.stepPolarization(curr_ray.pol, mid_point, mid_direction, curr_ray.lambda, step);
-                }
-
-                if (next_ray.intensity() <= config.physics.min_intensity) {
-                    next_ray.alive = false;
-                    traj = traj -- next_ray.p;
-                    return propagationResult(next_ray, false, null, traj);
-                }
-
-                real n_mid = curr_ray.medium.n(mid_point, mid_direction, curr_ray.lambda, curr_ray.pol);
-                curr_ray = next_ray;
-                curr_ray.opl += geometryToUm(step) * n_mid;
-                t_total += step;
-                traj = traj -- curr_ray.p;
-                curr_ray.ignored_flat_indices = new int[];
-            }
-        }
-
-        return propagationResult(curr_ray, false, null, traj);
+PropagationResult propagateAnalytic(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far) {
+    Hit h = nearestIntersection(r, flat_surfaces, far);
+    // OPL accumulates k.dr along the group direction; for
+    // extraordinary rays this is n_phase * cos(walk-off), not n_phase.
+    real current_n = rayIndex(medium, r.p, r.wave_normal, r.d, r.lambda, r.pol);
+    Ray next_ray = copy(r);
+    if (!h.valid || h.t > far) {
+        next_ray.opl += geometryToUm(far) * current_n;
+        next_ray.p = r.p + far * r.d;
+        applyAbsorption(next_ray, far);
+        return propagationResult(next_ray, false, null, r.p -- next_ray.p);
     } else {
-        Hit h = nearestIntersection(r, flat_surfaces, far);
-        // OPL accumulates k.dr along the group direction; for
-        // extraordinary rays this is n_phase * cos(walk-off), not n_phase.
-        real current_n = rayIndex(medium, r.p, r.wave_normal, r.d, r.lambda, r.pol);
-        Ray next_ray = copy(r);
-        if (!h.valid || h.t > far) {
-            next_ray.opl += geometryToUm(far) * current_n;
-            next_ray.p = r.p + far * r.d;
-            applyAbsorption(next_ray, far);
-            return propagationResult(next_ray, false, null, r.p -- next_ray.p);
-        } else {
-            next_ray.opl += geometryToUm(h.t) * current_n;
-            next_ray.p = h.p;
-            applyAbsorption(next_ray, h.t);
-            return propagationResult(next_ray, true, h, r.p -- h.p);
-        }
+        next_ray.opl += geometryToUm(h.t) * current_n;
+        next_ray.p = h.p;
+        applyAbsorption(next_ray, h.t);
+        return propagationResult(next_ray, true, h, r.p -- h.p);
     }
 }
 
-// Advances ray geometrically to a target point, accumulating OPL
+private
+PropagationResult propagateGRIN(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far, real ds) {
+    real t_total = 0;
+    Ray curr_ray = copy(r);
+    guide traj = curr_ray.p;
+    Integrator solver = (config.physics.grin_solver == GRINSolverType.RK4) ? Integrator.RK4() : Integrator.RK45();
+    real max_ds = 0.075, min_ds = 1e-5;
+    real current_ds = max(min_ds, min(ds, max_ds));
+    real tol = config.physics.eps_integration;
+    Ray test_ray = new Ray;
+    while (t_total < far && curr_ray.alive) {
+        real n_center = curr_ray.medium.n(curr_ray.p, curr_ray.d, curr_ray.lambda, curr_ray.pol);
+        if (n_center <= config.physics.min_refractive_index) {
+            curr_ray.alive = false;
+            break;
+        }
+
+        real step = min(current_ds, far - t_total);
+        GRINStep step_result = solver.advance(curr_ray, step);
+        if (solver.is_adaptive) {
+            if (step_result.error > tol && step > min_ds) {
+                current_ds *= 0.5;
+                continue;
+            }
+
+            if (step_result.error > 0) {
+                real scale_factor = 0.9 * (tol / step_result.error) ^ 0.2;
+                current_ds = min(max_ds, current_ds * max(0.2, min(2.0, scale_factor)));
+            } else {
+                current_ds = min(max_ds, current_ds * 2.0);
+            }
+        }
+
+        Ray next_ray = step_result.ray;
+        pair chord = next_ray.p - curr_ray.p;
+        real chord_length = length(chord);
+        Hit h;
+        bool hit_valid = false;
+
+        if (chord_length > config.geometry.eps) {
+            test_ray.p = curr_ray.p;
+            test_ray.d = chord / chord_length;
+            test_ray.ignored_flat_indices = copy(curr_ray.ignored_flat_indices);
+            h = nearestIntersection(test_ray, flat_surfaces, chord_length);
+            hit_valid = h.valid;
+        }
+
+        if (hit_valid) {
+            real hit_step = step * (h.t / chord_length);
+            Ray incident_ray = solver.advance(curr_ray, min(step, hit_step)).ray;
+            incident_ray.p = h.p;
+
+            pair hit_mid_p = 0.5 * (curr_ray.p + h.p);
+            pair hit_mid_d = unitOr(curr_ray.d + incident_ray.d, curr_ray.d);
+            real n_hit = curr_ray.medium.n(hit_mid_p, hit_mid_d, curr_ray.lambda, curr_ray.pol);
+            incident_ray.opl = curr_ray.opl + geometryToUm(hit_step) * n_hit;
+            if (curr_ray.medium != null && hit_step > 0) {
+                incident_ray.pol =
+                    curr_ray.medium.stepPolarization(curr_ray.pol, hit_mid_p, hit_mid_d, curr_ray.lambda, hit_step);
+            }
+
+            traj = traj -- h.p;
+            return propagationResult(incident_ray, true, h, traj);
+        } else {
+            pair mid_point = 0.5 * (curr_ray.p + next_ray.p);
+            pair mid_direction = unitOr(curr_ray.d + next_ray.d, curr_ray.d);
+            if (curr_ray.medium != null && step > 0) {
+                next_ray.pol =
+                    curr_ray.medium.stepPolarization(curr_ray.pol, mid_point, mid_direction, curr_ray.lambda, step);
+            }
+
+            if (next_ray.intensity() <= config.physics.min_intensity) {
+                next_ray.alive = false;
+                traj = traj -- next_ray.p;
+                return propagationResult(next_ray, false, null, traj);
+            }
+
+            real n_mid = curr_ray.medium.n(mid_point, mid_direction, curr_ray.lambda, curr_ray.pol);
+            curr_ray = next_ray;
+            curr_ray.opl += geometryToUm(step) * n_mid;
+            t_total += step;
+            traj = traj -- curr_ray.p;
+            curr_ray.ignored_flat_indices = new int[];
+        }
+    }
+
+    return propagationResult(curr_ray, false, null, traj);
+}
+
+private
+PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far, real ds) {
+    return requiresNumericalIntegration(medium) ? propagateGRIN(medium, r, flat_surfaces, far, ds)
+                                                : propagateAnalytic(medium, r, flat_surfaces, far);
+}
+
+// Advances ray geometrically to a target point along its ray line, accumulating OPL
 Ray propagateTo(Ray r, pair target) {
     if (r == null) return null;
-    real dist = length(target - r.p);
+    pair d_hat = unitOr(r.d);
+    real dist = dot(target - r.p, d_hat);
     return propagate(r, dist);
 }
 
@@ -4236,6 +4244,25 @@ Property Focus(real f) {
     return p;
 }
 
+Property PhaseFocus(real f) {
+    Property p = new Property;
+    p.name = "PhaseFocus";
+    p.stage = PropertyStage.Deflect;
+    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+        pair v_out = thinLensRefractDir(r, h, f);
+        pair A = unitOr(h.axis);
+        pair T = (-A.y, A.x);
+        real y = dot(h.p - h.center, T);
+        real n_med = (r.medium != null) ? r.medium.n(h.p, r.d, r.lambda, r.pol) : 1.0;
+        real k0 = vacuumWaveNumber(r.lambda);
+        real phase_delay = (abs(f) > config.math.eps)
+                               ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f)))
+                               : 0.0;
+        return new Ray[]{spawnRay(r, h, v_out, r.intensity(), r.medium, phase_delay, v_out)};
+    };
+    return p;
+}
+
 Property IdealFocus(real f) {
     Property p = new Property;
     p.name = "IdealFocus";
@@ -4936,6 +4963,21 @@ struct Lens {
         pair A = dir(angle);
         path boundary = linearBoundary(center, A, diameter);
         Property[] props = {Focus(f)};
+        Element e = element(boundary, props, stroke, nullpen, name, center, A);
+        e.focal_length = f;
+        e.custom_draw = drawThinLens;
+        return e;
+    }
+
+    static Element phaseThin(pair center,
+                             real angle,
+                             real f,
+                             real diameter,
+                             pen stroke = config.rendering.pen_lens,
+                             string name = "Phase Thin Lens") {
+        pair A = dir(angle);
+        path boundary = linearBoundary(center, A, diameter);
+        Property[] props = {PhaseFocus(f)};
         Element e = element(boundary, props, stroke, nullpen, name, center, A);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
@@ -8390,6 +8432,110 @@ struct InsetPanel {
     }
 }
 
+struct InterferenceProfile {
+    real span = 0.0;
+    real[] x;
+    real[] intensities;
+    real max_intensity = 0.0;
+}
+
+InterferenceProfile screenInterference(Ray[] sources,
+                                       pair screen_center = (0, 0),
+                                       pair screen_axis = (0, 1),
+                                       real span = nan,
+                                       real vis_lambda = nan,
+                                       int periods = 5,
+                                       int samples = 400,
+                                       bool collimated = false) {
+    if (samples < 1) abort("screenInterference: samples must be positive.");
+    if (periods < 1) abort("screenInterference: periods must be positive.");
+    if (sources.length < 2) abort("screenInterference: at least two sources are required.");
+    if (!isnan(vis_lambda) && vis_lambda <= 0) abort("screenInterference: vis_lambda must be positive or nan.");
+
+    InterferenceProfile prof;
+    pair u_screen = unitOr(screen_axis, (0, 1));
+    pair n_screen = perp(u_screen);
+
+    real ref_lambda_nm = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
+    bool has_visual_lambda = !isnan(vis_lambda) && vis_lambda > 0;
+    real lambda_geom_units = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
+    real lambda_eff_nm =
+        has_visual_lambda ? lambda_geom_units * metersToUm(config.physics.meters_per_unit) * um_to_nm : ref_lambda_nm;
+
+    real actual_span = span;
+    if (collimated && (isnan(actual_span) || actual_span <= 0)) {
+        real dtheta = (sources.length >= 2) ? abs(dot(sources[0].d - sources[1].d, u_screen)) : 0.0;
+        if (dtheta > config.math.eps)
+            actual_span = periods * lambda_geom_units / dtheta;
+        else
+            actual_span = 20.0;
+    }
+
+    if (isnan(actual_span) || actual_span <= 0) {
+        real min_y = infinity, max_y = -infinity;
+        real avg_D = 0.0;
+        int count = 0;
+
+        for (Ray src : sources) {
+            if (src == null) continue;
+            real y_proj = dot(src.p - screen_center, u_screen);
+            real x_proj = abs(dot(src.p - screen_center, n_screen));
+            if (y_proj < min_y) min_y = y_proj;
+            if (y_proj > max_y) max_y = y_proj;
+            avg_D += x_proj;
+            ++count;
+        }
+
+        real d_char = (count > 1 && max_y > min_y) ? ((max_y - min_y) / (count - 1)) : 10.0;
+        real D_char = (count > 0) ? (avg_D / count) : 100.0;
+        real delta_y = (d_char > config.math.eps) ? (lambda_geom_units * D_char / d_char) : 10.0;
+        actual_span = periods * delta_y;
+    }
+
+    prof.span = actual_span;
+    prof.x = new real[samples + 1];
+    prof.intensities = new real[samples + 1];
+
+    for (int i = 0; i <= samples; ++i) {
+        real t = -1.0 + 2.0 * i / samples; // [-1, 1]
+        real x_coord = t * actual_span / 2.0;
+        pair P_y = screen_center + x_coord * u_screen;
+
+        Ray[] raysAtP;
+        for (Ray src : sources) {
+            if (src == null) continue;
+            Ray r_k = copy(src);
+            r_k.lambda = lambda_eff_nm;
+            if (collimated) {
+                pair d_hat = unitOr(src.d);
+                real n_med = rayIndex(src.medium, src.p, d_hat, d_hat, lambda_eff_nm, src.pol);
+                real path_advance = dot(P_y - src.p, d_hat);
+                r_k.opl = src.opl + geometryToUm(path_advance) * n_med;
+                r_k.p = P_y;
+            } else {
+                pair d_k = unitOr(P_y - src.p);
+                real dist = length(P_y - src.p);
+                real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_eff_nm, src.pol);
+                r_k.d = d_k;
+                r_k.opl = src.opl + geometryToUm(dist) * n_med;
+                r_k.p = P_y;
+            }
+
+            raysAtP.push(r_k);
+        }
+
+        Polarization pol_P = interfereState(raysAtP);
+        real I_P = pol_P.intensity();
+
+        prof.x[i] = x_coord;
+        prof.intensities[i] = I_P;
+        if (I_P > prof.max_intensity) prof.max_intensity = I_P;
+    }
+
+    if (prof.max_intensity <= 0) prof.max_intensity = 1.0;
+    return prof;
+}
+
 // InterferenceInset Factory (Type Inset, using interfere/interfereState)
 Inset InterferenceInset(Ray[] sources,
                         pair screen_center = (0, 0),
@@ -8437,100 +8583,16 @@ Inset InterferenceInset(Ray[] sources,
     drawInsetHeader(title_content, y_header, title, tag, border);
 
     // ========================================================================
-    // 1. Effective Wavelength & Universal N-Slit Auto-Span
+    // 1. Physical Wave Interference Sampling via screenInterference
     // ========================================================================
     pair probe_center = (!isnan(target.x) && !isnan(target.y)) ? target : screen_center;
-    pair u_screen = unitOr(screen_axis, (0, 1));
-    pair n_screen = perp(u_screen);
-
-    real ref_lambda_nm = (sources.length > 0 && sources[0] != null) ? sources[0].lambda : config.physics.lambda;
-    bool has_visual_lambda = !isnan(vis_lambda) && vis_lambda > 0;
-    real lambda_geom_units = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
-    // Keep the physical source wavelength in the public nm convention. Only
-    // an explicitly supplied rendering wavelength needs conversion from
-    // geometry units before material queries are made.
-    real lambda_eff_nm =
-        has_visual_lambda ? lambda_geom_units * metersToUm(config.physics.meters_per_unit) * um_to_nm : ref_lambda_nm;
-
-    real actual_span = span;
-    if (collimated && (isnan(actual_span) || actual_span <= 0)) {
-        real lambda_geom = resolveEffectiveLambda(vis_lambda, ref_lambda_nm);
-        real dtheta = (sources.length >= 2) ? abs(dot(sources[0].d - sources[1].d, u_screen)) : 0.0;
-        if (dtheta > config.math.eps)
-            actual_span = periods * lambda_geom / dtheta;
-        else
-            actual_span = 20.0;
-    }
-
-    if (isnan(actual_span) || actual_span <= 0) {
-        real min_y = infinity, max_y = -infinity;
-        real avg_D = 0.0;
-        int count = 0;
-
-        for (Ray src : sources) {
-            if (src == null) continue;
-            real y_proj = dot(src.p - probe_center, u_screen);
-            real x_proj = abs(dot(src.p - probe_center, n_screen));
-            if (y_proj < min_y) min_y = y_proj;
-            if (y_proj > max_y) max_y = y_proj;
-            avg_D += x_proj;
-            ++count;
-        }
-
-        // Universal pitch for N >= 2 collinear sources: d = Delta_y / (N - 1)
-        real d_char = (count > 1 && max_y > min_y) ? ((max_y - min_y) / (count - 1)) : 10.0;
-        real D_char = (count > 0) ? (avg_D / count) : 100.0;
-
-        // Exact fringe period: Delta_y = lambda * D / d
-        real delta_y = (d_char > config.math.eps) ? (lambda_geom_units * D_char / d_char) : 10.0;
-        actual_span = periods * delta_y;
-    }
+    InterferenceProfile prof = screenInterference(
+        sources, probe_center, screen_axis, span, vis_lambda, periods, samples, collimated);
+    real max_i = prof.max_intensity;
+    real[] intensities = prof.intensities;
 
     // ========================================================================
-    // 2. Physical Wave Interference Sampling
-    // ========================================================================
-    real max_i = 0.0;
-    real[] intensities = new real[samples + 1];
-
-    for (int i = 0; i <= samples; ++i) {
-        real t = -1.0 + 2.0 * i / samples; // [-1, 1]
-        real x_coord = t * actual_span / 2.0;
-        pair P_y = probe_center + x_coord * u_screen;
-
-        Ray[] raysAtP;
-        for (Ray src : sources) {
-            if (src == null) continue;
-            Ray r_k = copy(src);
-            r_k.lambda = lambda_eff_nm;
-            if (collimated) {
-                pair d_hat = unitOr(src.d);
-                real n_med = rayIndex(src.medium, src.p, d_hat, d_hat, lambda_eff_nm, src.pol);
-                real path_advance = dot(P_y - src.p, d_hat);
-                r_k.opl = src.opl + geometryToUm(path_advance) * n_med;
-                r_k.p = P_y;
-            } else {
-                pair d_k = unitOr(P_y - src.p);
-                real dist = length(P_y - src.p);
-                real n_med = rayIndex(src.medium, src.p, d_k, d_k, lambda_eff_nm, src.pol);
-                r_k.d = d_k;
-                r_k.opl = src.opl + geometryToUm(dist) * n_med;
-                r_k.p = P_y;
-            }
-
-            raysAtP.push(r_k);
-        }
-
-        Polarization pol_P = interfereState(raysAtP);
-        real I_P = pol_P.intensity();
-
-        intensities[i] = I_P;
-        if (I_P > max_i) max_i = I_P;
-    }
-
-    if (max_i <= 0) max_i = 1.0;
-
-    // ========================================================================
-    // 3. Render Inset: Horizontal vs Vertical Layout
+    // 2. Render Inset: Horizontal vs Vertical Layout
     // ========================================================================
     // --------------------------------------------------------------------
     // Standard Position (I(y) on top, Fringes directly UNDER)
