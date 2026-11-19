@@ -2958,51 +2958,52 @@ struct Trace {
         return segs;
     }
 
-    Interaction[] interactions() {
-        Interaction[] ixs;
-        int[] branch = activeBranchRayIds();
-        for (int k = 0; k < branch.length; ++k) {
-            Ray r = ray_tree[branch[k]];
-            if (r.hit != null && r.hit.valid) {
-                Interaction ix = new Interaction;
-                ix.hit = r.hit;
-                ix.incident = copy(r);
-                ix.incident.p = r.hit.p;
-                if (length(r.trajectory) > 0) {
-                    ix.incident.d = dir(r.trajectory, length(r.trajectory));
-                }
-
-                // R and T are fractions of the power *arriving* at the
-                // surface, i.e. after bulk absorption/gain along the segment.
-                ix.incident.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
-                real parent_i = ix.incident.intensity();
-                pair N = ix.normal();
-                for (int c_id : r.children_ids) {
-                    Ray c_ray = ray_tree[c_id];
-                    if (dot(c_ray.d, N) > 0) {
-                        ix.reflected.push(c_ray);
-                        if (parent_i > config.math.eps) ix.R += c_ray.intensity() / parent_i;
-                    } else {
-                        ix.transmitted.push(c_ray);
-                        if (parent_i > config.math.eps) ix.T += c_ray.intensity() / parent_i;
-                    }
-                }
-
-                ixs.push(ix);
+    private Interaction buildInteraction(Ray r) {
+        Interaction ix = new Interaction;
+        ix.hit = r.hit;
+        ix.incident = copy(r);
+        ix.incident.p = r.hit.p;
+        if (length(r.trajectory) > 0) ix.incident.d = dir(r.trajectory, length(r.trajectory));
+        // Interaction power is measured after absorption/gain along the incoming segment.
+        ix.incident.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
+        real parent_i = ix.incident.intensity();
+        pair N = ix.normal();
+        for (int c_id : r.children_ids) {
+            Ray c_ray = ray_tree[c_id];
+            if (dot(c_ray.d, N) > 0) {
+                ix.reflected.push(c_ray);
+                if (parent_i > config.math.eps) ix.R += c_ray.intensity() / parent_i;
+            } else {
+                ix.transmitted.push(c_ray);
+                if (parent_i > config.math.eps) ix.T += c_ray.intensity() / parent_i;
             }
         }
+        return ix;
+    }
 
+    private int[] hitBranchRayIds() {
+        int[] hits;
+        for (int id : activeBranchRayIds()) {
+            Ray r = ray_tree[id];
+            if (r.hit != null && r.hit.valid) hits.push(id);
+        }
+        return hits;
+    }
+
+    Interaction[] interactions() {
+        Interaction[] ixs;
+        for (int id : hitBranchRayIds()) ixs.push(buildInteraction(ray_tree[id]));
         return ixs;
     }
 
-    int length() { return interactions().length; }
+    int length() { return hitBranchRayIds().length; }
 
     Interaction interaction(int ix_index) {
-        Interaction[] ixs = interactions();
-        if (ixs.length == 0) return null;
-        int idx = (ix_index < 0) ? ix_index + ixs.length : ix_index;
-        if (idx < 0 || idx >= ixs.length) return null;
-        return ixs[idx];
+        int[] hits = hitBranchRayIds();
+        if (hits.length == 0) return null;
+        int idx = (ix_index < 0) ? ix_index + hits.length : ix_index;
+        if (idx < 0 || idx >= hits.length) return null;
+        return buildInteraction(ray_tree[hits[idx]]);
     }
 
     Ray incident(int ix_index) {
@@ -4559,6 +4560,21 @@ struct LensPath {
         return (h_max < infinity) ? (2.0 * h_max) : infinity;
     }
 
+  private
+    static path lensSurfaceArc(pair vertex, real R, real h) {
+        if (R > config.math.eps) {
+            pair C = vertex + (R, 0);
+            real a = aSin(clamp(h / R, -1.0, 1.0));
+            return reverse(Arc(C, R, 180 - a, 180 + a, config.geometry.arc_subdivisions));
+        }
+        if (R < -config.math.eps) {
+            pair C = vertex + (R, 0);
+            real a = aSin(clamp(h / abs(R), -1.0, 1.0));
+            return Arc(C, abs(R), -a, a, config.geometry.arc_subdivisions);
+        }
+        return (vertex.x, -h) -- (vertex.x, h);
+    }
+
     // Robust thick lens boundary path generator
     static path thickLens(real R1, real R2, real thickness, real diameter, real min_edge_thickness = 0.0) {
         real t_safe = max(thickness, config.geometry.eps);
@@ -4568,36 +4584,8 @@ struct LensPath {
         real h = eff_diameter / 2.0;
         pair front_vertex = (-t_safe / 2.0, 0);
         pair back_vertex = (t_safe / 2.0, 0);
-        // 1. FRONT SURFACE ARC (curves from y = -h to y = +h)
-        path front_arc;
-        if (R1 > config.math.eps) {
-            pair C1 = front_vertex + (R1, 0);
-            real a1 = aSin(clamp(h / R1, -1.0, 1.0));
-            front_arc = reverse(Arc(C1, R1, 180 - a1, 180 + a1, config.geometry.arc_subdivisions));
-        } else if (R1 < -config.math.eps) {
-            pair C1 = front_vertex + (R1, 0);
-            real a1 = aSin(clamp(h / abs(R1), -1.0, 1.0));
-            front_arc = Arc(C1, abs(R1), -a1, a1, config.geometry.arc_subdivisions);
-        } else {
-            front_arc = (front_vertex.x, -h) -- (front_vertex.x, h);
-        }
-
-        // 2. REAR SURFACE ARC (curves from y = -h to y = +h)
-        path back_arc;
-        if (R2 < -config.math.eps) {
-            pair C2 = back_vertex + (R2, 0);
-            real a2 = aSin(clamp(h / abs(R2), -1.0, 1.0));
-            back_arc = Arc(C2, abs(R2), -a2, a2, config.geometry.arc_subdivisions);
-        } else if (R2 > config.math.eps) {
-            pair C2 = back_vertex + (R2, 0);
-            real a2 = aSin(clamp(h / R2, -1.0, 1.0));
-            back_arc = reverse(Arc(C2, R2, 180 - a2, 180 + a2, config.geometry.arc_subdivisions));
-        } else {
-            back_arc = (back_vertex.x, -h) -- (back_vertex.x, h);
-        }
-
-        // 3. ASSEMBLE CLOSED NON-SELF-INTERSECTING BOUNDARY
-        // front_arc goes (-h -> +h), reverse(back_arc) goes (+h -> -h)
+        path front_arc = lensSurfaceArc(front_vertex, R1, h);
+        path back_arc = lensSurfaceArc(back_vertex, R2, h);
         return front_arc -- reverse(back_arc) -- cycle;
     }
 }
@@ -4623,6 +4611,18 @@ path linearBoundary(pair center, pair axis, real diameter) {
     return center - diameter / 2 * q -- center + diameter / 2 * q;
 }
 
+private
+Element linearElement(pair center,
+                      real angle,
+                      real diameter,
+                      Property prop,
+                      pen stroke = black,
+                      string name = "",
+                      Medium medium = null) {
+    pair A = dir(angle);
+    return element(linearBoundary(center, A, diameter), properties(prop), stroke, nullpen, name, center, A, medium);
+}
+
 // Beam Splitter Factory Namespace
 struct BeamSplitter {
     // Plate Beam Splitter (Single flat partially-reflective surface)
@@ -4635,10 +4635,7 @@ struct BeamSplitter {
                          pen stroke = gray(0.3),
                          string name = "Plate Beam Splitter") {
         // angle = tilt angle (e.g. 45 deg tilts the plate to reflect horizontal rays UPWARD at 90 deg!)
-        pair A = dir(angle);
-        path boundary = linearBoundary(center, A, diameter);
-        Property[] props = {Coating(left, right, R)};
-        return element(boundary, props, stroke, nullpen, name, center, A);
+        return linearElement(center, angle, diameter, Coating(left, right, R), stroke, name);
     }
 
   private
@@ -4769,9 +4766,7 @@ struct Polarizer {
                             real angle = 0.0,
                             pen stroke = black,
                             string name = "Retarder") {
-        pair A = dir(angle);
-        Property[] props = {Retard(delta, fast_axis)};
-        return element(linearBoundary(center, A, diameter), props, stroke, nullpen, name, center, A);
+        return linearElement(center, angle, diameter, Retard(delta, fast_axis), stroke, name);
     }
 
     // 2. Quarter-Wave Plate (QWP) - Retardance = pi/2
@@ -4805,10 +4800,7 @@ struct Mirror {
                         real diameter,
                         pen stroke = config.rendering.pen_mirror,
                         string name = "Flat Mirror") {
-        pair A = dir(angle);
-        path boundary = linearBoundary(center, A, diameter);
-        Property[] props = {Reflect()};
-        return element(boundary, props, stroke, nullpen, name, center, A);
+        return linearElement(center, angle, diameter, Reflect(), stroke, name);
     }
 
     // TRUE Physical Spherical Mirror (Has real spherical aberration!)
@@ -4951,16 +4943,23 @@ void drawThinLens(picture pic, Element e) {
 }
 
 struct Lens {
+  private
+    static Element idealFace(pair V, real angle, real R, real diameter,
+                             Medium glass, Medium ambient, pen stroke, string label_name) {
+        if (abs(R) > config.math.eps && abs(R) != infinity) {
+            return SphericalInterface(V, angle, R, diameter, glass, ambient, stroke, label_name);
+        }
+        return linearElement(V, angle, diameter, IdealRefract(V, dir(angle), 0.0, glass, ambient),
+                             stroke, label_name, glass);
+    }
+
     static Element thin(pair center,
                         real angle,
                         real f,
                         real diameter,
                         pen stroke = config.rendering.pen_lens,
                         string name = "Thin Lens") {
-        pair A = dir(angle);
-        path boundary = linearBoundary(center, A, diameter);
-        Property[] props = {Focus(f)};
-        Element e = element(boundary, props, stroke, nullpen, name, center, A);
+        Element e = linearElement(center, angle, diameter, Focus(f), stroke, name);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
         return e;
@@ -4972,10 +4971,7 @@ struct Lens {
                              real diameter,
                              pen stroke = config.rendering.pen_lens,
                              string name = "Phase Thin Lens") {
-        pair A = dir(angle);
-        path boundary = linearBoundary(center, A, diameter);
-        Property[] props = {PhaseFocus(f)};
-        Element e = element(boundary, props, stroke, nullpen, name, center, A);
+        Element e = linearElement(center, angle, diameter, PhaseFocus(f), stroke, name);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
         return e;
@@ -5007,30 +5003,8 @@ struct Lens {
         e.stroke = stroke;
         e.fill = fill;
 
-        if (abs(R1) > config.math.eps && abs(R1) != infinity) {
-            e.add(SphericalInterface(V1, angle, R1, diameter, glass, ambient, stroke, name + " Front"));
-        } else {
-            e.add(element(T * ((-t_safe / 2.0, -diameter / 2.0) -- (-t_safe / 2.0, diameter / 2.0)),
-                               properties(IdealRefract(V1, ax, 0.0, glass, ambient)),
-                               stroke,
-                               nullpen,
-                               name + " Front",
-                               V1,
-                               ax,
-                               glass));
-        }
-        if (abs(R2) > config.math.eps && abs(R2) != infinity) {
-            e.add(SphericalInterface(V2, angle, R2, diameter, glass, ambient, stroke, name + " Back"));
-        } else {
-            e.add(element(T * ((t_safe / 2.0, -diameter / 2.0) -- (t_safe / 2.0, diameter / 2.0)),
-                               properties(IdealRefract(V2, ax, 0.0, glass, ambient)),
-                               stroke,
-                               nullpen,
-                               name + " Back",
-                               V2,
-                               ax,
-                               glass));
-        }
+        e.add(idealFace(V1, angle, R1, diameter, glass, ambient, stroke, name + " Front"));
+        e.add(idealFace(V2, angle, R2, diameter, glass, ambient, stroke, name + " Back"));
         return e;
     }
 
@@ -5198,10 +5172,7 @@ Element PhaseGradient(pair center,
                       bool reflective = false,
                       pen stroke = lightblue,
                       string name = "Phase Gradient") {
-    pair ax = dir(angle);
-    path boundary = linearBoundary(center, ax, diameter);
-    Property[] props = {PhaseShift(delta_k, reflective)};
-    return element(boundary, props, stroke, nullpen, name, center, ax);
+        return linearElement(center, angle, diameter, PhaseShift(delta_k, reflective), stroke, name);
 }
 
 Element Grating(pair center,
@@ -5213,10 +5184,7 @@ Element Grating(pair center,
                 real[] efficiencies = new real[]{},
                 pen stroke = lightblue,
                 string name = "Grating") {
-    pair ax = dir(angle);
-    path boundary = linearBoundary(center, ax, diameter);
-    Property[] props = {Diffract(lines_per_mm, orders, reflective, efficiencies)};
-    Element e = element(boundary, props, stroke, nullpen, name, center, ax);
+    Element e = linearElement(center, angle, diameter, Diffract(lines_per_mm, orders, reflective, efficiencies), stroke, name);
     e.custom_draw = drawGrating;
     return e;
 }
@@ -5395,6 +5363,29 @@ real rayMissDistance(pair A, real angle, OpticalSystem sys, pair B, real lambda 
     return best_miss;
 }
 
+private
+real[] bracketMissAngle(pair A, pair B, OpticalSystem sys, real a, real b, real fa, real fb, real lambda) {
+    int n_samples = 20;
+    real step = (b - a) / (real)n_samples;
+    real best_ang = a, min_miss = infinity;
+    real prev_ang = a, prev_f = fa;
+    for (int i = 1; i <= n_samples; ++i) {
+        real cur_ang = a + i * step;
+        real cur_f = rayMissDistance(A, cur_ang, sys, B, lambda);
+        if (!isnan(cur_f)) {
+            if (abs(cur_f) < min_miss) {
+                min_miss = abs(cur_f);
+                best_ang = cur_ang;
+            }
+            if (!isnan(prev_f) && prev_f * cur_f <= 0)
+                return new real[]{1.0, prev_ang, prev_f, cur_ang, cur_f, best_ang};
+        }
+        prev_ang = cur_ang;
+        prev_f = cur_f;
+    }
+    return new real[]{0.0, a, fa, b, fb, best_ang};
+}
+
 // Robust Brent's Method Ray Aimer
 real aimAngle(pair A,
               pair B,
@@ -5408,39 +5399,10 @@ real aimAngle(pair A,
     real b = max(angle_min, angle_max);
     real fa = rayMissDistance(A, a, sys, B, lambda);
     real fb = rayMissDistance(A, b, sys, B, lambda);
-    // Auto-Bracketing with NaN Safeguards
     if (isnan(fa) || isnan(fb) || fa * fb > 0) {
-        int n_samples = 20;
-        real step = (b - a) / (real)n_samples;
-        real best_ang = a;
-        real min_miss = infinity;
-        bool found_bracket = false;
-        real prev_ang = a;
-        real prev_f = fa;
-        for (int i = 1; i <= n_samples; ++i) {
-            real cur_ang = a + i * step;
-            real cur_f = rayMissDistance(A, cur_ang, sys, B, lambda);
-            if (!isnan(cur_f)) {
-                if (abs(cur_f) < min_miss) {
-                    min_miss = abs(cur_f);
-                    best_ang = cur_ang;
-                }
-
-                if (!isnan(prev_f) && prev_f * cur_f <= 0) {
-                    a = prev_ang;
-                    fa = prev_f;
-                    b = cur_ang;
-                    fb = cur_f;
-                    found_bracket = true;
-                    break;
-                }
-            }
-
-            prev_ang = cur_ang;
-            prev_f = cur_f;
-        }
-
-        if (!found_bracket) return best_ang;
+        real[] br = bracketMissAngle(A, B, sys, a, b, fa, fb, lambda);
+        if (br[0] < 0.5) return br[5];
+        a = br[1]; fa = br[2]; b = br[3]; fb = br[4];
     }
 
     if (isnan(fa) || isnan(fb)) return 0.5 * (a + b);
@@ -5752,6 +5714,68 @@ struct SegmentRule {
     bool3 show_s = default;
     bool3 show_p = default;
     pen p = nullpen;
+
+    SegmentRule clone() {
+        SegmentRule out = new SegmentRule;
+        out.indices = copy(this.indices);
+        out.visible = this.visible;
+        out.first = this.first;
+        out.middle = this.middle;
+        out.last = this.last;
+        out.head = this.head;
+        out.size = this.size;
+        out.relative = this.relative;
+        out.count = this.count;
+        out.spacing = this.spacing;
+        out.before = this.before;
+        out.after = this.after;
+        out.scale = this.scale;
+        out.show_s = this.show_s;
+        out.show_p = this.show_p;
+        out.p = this.p;
+        return out;
+    }
+}
+
+private
+bool ruleMatchesSegment(SegmentRule rule, int i, int total_segments) {
+    for (int idx : rule.indices) {
+        if (((idx < 0) ? idx + total_segments : idx) == i) return true;
+    }
+    return false;
+}
+
+private
+bool applyRuleVisibilityOverride(bool cur_vis, SegmentRule rule, int i, int total_segments) {
+    bool is_first = (i == 0), is_last = (i == total_segments - 1);
+    bool out = cur_vis;
+    if (is_first && rule.first != default) out = (bool)rule.first;
+    if (!is_first && !is_last && rule.middle != default) out = (bool)rule.middle;
+    if (is_last && rule.last != default) out = (bool)rule.last;
+    if (rule.visible != default) out = (bool)rule.visible;
+    return out;
+}
+
+private
+bool initRuleVisibility(bool visible, bool3 first, bool3 middle, bool3 last,
+                        SegmentRule[] src_rules, bool[] out_fml, SegmentRule[] dest_rules) {
+    if (visible) {
+        out_fml[0] = (first != default) ? (bool)first : true;
+        out_fml[1] = (middle != default) ? (bool)middle : true;
+        out_fml[2] = (last != default) ? (bool)last : true;
+        for (SegmentRule r : src_rules) dest_rules.push(r);
+        return true;
+    }
+    bool any_explicit = (first == true || middle == true || last == true || src_rules.length > 0);
+    out_fml[0] = (first == true);
+    out_fml[1] = (middle == true);
+    out_fml[2] = (last == true);
+    for (SegmentRule r : src_rules) {
+        SegmentRule rc = r.clone();
+        if (rc.visible == default) rc.visible = true;
+        dest_rules.push(rc);
+    }
+    return any_explicit;
 }
 
 struct ResolvedArrow {
@@ -5776,6 +5800,18 @@ struct RayArrows {
     real relative = nan;
     // Segment rules
     SegmentRule[] rules;
+    RayArrows clone() {
+        RayArrows out = new RayArrows;
+        out.visible = this.visible;
+        out.first = this.first;
+        out.middle = this.middle;
+        out.last = this.last;
+        out.head = this.head;
+        out.size = this.size;
+        out.relative = this.relative;
+        for (SegmentRule r : this.rules) out.rules.push(r.clone());
+        return out;
+    }
     // Resolve arrow configuration for one segment
     ResolvedArrow getArrow(int i, int total_segments) {
         ResolvedArrow out = new ResolvedArrow;
@@ -5800,32 +5836,13 @@ struct RayArrows {
         //   segment(visible = false, ...)
         // can force it off.
         for (SegmentRule rule : rules) {
-            for (int idx : rule.indices) {
-                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
-                if (resolved_idx == i) {
-                    // Segment positional policy.
-                    if (is_first && rule.first != default) {
-                        out.visible = (bool)rule.first;
-                    }
-
-                    if (!is_first && !is_last && rule.middle != default) {
-                        out.visible = (bool)rule.middle;
-                    }
-
-                    if (is_last && rule.last != default) {
-                        out.visible = (bool)rule.last;
-                    }
-
-                    // Explicit visibility is the final override.
-                    if (rule.visible != default) {
-                        out.visible = (bool)rule.visible;
-                    }
+            if (ruleMatchesSegment(rule, i, total_segments)) {
+                    out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
 
                     // Appearance.
                     if (rule.head != null) out.head = rule.head;
                     if (!isnan(rule.size)) out.size = rule.size;
                     if (!isnan(rule.relative)) out.relative = rule.relative;
-                }
             }
         }
         return out;
@@ -5863,21 +5880,10 @@ struct RayPolarization {
     real size = config.rendering.arrow_pol_size;
     // Segment rules
     SegmentRule[] rules;
-    // Resolve polarization settings for one segment
-    RayPolarization getPolarization(int i, int total_segments) {
-        // Create a fresh copy of current state
+    RayPolarization clone() {
         RayPolarization out = new RayPolarization;
         out.visible = this.visible;
-        // An empty list or the sentinel -1 means all segments. Otherwise
-        // restrict polarization markers to the explicitly selected segments.
-        if (this.segments.length > 0 && !(this.segments.length == 1 && this.segments[0] == -1)) {
-            out.visible = false;
-            for (int idx : this.segments) {
-                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
-                if (resolved_idx == i) out.visible = this.visible;
-            }
-        }
-
+        out.segments = copy(this.segments);
         out.count = this.count;
         out.spacing = this.spacing;
         out.before = this.before;
@@ -5890,15 +5896,32 @@ struct RayPolarization {
         out.show_p = this.show_p;
         out.p = this.p;
         out.min_amplitude = this.min_amplitude;
-        out.head = this.head;
-        out.size = this.size;
         out.min_segment_length = this.min_segment_length;
         out.min_separation = this.min_separation;
+        out.head = this.head;
+        out.size = this.size;
+        for (SegmentRule r : this.rules) out.rules.push(r.clone());
+        return out;
+    }
+    // Resolve polarization settings for one segment
+    RayPolarization getPolarization(int i, int total_segments) {
+        // Create a fresh copy of current state
+        RayPolarization out = this.clone();
+        out.rules = new SegmentRule[];
+        // An empty list or the sentinel -1 means all segments. Otherwise
+        // restrict polarization markers to the explicitly selected segments.
+        if (this.segments.length > 0 && !(this.segments.length == 1 && this.segments[0] == -1)) {
+            out.visible = false;
+            for (int idx : this.segments) {
+                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
+                if (resolved_idx == i) out.visible = this.visible;
+            }
+        }
+
         // Apply rules only to this specific segment
         for (SegmentRule rule : rules) {
-            for (int idx : rule.indices) {
-                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
-                if (resolved_idx == i) {
+            if (ruleMatchesSegment(rule, i, total_segments)) {
+                    out.rules.push(rule);
                     if (rule.visible != default) out.visible = (bool)rule.visible;
                     if (rule.count >= 0) out.count = rule.count;
                     if (!isnan(rule.spacing)) out.spacing = rule.spacing;
@@ -5913,7 +5936,6 @@ struct RayPolarization {
                     if (rule.p != nullpen) out.p = rule.p;
                     if (rule.head != null) out.head = rule.head;
                     if (!isnan(rule.size)) out.size = rule.size;
-                }
             }
         }
         return out;
@@ -5957,28 +5979,23 @@ struct RayWavefront {
     bool show_lines = true;                                 // Show interference node/antinode loci
     // Segment rules
     SegmentRule[] rules;
-
-    // Resolve wavefront configuration for one segment
-    RayWavefront getWavefront(int i, int total_segments) {
-        bool is_first = (i == 0);
-        bool is_last = (i == total_segments - 1);
+    RayWavefront clone() {
         RayWavefront out = new RayWavefront;
-        out.visible = this.visible && (is_last ? this.last : (is_first ? this.first : this.middle));
+        out.visible = this.visible;
+        out.first = this.first;
+        out.middle = this.middle;
+        out.last = this.last;
         out.count = this.count;
         out.spacing = this.spacing;
         out.width = this.width;
         out.before = this.before;
         out.after = this.after;
-        out.first = this.first;
-        out.middle = this.middle;
-        out.last = this.last;
+        out.p = this.p;
         out.wavelets = this.wavelets;
         out.alpha = this.alpha;
         out.cut_at_boundary = this.cut_at_boundary;
         out.dashed_behind = this.dashed_behind;
         out.show_source = this.show_source;
-        out.p = this.p;
-        // Bundle-level fields pass through unchanged
         out.contours = this.contours;
         out.phase_locked = this.phase_locked;
         out.p_contours = this.p_contours;
@@ -5991,17 +6008,23 @@ struct RayWavefront {
         out.show_dots = this.show_dots;
         out.show_labels = this.show_labels;
         out.show_lines = this.show_lines;
+        for (SegmentRule r : this.rules) out.rules.push(r.clone());
+        return out;
+    }
+
+    // Resolve wavefront configuration for one segment
+    RayWavefront getWavefront(int i, int total_segments) {
+        bool is_first = (i == 0);
+        bool is_last = (i == total_segments - 1);
+        RayWavefront out = this.clone();
+        out.rules = new SegmentRule[];
+        out.visible = this.visible && (is_last ? this.last : (is_first ? this.first : this.middle));
 
         for (SegmentRule rule : rules) {
-            for (int idx : rule.indices) {
-                int resolved_idx = (idx < 0) ? idx + total_segments : idx;
-                if (resolved_idx == i) {
+            if (ruleMatchesSegment(rule, i, total_segments)) {
+                    out.rules.push(rule);
                     // Segment positional policy
-                    if (is_first && rule.first != default) out.visible = (bool)rule.first;
-                    if (!is_first && !is_last && rule.middle != default) out.visible = (bool)rule.middle;
-                    if (is_last && rule.last != default) out.visible = (bool)rule.last;
-                    // Explicit visibility is the final override
-                    if (rule.visible != default) out.visible = (bool)rule.visible;
+                    out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
                     // Appearance
                     if (rule.count >= 0) out.count = rule.count;
                     if (!isnan(rule.spacing)) out.spacing = rule.spacing;
@@ -6009,7 +6032,6 @@ struct RayWavefront {
                     if (!isnan(rule.before)) out.before = rule.before;
                     if (!isnan(rule.after)) out.after = rule.after;
                     if (rule.p != nullpen) out.p = rule.p;
-                }
             }
         }
         return out;
@@ -6028,6 +6050,23 @@ struct TracePoint {
 }
 
 // Clean General-Purpose Inset Component
+private
+frame makeFramedBox(frame content, real margin, pen border, pen fill) {
+    frame box_frame;
+    filltype ft = (fill != nullpen) ? FillDraw(fill, border) : Fill(border);
+    box(box_frame, content, margin, margin, border, ft, above = false);
+    add(box_frame, content);
+    return box_frame;
+}
+
+private
+void drawTargetConnector(frame f, pair target_pt, pair anchor_pt, frame box_frame, pen line_pen, pen dot_pen) {
+    if (target_pt == anchor_pt) return;
+    pair hit_pt = point(box_frame, unitOr(target_pt - anchor_pt));
+    draw(f, target_pt -- hit_pt, line_pen);
+    dot(f, target_pt, dot_pen);
+}
+
 struct Inset {
     picture pic;              // Content canvas
     pair pos = (nan, nan);    // Local badge/inset position on diagram
@@ -6057,23 +6096,13 @@ struct Inset {
         pair draw_pos = (!isnan(position.x)) ? position : this.pos;
         dest.add(new void(frame f, transform t) {
             pair pos_pt = t * draw_pos;
-            frame content = this.pic.fit();
-            frame box_frame;
-            // Wrap content in box and shift to target canvas position
-            filltype ft = (this.fill != nullpen) ? FillDraw(this.fill, this.border) : Fill(this.border);
-            box(box_frame, content, this.box_margin, this.box_margin, this.border, ft, above = false);
-            add(box_frame, content);
-            box_frame = shift(pos_pt) * box_frame;
+            frame box_frame = shift(pos_pt) * makeFramedBox(this.pic.fit(), this.box_margin, this.border, this.fill);
             // Draw connector line and dot at target point
             if (!isnan(this.target.x) && !isnan(this.target.y)) {
                 pair target_pt = t * this.target;
-                if (target_pt != pos_pt) {
-                    pen pen_line = (p != nullpen) ? p : this.getConnectorPen();
-                    pen pen_dot = (this.border != nullpen) ? this.border : pen_line;
-                    pair intersection_pt = point(box_frame, unitOr(target_pt - pos_pt));
-                    draw(f, target_pt -- intersection_pt, pen_line);
-                    dot(f, target_pt, pen_dot);
-                }
+                pen pen_line = (p != nullpen) ? p : this.getConnectorPen();
+                pen pen_dot = (this.border != nullpen) ? this.border : pen_line;
+                drawTargetConnector(f, target_pt, pos_pt, box_frame, pen_line, pen_dot);
             }
 
             // Stamp boxed inset on canvas
@@ -6092,27 +6121,7 @@ operator cast(ResolvedArrow a) {
     return Arrow(h, sz, position = Relative(pos));
 }
 
-SegmentRule copy(SegmentRule src) {
-    if (src == null) return null;
-    SegmentRule out = new SegmentRule;
-    out.indices = copy(src.indices);
-    out.visible = src.visible;
-    out.first = src.first;
-    out.middle = src.middle;
-    out.last = src.last;
-    out.head = src.head;
-    out.size = src.size;
-    out.relative = src.relative;
-    out.count = src.count;
-    out.spacing = src.spacing;
-    out.before = src.before;
-    out.after = src.after;
-    out.scale = src.scale;
-    out.show_s = src.show_s;
-    out.show_p = src.show_p;
-    out.p = src.p;
-    return out;
-}
+SegmentRule copy(SegmentRule src) { return (src != null) ? src.clone() : null; }
 
 // segment()
 // For RayArrows:
@@ -6165,19 +6174,7 @@ SegmentRule segment(bool3 visible = default,
 }
 
 RayArrows copy(RayArrows src) {
-    if (src == null) return null;
-    RayArrows out = new RayArrows;
-    out.visible = src.visible;
-    out.first = src.first;
-    out.middle = src.middle;
-    out.last = src.last;
-    out.head = src.head;
-    out.size = src.size;
-    out.relative = src.relative;
-    for (SegmentRule r : src.rules) {
-        out.rules.push(copy(r));
-    }
-    return out;
+    return (src != null) ? src.clone() : null;
 }
 
 // RayArrows constructor
@@ -6192,56 +6189,14 @@ RayArrows rayArrows(bool visible = true,
     out.head = head;
     out.size = size;
     out.relative = relative;
-    if (visible) {
-        out.visible = true;
-        out.first = (first != default) ? (bool)first : true;
-        out.middle = (middle != default) ? (bool)middle : true;
-        out.last = (last != default) ? (bool)last : true;
-        for (SegmentRule r : rules) out.rules.push(r);
-    } else {
-        // When visible = false is requested:
-        // Default all segments to false unless explicitly restored via first/middle/last or segment()
-        bool any_explicit = (first == true || middle == true || last == true || rules.length > 0);
-        out.visible = any_explicit;
-        out.first = (first == true);
-        out.middle = (middle == true);
-        out.last = (last == true);
-        for (SegmentRule r : rules) {
-            SegmentRule rule_copy = copy(r);
-            if (rule_copy.visible == default) {
-                rule_copy.visible = true;
-            }
-            out.rules.push(rule_copy);
-        }
-    }
+    bool[] fml = new bool[3];
+    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
+    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
     return out;
 }
 
 RayPolarization copy(RayPolarization src) {
-    if (src == null) return null;
-    RayPolarization out = new RayPolarization;
-    out.visible = src.visible;
-    out.segments = copy(src.segments);
-    out.count = src.count;
-    out.spacing = src.spacing;
-    out.before = src.before;
-    out.after = src.after;
-    out.first = src.first;
-    out.middle = src.middle;
-    out.last = src.last;
-    out.scale = src.scale;
-    out.show_s = src.show_s;
-    out.show_p = src.show_p;
-    out.p = src.p;
-    out.min_amplitude = src.min_amplitude;
-    out.head = src.head;
-    out.size = src.size;
-    out.min_segment_length = src.min_segment_length;
-    out.min_separation = src.min_separation;
-    for (SegmentRule r : src.rules) {
-        out.rules.push(copy(r));
-    }
-    return out;
+    return (src != null) ? src.clone() : null;
 }
 
 // RayPolarization constructor
@@ -6282,26 +6237,9 @@ RayPolarization rayPolarization(bool visible = config.rendering.draw_polarizatio
     out.min_amplitude = min_amplitude;
     out.min_segment_length = min_segment_length;
     out.min_separation = min_separation;
-    if (visible) {
-        out.visible = true;
-        out.first = (first != default) ? (bool)first : true;
-        out.middle = (middle != default) ? (bool)middle : true;
-        out.last = (last != default) ? (bool)last : true;
-        for (SegmentRule r : rules) out.rules.push(r);
-    } else {
-        // visible = false: default all marker positions to hidden unless
-        // explicitly restored via first/middle/last = true or segment() rules.
-        bool any_explicit = (first == true || middle == true || last == true || rules.length > 0);
-        out.visible = any_explicit;
-        out.first = (first == true);
-        out.middle = (middle == true);
-        out.last = (last == true);
-        for (SegmentRule r : rules) {
-            SegmentRule rule_copy = copy(r);
-            if (rule_copy.visible == default) rule_copy.visible = true;
-            out.rules.push(rule_copy);
-        }
-    }
+    bool[] fml = new bool[3];
+    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
+    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
     return out;
 }
 
@@ -6480,37 +6418,7 @@ void drawPolarization(picture pic = currentpicture,
 }
 
 RayWavefront copy(RayWavefront src) {
-    if (src == null) return null;
-    RayWavefront out = new RayWavefront;
-    out.visible = src.visible;
-    out.first = src.first;
-    out.middle = src.middle;
-    out.last = src.last;
-    out.count = src.count;
-    out.spacing = src.spacing;
-    out.width = src.width;
-    out.before = src.before;
-    out.after = src.after;
-    out.p = src.p;
-    out.wavelets = src.wavelets;
-    out.alpha = src.alpha;
-    out.cut_at_boundary = src.cut_at_boundary;
-    out.dashed_behind = src.dashed_behind;
-    out.show_source = src.show_source;
-    out.contours = src.contours;
-    out.phase_locked = src.phase_locked;
-    out.p_contours = src.p_contours;
-    out.antinodes = src.antinodes;
-    out.nodes = src.nodes;
-    out.pen_line = src.pen_line;
-    out.pen_dots = src.pen_dots;
-    out.max_dist = src.max_dist;
-    out.max_orders = src.max_orders;
-    out.show_dots = src.show_dots;
-    out.show_labels = src.show_labels;
-    out.show_lines = src.show_lines;
-    for (SegmentRule r : src.rules) out.rules.push(copy(r));
-    return out;
+    return (src != null) ? src.clone() : null;
 }
 
 // RayWavefront constructor
@@ -6574,26 +6482,9 @@ RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
     out.show_dots = show_dots;
     out.show_labels = show_labels;
     out.show_lines = show_lines;
-    if (visible) {
-        out.visible = true;
-        out.first = (first != default) ? (bool)first : true;
-        out.middle = (middle != default) ? (bool)middle : true;
-        out.last = (last != default) ? (bool)last : true;
-        for (SegmentRule r : rules) out.rules.push(r);
-    } else {
-        // visible = false: default all segment positions to hidden unless
-        // explicitly restored via first/middle/last = true or segment() rules.
-        bool any_explicit = (first == true || middle == true || last == true || rules.length > 0);
-        out.visible = any_explicit;
-        out.first = (first == true);
-        out.middle = (middle == true);
-        out.last = (last == true);
-        for (SegmentRule r : rules) {
-            SegmentRule rule_copy = copy(r);
-            if (rule_copy.visible == default) rule_copy.visible = true;
-            out.rules.push(rule_copy);
-        }
-    }
+    bool[] fml = new bool[3];
+    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
+    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
     return out;
 }
 
@@ -7104,28 +6995,7 @@ void drawBundleInterference(picture pic = currentpicture, Trace t1, Trace t2, Ra
 }
 
 private
-void drawRaySegment(picture pic = currentpicture,
-                    Label L = Label(""),
-                    Ray r,
-                    path traj,
-                    int segment_idx = 0,
-                    int total_segments = 1,
-                    pen p = currentpen,
-                    ResolvedArrow arrow = new ResolvedArrow,
-                    RayPolarization polarization = rayPolarization(),
-                    RayWavefront wavefronts = rayWavefront(),
-                    bool apply_opacity = true) {
-    real L_traj = arclength(traj);
-    if (L_traj < config.rendering.min_drawable_length) return;
-    pen pen_line = scaledOpacityPen(p, r.intensity(), apply_opacity);
-    arrowbar ab = (arrow.visible && L_traj >= config.rendering.min_drawable_length) ? (arrowbar)arrow : None;
-    drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
-    draw(pic, L, traj, pen_line, ab);
-    drawPolarization(pic, r, traj, segment_idx, total_segments, p, polarization, apply_opacity);
-}
-
-private
-void drawFadingSegment(picture pic = currentpicture,
+void drawStyledSegment(picture pic = currentpicture,
                        Label L = Label(""),
                        Ray r,
                        path traj,
@@ -7135,42 +7005,35 @@ void drawFadingSegment(picture pic = currentpicture,
                        ResolvedArrow arrow = new ResolvedArrow,
                        RayPolarization polarization = rayPolarization(),
                        RayWavefront wavefronts = rayWavefront(),
-                       int steps = 16,
+                       int fade_steps = 1,
                        bool apply_opacity = true) {
-    // Draw wavefronts (if requested)
-    drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
-
     real L_traj = arclength(traj);
     real alpha = (r.medium != null) ? r.medium.absorption(r.p, r.d, r.lambda, r.pol) : 0.0;
     real start_i = r.intensity();
-    if (L_traj <= config.rendering.min_drawable_length || steps <= 1 || alpha <= 0 || start_i <= config.math.eps) {
-        drawRaySegment(pic, L, r, traj, segment_idx, total_segments, p, arrow, polarization, wavefronts, apply_opacity);
-        return;
-    }
+    if (L_traj <= config.rendering.min_drawable_length) return;
 
-    real step_l = L_traj / steps;
-    // Draw exponentially fading sub-segments without arrows
-    for (int i = 0; i < steps; ++i) {
-        real t1 = arctime(traj, i * step_l);
-        real t2 = arctime(traj, (i + 1) * step_l);
-        path sub = subpath(traj, t1, t2);
-        real local_dist = (i + 0.5) * step_l;
-        real local_i = start_i * exp(-alpha * geometryToUm(local_dist));
-        pen pen_sub = scaledOpacityPen(p, local_i, apply_opacity) + squarecap;
-
-        draw(pic, (i == 0 ? L : Label("")), sub, pen_sub, None);
+    drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
+    bool do_fade = (fade_steps > 1 && alpha > 0 && start_i > config.math.eps);
+    if (!do_fade) {
+        pen pen_line = scaledOpacityPen(p, start_i, apply_opacity);
+        arrowbar ab = arrow.visible ? (arrowbar)arrow : None;
+        draw(pic, L, traj, pen_line, ab);
+    } else {
+        real step_l = L_traj / fade_steps;
+        for (int i = 0; i < fade_steps; ++i) {
+            path sub = subpath(traj, arctime(traj, i * step_l), arctime(traj, (i + 1) * step_l));
+            real local_i = start_i * exp(-alpha * geometryToUm((i + 0.5) * step_l));
+            draw(pic, (i == 0 ? L : Label("")), sub, scaledOpacityPen(p, local_i, apply_opacity) + squarecap, None);
+        }
+        if (arrow.visible) {
+            arrowhead h = (arrow.head != null) ? arrow.head : config.rendering.arrow_head;
+            real sz = isnan(arrow.size) ? config.rendering.arrow_size : arrow.size;
+            real pos = isnan(arrow.relative) ? (segment_idx == total_segments - 1 ? 1.0 : 0.5) : arrow.relative;
+            real arr_i = start_i * exp(-alpha * geometryToUm(pos * L_traj));
+            pen pen_arr = scaledOpacityPen(p, arr_i, apply_opacity);
+            pic.add(arrow(h, traj, invisible, sz, FillDraw(pen_arr, pen_arr), position = Relative(pos)));
+        }
     }
-
-    // Overlay a single full-sized arrowhead matching the local faded intensity
-    if (arrow.visible) {
-        arrowhead h = (arrow.head != null) ? arrow.head : config.rendering.arrow_head;
-        real sz = isnan(arrow.size) ? config.rendering.arrow_size : arrow.size;
-        real pos = isnan(arrow.relative) ? (segment_idx == total_segments - 1 ? 1.0 : 0.5) : arrow.relative;
-        real local_i = start_i * exp(-alpha * geometryToUm(pos * L_traj));
-        pen pen_arrow = scaledOpacityPen(p, local_i, apply_opacity);
-        pic.add(arrow(h, traj, invisible, sz, FillDraw(pen_arrow, pen_arrow), position = Relative(pos)));
-    }
-    // Draw polarization markers
     drawPolarization(pic, r, traj, segment_idx, total_segments, p, polarization, apply_opacity);
 }
 
@@ -7328,33 +7191,18 @@ struct Renderer {
             }
 
             if (arclength(tr) < config.rendering.min_drawable_length) continue;
-            if (draw_absorption_fading && s.before.medium != null &&
-                s.before.medium.absorption(s.before.p, s.before.d, s.before.lambda, s.before.pol) > 0) {
-                drawFadingSegment(pic,
-                                  Label(""),
-                                  s.before,
-                                  tr,
-                                  i,
-                                  segs.length,
-                                  p,
-                                  current_arr,
-                                  polarization,
-                                  wavefronts,
-                                  fade_subpath_steps,
-                                  apply_op);
-            } else {
-                drawRaySegment(pic,
-                               Label(""),
-                               s.before,
-                               tr,
-                               i,
-                               segs.length,
-                               p,
-                               current_arr,
-                               polarization,
-                               wavefronts,
-                               apply_op);
-            }
+            drawStyledSegment(pic,
+                              Label(""),
+                              s.before,
+                              tr,
+                              i,
+                              segs.length,
+                              p,
+                              current_arr,
+                              polarization,
+                              wavefronts,
+                              draw_absorption_fading ? fade_subpath_steps : 1,
+                              apply_op);
         }
 
         // Branch rendering for reflections
@@ -7549,9 +7397,9 @@ void draw(picture pic = currentpicture,
     } else if (length == -infinity) {
         drawClippedRay(pic, z, r.d, margin, pen_eff, arrow, true, false);
     } else if (length >= 0) {
-        drawRaySegment(pic, L, r, z -- (z + length * r.d), 0, 1, pen_eff, arrow, polarization, wavefronts, false);
+        drawStyledSegment(pic, L, r, z -- (z + length * r.d), 0, 1, pen_eff, arrow, polarization, wavefronts, 1, false);
     } else {
-        drawRaySegment(pic,
+        drawStyledSegment(pic,
                        L,
                        r,
                        (z + length * r.d) -- z,
@@ -8386,13 +8234,10 @@ struct InsetPanel {
             }
 
             // [Section 3] Wrap Grid in Panel Background Container Box
-            frame panel_box;
             // Resolve panel outline & fill defaults from the first inset if unset
             pen p_border = (this.border != nullpen) ? this.border : (n > 0 ? this.insets[0].border : gray(0.5));
             pen p_fill = (this.fill != nullpen) ? this.fill : (n > 0 ? this.insets[0].fill : white);
-            filltype ft = (p_fill != nullpen) ? FillDraw(p_fill, p_border) : Fill(p_border);
-            box(panel_box, grid_frame, this.margin, p_border, ft, above = false);
-            add(panel_box, grid_frame);
+            frame panel_box = makeFramedBox(grid_frame, this.margin, p_border, p_fill);
             // [Section 4] Resolve Canvas / User Position & 1-Line Alignment
             pair pos_pt = (!isnan(rel.x) && !isnan(rel.y)) ? (m.x + rel.x * (M.x - m.x), m.y + rel.y * (M.y - m.y))
                                                            : t * position;
@@ -8411,13 +8256,9 @@ struct InsetPanel {
                         roundbox(b_frame, b_frame, 0.0, 0.0, pen_badge, Fill(pen_badge), above = false);
                         b_frame = shift(badge_pt) * b_frame;
                         // If badge is offset from target, draw connector line and target dot
-                        if (badge_pt != target_pt) {
-                            pen pen_line = (p != nullpen) ? p : ins.getConnectorPen();
-                            pen pen_dot = (ins.border != nullpen) ? ins.border : pen_line;
-                            pair intersection_pt = point(b_frame, unitOr(target_pt - badge_pt));
-                            draw(f, target_pt -- intersection_pt, pen_line);
-                            dot(f, target_pt, pen_dot);
-                        }
+                        pen pen_line = (p != nullpen) ? p : ins.getConnectorPen();
+                        pen pen_dot = (ins.border != nullpen) ? ins.border : pen_line;
+                        drawTargetConnector(f, target_pt, badge_pt, b_frame, pen_line, pen_dot);
 
                         add(f, b_frame);
                     }
