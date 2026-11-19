@@ -137,10 +137,6 @@ struct RenderingConfig {
     real arrow_pol_size = nan;
     arrowhead arrow_head = HookHead;
     arrowhead arrow_pol_head = null;
-    real polarization_inset_min_arrow_fraction = 0.18;
-    real polarization_inset_unpolarized_threshold = 1e-4;
-    int polarization_inset_unpolarized_spokes = 4;
-    int polarization_inset_ellipse_steps = 36;
     real wavefront_max_dist = 120.0;
     int wavefront_max_orders = 3;
     int wavefront_max_markers = 2000;
@@ -1250,9 +1246,6 @@ struct FresnelAmplitudes {
 
 // private
 struct FresnelResult {
-    // -------------------------------------------------------------------------
-    // Backward-Compatible Primary Fields (Used by standard lenses, mirrors, tests)
-    // -------------------------------------------------------------------------
     pair d;
     pair wave_normal;
     Medium medium;
@@ -1273,29 +1266,17 @@ struct FresnelResult {
     pair reflected_wave_normal;
     pair rs = (0, 0);
     pair rp = (0, 0);
+    pair ts = (0, 0);
+    pair tp = (0, 0);
     real Rs = 0.0;
     real Rp = 0.0;
     real Ts = 0.0;
     real Tp = 0.0;
 
-    // -------------------------------------------------------------------------
-    // Mode-Specific Fields (For Anisotropic Crystals / Birefringence)
-    // -------------------------------------------------------------------------
     bool is_birefringent = false;
-
-    // Channel 1: Ordinary / TE / S
-    pair d_o;
-    pair wave_normal_o;
-    pair ts = (0, 0); // or 'to'
-    real To = 0.0;
-    bool tir_o = false;
-    Medium medium_o;
-
-    // Channel 2: Extraordinary / TM / P
+    // Extraordinary channel for birefringent splitting.
     pair d_e;
     pair wave_normal_e;
-    pair tp = (0, 0); // or 'te'
-    real Te = 0.0;
     bool tir_e = false;
     Medium medium_e;
 
@@ -1314,35 +1295,6 @@ struct FresnelResult {
         this.tir = fa.evanescent;
     }
 
-    // -------------------------------------------------------------------------
-    // Synchronizer: Call at the end of solver to guarantee all aliases match
-    // -------------------------------------------------------------------------
-    void sync() {
-        if (!this.is_birefringent) {
-            // In isotropic media: both modes share the primary path
-            this.d_o = this.d;
-            this.d_e = this.d;
-            this.wave_normal_o = this.wave_normal;
-            this.wave_normal_e = this.wave_normal;
-            this.medium_o = this.medium;
-            this.medium_e = this.medium;
-            this.To = this.Ts;
-            this.Te = this.Tp;
-            this.tir_o = this.tir;
-            this.tir_e = this.tir;
-        } else {
-            // In crystals: primary aliases default to the ordinary mode
-            this.d = this.d_o;
-            this.wave_normal = this.wave_normal_o;
-            this.medium = this.medium_o;
-            this.tir = (this.tir_o && this.tir_e);
-            this.Ts = this.To;
-            this.Tp = this.Te;
-            // To and Te are per-mode transmittances; the total transmittance
-            // is their incident-power-weighted mean, i.e. T = 1 - R (already
-            // set by the solver).  Summing To + Te would exceed unity.
-        }
-    }
 }
 
 // Collision Packet
@@ -1494,7 +1446,6 @@ FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wav
         res.R = R_unpol;
         res.T = 1.0 - R_unpol;
     }
-    res.sync();
     return res;
 }
 
@@ -1512,23 +1463,6 @@ FresnelResult solveIsotropicInterface(complex n1_in, real n2, pair inc_wave_norm
 // Overload: real n1, real n2
 FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
     return solveIsotropicInterface((n1, 0.0), (n2, 0.0), inc_wave_normal, N_into2, T_surf);
-}
-
-private
-Hit copy(Hit src) {
-    if (src == null) return null;
-    Hit out = new Hit;
-    out.valid = src.valid;
-    out.t = src.t;
-    out.p = src.p;
-    out.normal = src.normal;
-    out.tangent = src.tangent;
-    out.center = src.center;
-    out.axis = src.axis;
-    out.entering = src.entering;
-    out.element_index = src.element_index;
-    out.flat_index = src.flat_index;
-    return out;
 }
 
 struct Ray {
@@ -1692,7 +1626,7 @@ Ray copy(Ray src) {
     r.alive = src.alive;
     r.terminated = src.terminated;
     r.ignored_flat_indices = copy(src.ignored_flat_indices);
-    if (src.hit != null) r.hit = copy(src.hit);
+    r.hit = src.hit;
     r.trajectory = src.trajectory;
     return r;
 }
@@ -2126,19 +2060,6 @@ PropagationResult propagationResult(Ray ray, bool hit_surface = false, Hit hit =
     return res;
 }
 
-private
-Interaction copy(Interaction src) {
-    if (src == null) return null;
-    Interaction out = new Interaction;
-    out.hit = copy(src.hit);
-    out.R = src.R;
-    out.T = src.T;
-    out.incident = copy(src.incident);
-    for (Ray r : src.reflected) out.reflected.push(copy(r));
-    for (Ray r : src.transmitted) out.transmitted.push(copy(r));
-    return out;
-}
-
 // Pure Physics Helper Functions (Decoupled!)
 pair phaseGradientNormal(Ray r, Hit h) {
     pair N = unitOr(h.normal);
@@ -2146,12 +2067,17 @@ pair phaseGradientNormal(Ray r, Hit h) {
 }
 
 // Generic factory for custom surface properties
-Property property(string name, rayGenerator action, int stage = PropertyStage.Interact, int priority = 0) {
+Property property(string name,
+                  rayGenerator action,
+                  int stage = PropertyStage.Interact,
+                  int priority = 0,
+                  propertyAlignFunc align = null) {
     Property p = new Property;
     p.name = name;
     p.stage = stage;
     p.priority = priority;
     p.generate = action;
+    p.align = align;
     return p;
 }
 
@@ -2573,7 +2499,6 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
 
-    res.sync();
     return res;
 }
 
@@ -2604,26 +2529,26 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     PhaseMatch trans_o = solvePhaseMatch(med_o, N, T, kt, -N, h.p, r.lambda);
     PhaseMatch trans_e = solvePhaseMatch(med_e, N, T, kt, -N, h.p, r.lambda);
 
-    // 1. Ordinary channel (TE)
-    res.d_o = trans_o.group_direction;
-    res.wave_normal_o = trans_o.wave_normal;
-    res.tir_o = trans_o.tir;
-    res.medium_o = med_o;
+    // Ordinary channel is the primary / S channel.
+    res.d = trans_o.group_direction;
+    res.wave_normal = trans_o.wave_normal;
+    res.tir = trans_o.tir;
+    res.medium = med_o;
 
-    if (!res.tir_o) {
+    if (!res.tir) {
         real qo = abs(trans_o.n * dot(trans_o.wave_normal, N));
         real denom_s = kn_in + qo;
         res.rs = ((kn_in - qo) / denom_s, 0.0);
         res.ts = ((2.0 * kn_in) / denom_s, 0.0);
         res.Rs = res.rs.x * res.rs.x;
-        res.To = 1.0 - res.Rs;
+        res.Ts = 1.0 - res.Rs;
     } else {
         real no = med_o.n(h.p, inc_wave_normal, r.lambda, r.pol);
         real qo_im = sqrt(max(0.0, kt * kt - no * no));
         res.rs = (kn_in, qo_im) / (kn_in, -qo_im);
         res.ts = (0.0, 0.0);
         res.Rs = 1.0;
-        res.To = 0.0;
+        res.Ts = 0.0;
     }
 
     // 2. Extraordinary channel (TM)
@@ -2643,12 +2568,11 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
         res.tp = (0.0, 0.0);
     }
     res.Rp = abs2(res.rp);
-    res.Te = res.tir_e ? 0.0 : max(0.0, 1.0 - res.Rp);
+    res.Tp = res.tir_e ? 0.0 : max(0.0, 1.0 - res.Rp);
 
     res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
     res.T = 1.0 - res.R;
 
-    res.sync();
     return res;
 }
 
@@ -2671,19 +2595,6 @@ FlatSurfaceRecord[] prepareFlatSurfaces(Element[] elements) {
         }
     }
     return records;
-}
-
-// private
-Segment copy(Segment src) {
-    if (src == null) return null;
-    Segment s = new Segment;
-    s.a = src.a;
-    s.b = src.b;
-    s.before = copy(src.before);
-    s.after = copy(src.after);
-    s.hit = src.hit;
-    s.traj = src.traj;
-    return s;
 }
 
 // 2D Ray-AABB (Slab Method) Intersection Test
@@ -2899,15 +2810,16 @@ struct Trace {
     int[] route;
     int[] root_ids;
     bool is_reflection = false;
-    int[] activeBranchRayIds() {
+  private
+    int[] branchRayIds(bool hits_only = false) {
         int[] branch;
         if (ray_tree.length == 0) return branch;
         int curr_id = root_id;
         if (curr_id < 0 || curr_id >= ray_tree.length) return branch;
         int route_step = 0;
         while (true) {
-            branch.push(curr_id);
             Ray r = ray_tree[curr_id];
+            if (!hits_only || (r.hit != null && r.hit.valid)) branch.push(curr_id);
             if (r.children_ids.length == 0) break;
             int child_choice = r.default_child_index;
             if (route_step < route.length) {
@@ -2924,6 +2836,8 @@ struct Trace {
 
         return branch;
     }
+
+    int[] activeBranchRayIds() { return branchRayIds(); }
 
     Segment[] segments() {
         Segment[] segs;
@@ -2982,12 +2896,7 @@ struct Trace {
     }
 
     private int[] hitBranchRayIds() {
-        int[] hits;
-        for (int id : activeBranchRayIds()) {
-            Ray r = ray_tree[id];
-            if (r.hit != null && r.hit.valid) hits.push(id);
-        }
-        return hits;
+        return branchRayIds(true);
     }
 
     Interaction[] interactions() {
@@ -3731,13 +3640,9 @@ Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
 
 // Surface Property: Refract (Updated with Complex Fresnel Phase Retardance)
 Property Refract(Medium inside, Medium ambient = null) {
-    Property p = new Property;
-    p.name = "Refract";
-
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("Refract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         return emitFresnelPair(r, h, fresnelIsotropic(inside, ambient, r, h, resolve));
-    };
-    return p;
+    });
 }
 
 // Ideal lossless, non-polarizing coating between equal-index media.
@@ -3750,10 +3655,7 @@ Property Coating(Medium inside,
                  real transmission_phase = 0.0) {
     if (R < 0.0 || R > 1.0) abort("Coating: R must be between 0 and 1.");
 
-    Property p = new Property;
-    p.name = "Coating";
-
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("Coating", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
         // This ideal coating model requires equal-index ports.
@@ -3789,8 +3691,7 @@ Property Coating(Medium inside,
             rays.push(refl_ray);
         }
         return rays;
-    };
-    return p;
+    });
 }
 
 // Ideal polarizing beam-splitting coating with independent s and p reflectances.
@@ -3803,10 +3704,7 @@ Property PolarizingCoating(Medium inside,
                            real transmission_phase = 0.0) {
     if (Rs < 0.0 || Rs > 1.0 || Rp < 0.0 || Rp > 1.0) abort("PolarizingCoating: Rs and Rp must be between 0 and 1.");
 
-    Property p = new Property;
-    p.name = "PolarizingCoating";
-
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("PolarizingCoating", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
         real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
@@ -3850,8 +3748,7 @@ Property PolarizingCoating(Medium inside,
             rays.push(refl_ray);
         }
         return rays;
-    };
-    return p;
+    });
 }
 
 ThinFilmLayer thinFilmLayer(Medium medium, real thickness_nm) { return ThinFilmLayer(medium, thickness_nm); }
@@ -3967,10 +3864,7 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
 }
 
 Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = null) {
-    Property prop = new Property;
-    prop.name = "ThinFilmStack";
-
-    prop.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("ThinFilmStack", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
         FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
@@ -3979,8 +3873,7 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
         res.T = 1.0 - res.R;
 
         return emitFresnelPair(r, h, res);
-    };
-    return prop;
+    });
 }
 
 // Convenience factory: single thin-film layer of specified thickness
@@ -4031,18 +3924,18 @@ Ray[] doubleRefractionEnter(Ray r, Hit h, InterfaceFrame f, Medium med_o, Medium
     real Ip_inc = r.pol.pPower();
     FresnelResult b = fresnelUniaxial(r, h, f.source_medium, med_o, med_e, resolve);
 
-    if (!b.tir_o) {
-        real I_o = Is_inc * b.To;
+    if (!b.tir) {
+        real I_o = Is_inc * b.Ts;
         if (I_o > config.physics.min_intensity) {
             real ph_o = atan2(b.ts.y, b.ts.x);
-            Ray o_ray = spawnRay(r, h, b.d_o, I_o, med_o, ph_o, b.wave_normal_o);
+            Ray o_ray = spawnRay(r, h, b.d, I_o, med_o, ph_o, b.wave_normal);
             o_ray.pol = Polarization.stokes(I_o, I_o, 0.0, 0.0);
             rays.push(o_ray);
         }
     }
 
     if (!b.tir_e) {
-        real I_e = Ip_inc * b.Te;
+        real I_e = Ip_inc * b.Tp;
         if (I_e > config.physics.min_intensity) {
             real ph_e = atan2(b.tp.y, b.tp.x);
             Ray e_ray = spawnRay(r, h, b.d_e, I_e, med_e, ph_e, b.wave_normal_e);
@@ -4105,45 +3998,35 @@ Ray[] doubleRefractionExit(Ray r,
         }
         res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
         res.T = 1.0 - res.R;
-        res.sync();
     }
 
     return emitFresnelPair(r, h, res);
 }
 
 Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
-    Property p = new Property;
-    p.name = "DoubleRefraction";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("DoubleRefraction", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
         if (r.medium != med_o && r.medium != med_e) {
             return doubleRefractionEnter(r, h, f, med_o, med_e, resolve);
         }
         return doubleRefractionExit(r, h, f, med_o, med_e, ambient, resolve);
-    };
-    return p;
+    });
 }
 
 Property Reflect(real phase_shift = pi) {
-    Property p = new Property;
-    p.name = "Reflect";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("Reflect", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         pair N = phaseGradientNormal(r, h);
         pair reflected_wave_normal = unitOr(r.wave_normal - 2 * dot(r.wave_normal, N) * N, r.d);
         pair reflected = r.medium.groupDirection(reflected_wave_normal);
         Ray out = spawnRay(r, h, reflected, r.intensity(), r.medium, phase_shift, reflected_wave_normal);
         applyMirrorPolarization(out.pol);
         return new Ray[]{out};
-    };
-    // Specular Reflection alignment: Bisector normal!
-    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; };
-    return p;
+    }, PropertyStage.Interact, 0,
+       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 Property IdealReflect(real f, real phase_shift = pi) {
-    Property p = new Property;
-    p.name = "IdealReflect";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("IdealReflect", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         if (abs(f) <= config.math.eps) return new Ray[];
         pair A = unitOr(h.axis); // Inward optical axis
         // Theoretical focus F
@@ -4156,21 +4039,17 @@ Property IdealReflect(real f, real phase_shift = pi) {
         Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium, phase_shift);
         applyMirrorPolarization(out.pol);
         return new Ray[]{out};
-    };
-    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; };
-    return p;
+    }, PropertyStage.Interact, 0,
+       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 // PROPERTY: Used for ideal spherical interfaces with paraxial approximation
 // Replace IdealRefract(...) (Chunk 4):
 Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
-    Property p = new Property;
-    p.name = "IdealRefract";
-
     pair A = unitOr(axis);
     pair Q = (-A.y, A.x);
 
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("IdealRefract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         if (abs(R) <= config.math.eps) return new Ray[];
 
         real dx = dot(r.d, A);
@@ -4224,30 +4103,21 @@ Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
 
         Ray out = spawnRay(r, h, v_out, r.intensity(), m_out, 0);
         return new Ray[]{out};
-    };
-
-    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; };
-    return p;
+    }, PropertyStage.Interact, 0,
+       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 Property Focus(real f) {
-    Property p = new Property;
-    p.name = "Focus";
-    p.stage = PropertyStage.Deflect;
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("Focus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         pair v_out = thinLensRefractDir(r, h, f);
         Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
         out.wave_normal = v_out;
         return new Ray[]{out};
-    };
-    return p;
+    }, PropertyStage.Deflect);
 }
 
 Property PhaseFocus(real f) {
-    Property p = new Property;
-    p.name = "PhaseFocus";
-    p.stage = PropertyStage.Deflect;
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("PhaseFocus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         pair v_out = thinLensRefractDir(r, h, f);
         pair A = unitOr(h.axis);
         pair T = (-A.y, A.x);
@@ -4257,23 +4127,18 @@ Property PhaseFocus(real f) {
         real phase_delay =
             (abs(f) > config.math.eps) ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f))) : 0.0;
         return new Ray[]{spawnRay(r, h, v_out, r.intensity(), r.medium, phase_delay, v_out)};
-    };
-    return p;
+    }, PropertyStage.Deflect);
 }
 
 Property IdealFocus(real f) {
-    Property p = new Property;
-    p.name = "IdealFocus";
-    p.stage = PropertyStage.Deflect;
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("IdealFocus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         pair A = unitOr(h.axis);
         pair F = h.center + f * A;
         pair v_out = unitOr(F - h.p, r.d);
         Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
         out.wave_normal = v_out;
         return new Ray[]{out};
-    };
-    return p;
+    }, PropertyStage.Deflect);
 }
 
 // Replace wavevectorShiftAxis, Diffract, and PhaseShift (Chunk 4):
@@ -4317,11 +4182,9 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
     if (efficiencies.length > 0 && efficiencies.length != orders.length)
         abort("Diffract: efficiencies length must match orders length (or be empty).");
 
-    Property p = new Property;
-    p.name = "Diffract";
     real grating_spacing = 1000.0 / lines_per_mm;
 
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("Diffract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         Ray[] validRays;
         bool use_efficiencies = (efficiencies.length == orders.length);
         pair N = phaseGradientNormal(r, h);
@@ -4359,20 +4222,16 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
         }
 
         return validRays;
-    };
-
-    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
+    }, PropertyStage.Interact, 0,
+       new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
         int target_order = (orders.length > order_index) ? orders[order_index] : 0;
         real delta_k = target_order * (lambda * nm_to_um) / grating_spacing;
         return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
-    };
-    return p;
+    });
 }
 
 Property PhaseShift(real delta_k, bool reflective = false) {
-    Property p = new Property;
-    p.name = "PhaseShift";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
+    return property("PhaseShift", new Ray[](Ray r, Hit h, mediumResolver resolve) {
         pair N = phaseGradientNormal(r, h);
         pair T = -unitOr(h.tangent, (N.y, -N.x));
         Medium m1 = (r.medium != null) ? r.medium : Materials.VACUUM;
@@ -4385,18 +4244,14 @@ Property PhaseShift(real delta_k, bool reflective = false) {
         pair v_out = diffractionOutputDir(N, T, k_out, reflective);
         real p_shift = reflective ? pi : 0;
         return new Ray[]{spawnRay(r, h, v_out, r.intensity(), reflective ? r.medium : m2, p_shift)};
-    };
-    p.align = new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
+    }, PropertyStage.Interact, 0,
+       new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
         return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
-    };
-    return p;
+    });
 }
 
 Property Absorb() {
-    Property p = new Property;
-    p.name = "Absorb";
-    p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) { return new Ray[]; };
-    return p;
+    return property("Absorb", new Ray[](Ray r, Hit h, mediumResolver resolve) { return new Ray[]; });
 }
 
 // Thin polarization optics.  `axis` / `fast_axis` are angles in the
@@ -5800,6 +5655,21 @@ struct RayArrows {
     real relative = nan;
     // Segment rules
     SegmentRule[] rules;
+    void operator init(bool visible = true,
+                       bool3 first = default,
+                       bool3 middle = default,
+                       bool3 last = default,
+                       arrowhead head = config.rendering.arrow_head,
+                       real size = config.rendering.arrow_size,
+                       real relative = nan, ... SegmentRule[] rules) {
+        this.head = head;
+        this.size = size;
+        this.relative = relative;
+        bool[] fml = new bool[3];
+        this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
+        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+    }
+
     RayArrows clone() {
         RayArrows out = new RayArrows;
         out.visible = this.visible;
@@ -5880,6 +5750,43 @@ struct RayPolarization {
     real size = config.rendering.arrow_pol_size;
     // Segment rules
     SegmentRule[] rules;
+    void operator init(bool visible = config.rendering.draw_polarization,
+                       int count = -1,
+                       real spacing = 0.5,
+                       real before = 0.2,
+                       real after = 0.2,
+                       bool3 first = default,
+                       bool3 middle = default,
+                       bool3 last = default,
+                       real scale = 0.5,
+                       bool show_s = true,
+                       bool show_p = true,
+                       pen p = nullpen,
+                       arrowhead head = config.rendering.arrow_pol_head,
+                       real size = config.rendering.arrow_pol_size,
+                       int[] segments = new int[]{-1},
+                       real min_amplitude = 0,
+                       real min_segment_length = config.rendering.min_polarization_segment_length,
+                       real min_separation = config.rendering.min_polarization_marker_separation, ... SegmentRule[] rules) {
+        this.count = count;
+        this.spacing = spacing;
+        this.before = before;
+        this.after = after;
+        this.scale = scale;
+        this.show_s = show_s;
+        this.show_p = show_p;
+        this.p = p;
+        this.head = head;
+        this.size = size;
+        this.segments = copy(segments);
+        this.min_amplitude = min_amplitude;
+        this.min_segment_length = min_segment_length;
+        this.min_separation = min_separation;
+        bool[] fml = new bool[3];
+        this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
+        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+    }
+
     RayPolarization clone() {
         RayPolarization out = new RayPolarization;
         out.visible = this.visible;
@@ -5979,6 +5886,61 @@ struct RayWavefront {
     bool show_lines = true;                                 // Show interference node/antinode loci
     // Segment rules
     SegmentRule[] rules;
+    void operator init(bool visible = config.rendering.draw_wavefronts,
+                       real spacing = nan,
+                       int count = -1,
+                       real width = 14.0,
+                       real before = 0.05,
+                       real after = 0.05,
+                       bool wavelets = false,
+                       real alpha = 30.0,
+                       bool cut_at_boundary = true,
+                       bool dashed_behind = false,
+                       bool show_source = true,
+                       pen p = nullpen,
+                       bool contours = false,
+                       pen p_contours = lightblue,
+                       bool antinodes = false,
+                       bool nodes = false,
+                       pen pen_line = gray(0.4) + dashed,
+                       pen pen_dots = gray(0.4) + 2.5pt,
+                       real max_dist = config.rendering.wavefront_max_dist,
+                       int max_orders = config.rendering.wavefront_max_orders,
+                       bool show_dots = true,
+                       bool show_labels = true,
+                       bool3 first = default,
+                       bool3 middle = default,
+                       bool3 last = default,
+                       bool phase_locked = false,
+                       bool show_lines = true, ... SegmentRule[] rules) {
+        this.spacing = spacing;
+        this.width = width;
+        this.count = count;
+        this.before = before;
+        this.after = after;
+        this.wavelets = wavelets;
+        this.alpha = alpha;
+        this.cut_at_boundary = cut_at_boundary;
+        this.dashed_behind = dashed_behind;
+        this.show_source = show_source;
+        this.p = p;
+        this.contours = contours;
+        this.phase_locked = phase_locked;
+        this.p_contours = p_contours;
+        this.antinodes = antinodes;
+        this.nodes = nodes;
+        this.pen_line = pen_line;
+        this.pen_dots = pen_dots;
+        this.max_dist = max_dist;
+        this.max_orders = max_orders;
+        this.show_dots = show_dots;
+        this.show_labels = show_labels;
+        this.show_lines = show_lines;
+        bool[] fml = new bool[3];
+        this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
+        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+    }
+
     RayWavefront clone() {
         RayWavefront out = new RayWavefront;
         out.visible = this.visible;
@@ -6177,70 +6139,8 @@ RayArrows copy(RayArrows src) {
     return (src != null) ? src.clone() : null;
 }
 
-// RayArrows constructor
-RayArrows rayArrows(bool visible = true,
-                    bool3 first = default,
-                    bool3 middle = default,
-                    bool3 last = default,
-                    arrowhead head = config.rendering.arrow_head,
-                    real size = config.rendering.arrow_size,
-                    real relative = nan, ... SegmentRule[] rules) {
-    RayArrows out = new RayArrows;
-    out.head = head;
-    out.size = size;
-    out.relative = relative;
-    bool[] fml = new bool[3];
-    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
-    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
-    return out;
-}
-
 RayPolarization copy(RayPolarization src) {
     return (src != null) ? src.clone() : null;
-}
-
-// RayPolarization constructor
-// When visible = false, any marker position (first/middle/last) explicitly
-// passed as true is restored, so you can write:
-//   rayPolarization(visible = false, first = true)
-// to hide middle and last markers while keeping the first one visible.
-RayPolarization rayPolarization(bool visible = config.rendering.draw_polarization,
-                                int count = -1,
-                                real spacing = 0.5,
-                                real before = 0.2,
-                                real after = 0.2,
-                                bool3 first = default,
-                                bool3 middle = default,
-                                bool3 last = default,
-                                real scale = 0.5,
-                                bool show_s = true,
-                                bool show_p = true,
-                                pen p = nullpen,
-                                arrowhead head = config.rendering.arrow_pol_head,
-                                real size = config.rendering.arrow_pol_size,
-                                int[] segments = new int[]{-1},
-                                real min_amplitude = 0,
-                                real min_segment_length = config.rendering.min_polarization_segment_length,
-                                real min_separation = config.rendering.min_polarization_marker_separation, ... SegmentRule[] rules) {
-    RayPolarization out = new RayPolarization;
-    out.count = count;
-    out.spacing = spacing;
-    out.before = before;
-    out.after = after;
-    out.scale = scale;
-    out.show_s = show_s;
-    out.show_p = show_p;
-    out.p = p;
-    out.head = head;
-    out.size = size;
-    out.segments = copy(segments);
-    out.min_amplitude = min_amplitude;
-    out.min_segment_length = min_segment_length;
-    out.min_separation = min_separation;
-    bool[] fml = new bool[3];
-    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
-    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
-    return out;
 }
 
 private
@@ -6307,13 +6207,86 @@ pen scaledOpacityPen(pen base, real intensity, bool apply_op = true) {
 }
 
 private
+real[] sampleSegmentPositions(real L,
+                              real before,
+                              real after,
+                              int count,
+                              real spacing,
+                              real min_sep,
+                              bool first,
+                              bool middle,
+                              bool last,
+                              bool interior_only = false,
+                              int max_markers = 1000000) {
+    real[] raw;
+    if (interior_only) {
+        if (count > 0) {
+            real step = L / (count + 1);
+            for (int i = 1; i <= count; ++i) raw.push(i * step);
+            return raw;
+        }
+        int requested = max(0, ceil((L - config.math.eps) / spacing));
+        int m_count = min(requested, max(1, max_markers));
+        if (requested <= m_count) {
+            for (real cur_r = spacing; cur_r < L - config.math.eps; cur_r += spacing) raw.push(cur_r);
+        } else {
+            real step = L / (m_count + 1);
+            for (int i = 1; i <= m_count; ++i) raw.push(i * step);
+        }
+        return raw;
+    }
+
+    real s_start = clamp(before, 0, L);
+    real s_end = clamp(L - after, s_start, L);
+    real range = s_end - s_start;
+    if (range < min_sep) {
+        if (middle || first || last) raw.push(L / 2.0);
+    } else if (count > 0) {
+        int eff_count = min(count, max(1, floor(range / min_sep) + 1));
+        if (eff_count == 1) {
+            raw.push(s_start + range / 2.0);
+        } else {
+            real step = range / (eff_count - 1);
+            for (int i = 0; i < eff_count; ++i) {
+                if ((i == 0 && !first) || (i == eff_count - 1 && !last) ||
+                    (i > 0 && i < eff_count - 1 && !middle)) continue;
+                raw.push(s_start + i * step);
+            }
+        }
+    } else {
+        real sp = max(min_sep, spacing);
+        int n_int = floor(range / sp);
+        if (n_int <= 0) {
+            if (middle || first || last) raw.push(s_start + range / 2.0);
+        } else {
+            real actual_start = s_start + (range - n_int * sp) / 2.0;
+            for (int i = 0; i <= n_int; ++i) {
+                if ((i == 0 && !first) || (i == n_int && !last) ||
+                    (i > 0 && i < n_int && !middle)) continue;
+                raw.push(actual_start + i * sp);
+            }
+        }
+    }
+
+    real[] positions;
+    real last_s = -infinity;
+    for (real s : raw) {
+        if (s - last_s >= min_sep - config.math.eps) {
+            positions.push(s);
+            last_s = s;
+        }
+    }
+    return positions;
+}
+
+private
 void drawPolarization(picture pic = currentpicture,
                       Ray r,
                       path traj,
                       int segment_idx = 0,
                       int total_segments = 1,
                       pen p = currentpen,
-                      RayPolarization pol = rayPolarization(),
+                      RayPolarization pol = RayPolarization(),
                       bool apply_opacity = true) {
     if (r == null || !r.alive) return;
     RayPolarization eff_pol = pol.getPolarization(segment_idx, total_segments);
@@ -6328,69 +6301,11 @@ void drawPolarization(picture pic = currentpicture,
     if (L < min_seg_l) return;
 
     // Margins and Spacing Limits
-    real s_start = clamp(eff_pol.before, 0, L);
-    real s_end = clamp(L - eff_pol.after, s_start, L);
-    real range = s_end - s_start;
     real min_sep =
         !isnan(eff_pol.min_separation) ? eff_pol.min_separation : config.rendering.min_polarization_marker_separation;
     if (min_sep <= 0) min_sep = 0.1;
-
-    real[] rawPositions;
-
-    // Position Calculation with Overlap Prevention
-    if (range < min_sep) {
-        // Range is too tight for multiple markers: place exactly ONE centered marker
-        if (eff_pol.middle || eff_pol.first || eff_pol.last) {
-            rawPositions.push(L / 2.0);
-        }
-
-    } else if (eff_pol.count > 0) {
-        if (eff_pol.count == 1) {
-            rawPositions.push(s_start + range / 2.0);
-        } else {
-            // Clamp count to prevent stacking
-            int max_allowed = max(1, floor(range / min_sep) + 1);
-            int eff_count = min(eff_pol.count, max_allowed);
-            if (eff_count == 1) {
-                rawPositions.push(s_start + range / 2.0);
-            } else {
-                real step = range / (eff_count - 1);
-                for (int i = 0; i < eff_count; ++i) {
-                    if (i == 0 && !eff_pol.first) continue;
-                    if (i == eff_count - 1 && !eff_pol.last) continue;
-                    if (i > 0 && i < eff_count - 1 && !eff_pol.middle) continue;
-                    rawPositions.push(s_start + i * step);
-                }
-            }
-        }
-    } else {
-        // Spacing-based Placement
-        real sp = max(min_sep, eff_pol.spacing);
-        int num_intervals = floor(range / sp);
-        if (num_intervals <= 0) {
-            if (eff_pol.middle || eff_pol.first || eff_pol.last) {
-                rawPositions.push(s_start + range / 2.0);
-            }
-        } else {
-            real actual_start = s_start + (range - num_intervals * sp) / 2.0;
-            for (int i = 0; i <= num_intervals; ++i) {
-                if (i == 0 && !eff_pol.first) continue;
-                if (i == num_intervals && !eff_pol.last) continue;
-                if (i > 0 && i < num_intervals && !eff_pol.middle) continue;
-                rawPositions.push(actual_start + i * sp);
-            }
-        }
-    }
-
-    // Strict Deduplication Filter (Guarantees no two markers are closer than min_sep)
-    real[] positions;
-    real last_s = -infinity;
-    for (real s : rawPositions) {
-        if (s - last_s >= min_sep - config.math.eps) {
-            positions.push(s);
-            last_s = s;
-        }
-    }
+    real[] positions = sampleSegmentPositions(L, eff_pol.before, eff_pol.after, eff_pol.count, eff_pol.spacing,
+                                             min_sep, eff_pol.first, eff_pol.middle, eff_pol.last);
 
     if (positions.length == 0) return;
 
@@ -6421,73 +6336,6 @@ RayWavefront copy(RayWavefront src) {
     return (src != null) ? src.clone() : null;
 }
 
-// RayWavefront constructor
-// Controls per-ray wavefront crests/wavelets AND bundle-level iso-OPL contours
-// and interference lines when used with draw(Trace[], ...).
-//
-// When visible = false, any marker position (first/middle/last) explicitly
-// passed as true is restored, so you can write:
-//   rayWavefront(visible = false, last = true)
-// to hide crests on all segments except the last one.
-RayWavefront rayWavefront(bool visible = config.rendering.draw_wavefronts,
-                          real spacing = nan,
-                          int count = -1,
-                          real width = 14.0,
-                          real before = 0.05,
-                          real after = 0.05,
-                          bool wavelets = false,
-                          real alpha = 30.0,
-                          bool cut_at_boundary = true,
-                          bool dashed_behind = false,
-                          bool show_source = true,
-                          pen p = nullpen,
-                          // Bundle iso-OPL contours
-                          bool contours = false,
-                          pen p_contours = lightblue,
-                          // Interference lines
-                          bool antinodes = false,
-                          bool nodes = false,
-                          pen pen_line = gray(0.4) + dashed,
-                          pen pen_dots = gray(0.4) + 2.5pt,
-                          real max_dist = config.rendering.wavefront_max_dist,
-                          int max_orders = config.rendering.wavefront_max_orders,
-                          bool show_dots = true,
-                          bool show_labels = true,
-                          bool3 first = default,
-                          bool3 middle = default,
-                          bool3 last = default,
-                          bool phase_locked = false,
-                          bool show_lines = true, ... SegmentRule[] rules) {
-    RayWavefront out = new RayWavefront;
-    out.spacing = spacing;
-    out.width = width;
-    out.count = count;
-    out.before = before;
-    out.after = after;
-    out.wavelets = wavelets;
-    out.alpha = alpha;
-    out.cut_at_boundary = cut_at_boundary;
-    out.dashed_behind = dashed_behind;
-    out.show_source = show_source;
-    out.p = p;
-    out.contours = contours;
-    out.phase_locked = phase_locked;
-    out.p_contours = p_contours;
-    out.antinodes = antinodes;
-    out.nodes = nodes;
-    out.pen_line = pen_line;
-    out.pen_dots = pen_dots;
-    out.max_dist = max_dist;
-    out.max_orders = max_orders;
-    out.show_dots = show_dots;
-    out.show_labels = show_labels;
-    out.show_lines = show_lines;
-    bool[] fml = new bool[3];
-    out.visible = initRuleVisibility(visible, first, middle, last, rules, fml, out.rules);
-    out.first = fml[0]; out.middle = fml[1]; out.last = fml[2];
-    return out;
-}
-
 // Standalone Wavefront Marker / Huygens Wavelet Renderer
 void drawWavefrontMarker(picture pic = currentpicture,
                          pair center,        // Emission origin P0 (for wavelets) or bar center (for crests)
@@ -6496,7 +6344,7 @@ void drawWavefrontMarker(picture pic = currentpicture,
                          real local_n = 1.0, // Refractive index for wavelength scaling
                          Hit hit = null,     // Optional boundary for automatic clipping
                          pen p = currentpen,
-                         RayWavefront wf = rayWavefront()) {
+                         RayWavefront wf = RayWavefront()) {
     pen q = (wf.p != nullpen) ? wf.p : p;
     pair d_hat = unitOr(d);
 
@@ -6558,7 +6406,7 @@ void drawWavefront(picture pic = currentpicture,
                    int segment_idx = 0,
                    int total_segments = 1,
                    pen p = currentpen,
-                   RayWavefront wf = rayWavefront()) {
+                   RayWavefront wf = RayWavefront()) {
     if (r == null || !r.alive || !wf.visible) return;
     RayWavefront eff_wf = wf.getWavefront(segment_idx, total_segments);
     if (!eff_wf.visible) return;
@@ -6574,33 +6422,13 @@ void drawWavefront(picture pic = currentpicture,
     pair d0 = unitOr(dir(traj, 0));
 
     // Calculate expanding radii / distance steps:
-    real[] radii;
-    if (eff_wf.count > 0) {
-        real step = L / (eff_wf.count + 1);
-        for (int i = 1; i <= eff_wf.count; ++i) radii.push(i * step);
-    } else {
-        real physical_lambda = (r.lambda > 0) ? r.lambda : config.physics.lambda;
-        real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0)
-                      ? (eff_wf.spacing / local_n)
-                      : resolveEffectiveLambda(nan, physical_lambda) / local_n;
-        if (sp <= config.math.eps) sp = 12.0;
-        int requested = max(0, ceil((L - config.math.eps) / sp));
-        int marker_count = min(requested, max(1, config.rendering.wavefront_max_markers));
-        if (requested <= marker_count) {
-            for (real cur_r = sp; cur_r < L - config.math.eps; cur_r += sp) {
-                radii.push(cur_r);
-            }
-
-        } else {
-            // Extremely small rendered wavelengths can otherwise allocate
-            // millions of paths. Preserve coverage while bounding rendering
-            // work; this affects drawing only, never physical phase/OPL.
-            real render_step = L / (marker_count + 1);
-            for (int i = 1; i <= marker_count; ++i) {
-                radii.push(i * render_step);
-            }
-        }
-    }
+    real physical_lambda = (r.lambda > 0) ? r.lambda : config.physics.lambda;
+    real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0)
+                  ? (eff_wf.spacing / local_n)
+                  : resolveEffectiveLambda(nan, physical_lambda) / local_n;
+    if (sp <= config.math.eps) sp = 12.0;
+    real[] radii = sampleSegmentPositions(L, 0, 0, eff_wf.count, sp, 0, true, true, true,
+                                          true, config.rendering.wavefront_max_markers);
 
     // Draw source dot once if wavelets are enabled
     if (eff_wf.wavelets && eff_wf.show_source) dot(pic, P0, pen_draw + 2.0pt);
@@ -6774,6 +6602,58 @@ void drawPhaseLockedWavelets(picture pic = currentpicture, Trace[] traces, RayWa
 
 // Private: Iso-OPL / Iso-Phase Wavefront Contours across a ray bundle
 private
+struct BundleOPLRange {
+    real[] launch_offsets;
+    real min = infinity;
+    real max = -infinity;
+}
+
+private
+BundleOPLRange computeBundleOPLRange(Trace[] traces,
+                                     Segment[][] segs_of,
+                                     pair reference_origin,
+                                     pair incoming_direction,
+                                     real ambient_index) {
+    BundleOPLRange range;
+    range.launch_offsets = new real[traces.length];
+    for (int k = 0; k < traces.length; ++k) {
+        Trace t = traces[k];
+        Ray first = t.first(), last = t.last();
+        if (first == null || last == null) continue;
+
+        real k0 = vacuumWaveNumber(first.lambda);
+        real phase_opl_offset = (k0 > config.math.eps) ? -first.phase / k0 : 0.0;
+        real offset = geometryToUm(dot(first.p - reference_origin, incoming_direction) * ambient_index) + phase_opl_offset;
+        range.launch_offsets[k] = offset;
+
+        real trace_total_opl = 0.0;
+        for (Segment s : segs_of[k]) trace_total_opl += segmentTotalOPL(s);
+        range.min = min(range.min, offset);
+        range.max = max(range.max, offset + trace_total_opl);
+    }
+    return range;
+}
+
+private
+real[] computeBundleTargetOPLs(real min_opl, real max_opl, real spacing, int count) {
+    real[] targets;
+    if (!isnan(spacing) && spacing > 0) {
+        int requested = max(0, ceil((max_opl - min_opl) / spacing));
+        int n = min(requested, max(1, config.rendering.wavefront_max_markers));
+        if (requested <= n) {
+            for (real L = min_opl + spacing; L < max_opl; L += spacing) targets.push(L);
+        } else {
+            real step = (max_opl - min_opl) / (n + 1);
+            for (int i = 1; i <= n; ++i) targets.push(min_opl + i * step);
+        }
+    } else {
+        real d_l = (max_opl - min_opl) / (count + 1);
+        for (int i = 1; i <= count; ++i) targets.push(min_opl + i * d_l);
+    }
+    return targets;
+}
+
+private
 void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefront wf) {
     int N = traces.length;
     if (N < 2) return;
@@ -6797,53 +6677,15 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     for (int k = 0; k < N; ++k) segs_of[k] = traces[k].segments();
 
     // 2. Compute Global OPL Range Across All Rays
-    real[] launch_offsets = new real[N];
-    real min_global_o_p_l = infinity;
-    real max_global_o_p_l = -infinity;
-
-    for (int k = 0; k < N; ++k) {
-        Trace t = traces[k];
-        if (t.first() == null || t.last() == null) continue;
-
-        real k0 = vacuumWaveNumber(t.first().lambda);
-        real phase_opl_offset = (k0 > config.math.eps) ? -t.first().phase / k0 : 0.0;
-        real offset = geometryToUm(dot(t.first().p - p0_ref, d_in) * n_amb) + phase_opl_offset;
-        launch_offsets[k] = offset;
-
-        real trace_total_o_p_l = 0.0;
-        for (Segment s : segs_of[k]) {
-            trace_total_o_p_l += segmentTotalOPL(s);
-        }
-
-        min_global_o_p_l = min(min_global_o_p_l, offset);
-        max_global_o_p_l = max(max_global_o_p_l, offset + trace_total_o_p_l);
-    }
+    BundleOPLRange opl_range = computeBundleOPLRange(traces, segs_of, p0_ref, d_in, n_amb);
+    real[] launch_offsets = opl_range.launch_offsets;
+    real min_global_o_p_l = opl_range.min;
+    real max_global_o_p_l = opl_range.max;
 
     if (min_global_o_p_l >= max_global_o_p_l - config.math.eps) return;
 
     // 3. Determine Target OPL values
-    real[] targetOPLs;
-    if (!isnan(spacing) && spacing > 0) {
-        int requested = max(0, ceil((max_global_o_p_l - min_global_o_p_l) / spacing));
-        int target_count = min(requested, max(1, config.rendering.wavefront_max_markers));
-        if (requested <= target_count) {
-            for (real L = min_global_o_p_l + spacing; L < max_global_o_p_l; L += spacing) {
-                targetOPLs.push(L);
-            }
-
-        } else {
-            real contour_step = (max_global_o_p_l - min_global_o_p_l) / (target_count + 1);
-            for (int i = 1; i <= target_count; ++i) {
-                targetOPLs.push(min_global_o_p_l + i * contour_step);
-            }
-        }
-
-    } else {
-        real d_l = (max_global_o_p_l - min_global_o_p_l) / (count + 1);
-        for (int i = 1; i <= count; ++i) {
-            targetOPLs.push(min_global_o_p_l + i * d_l);
-        }
-    }
+    real[] targetOPLs = computeBundleTargetOPLs(min_global_o_p_l, max_global_o_p_l, spacing, count);
 
     // 4. Trace Wavefront Contours at Each Target OPL
     for (real L_target : targetOPLs) {
@@ -7003,8 +6845,8 @@ void drawStyledSegment(picture pic = currentpicture,
                        int total_segments = 1,
                        pen p = currentpen,
                        ResolvedArrow arrow = new ResolvedArrow,
-                       RayPolarization polarization = rayPolarization(),
-                       RayWavefront wavefronts = rayWavefront(),
+                       RayPolarization polarization = RayPolarization(),
+                       RayWavefront wavefronts = RayWavefront(),
                        int fade_steps = 1,
                        bool apply_opacity = true) {
     real L_traj = arclength(traj);
@@ -7113,9 +6955,9 @@ void drawSurfaces(picture pic = currentpicture, Element e) {
 
 struct Renderer {
     pen p = currentpen;
-    RayArrows arrows = rayArrows();
-    RayPolarization polarization = rayPolarization();
-    RayWavefront wavefronts = rayWavefront();
+    RayArrows arrows = RayArrows();
+    RayPolarization polarization = RayPolarization();
+    RayWavefront wavefronts = RayWavefront();
     bool intensity_opacity = true;
     bool draw_absorption_fading = config.rendering.draw_absorption_fading;
     int fade_subpath_steps = config.rendering.fade_subpath_steps;
@@ -7250,9 +7092,9 @@ drawSingleTrace(picture pic = currentpicture,
                 real after = nan,
                 real margin = 0,
                 pen p = currentpen,
-                RayArrows arrows = rayArrows(),
-                RayPolarization polarization = rayPolarization(),
-                RayWavefront wavefronts = rayWavefront(),
+                RayArrows arrows = RayArrows(),
+                RayPolarization polarization = RayPolarization(),
+                RayWavefront wavefronts = RayWavefront(),
                 bool draw_reflections = config.rendering.draw_reflections,
                 bool intensity_opacity = config.rendering.use_intensity_opacity) {
     if (T == null) return;
@@ -7275,9 +7117,9 @@ void draw(picture pic = currentpicture,
           real after = nan,
           real margin = 0,
           pen p = currentpen,
-          RayArrows arrows = rayArrows(),
-          RayPolarization polarization = rayPolarization(),
-          RayWavefront wavefronts = rayWavefront(),
+          RayArrows arrows = RayArrows(),
+          RayPolarization polarization = RayPolarization(),
+          RayWavefront wavefronts = RayWavefront(),
           bool draw_reflections = config.rendering.draw_reflections,
           bool intensity_opacity = config.rendering.use_intensity_opacity) {
     RayWavefront individual_wavefronts = wavefronts;
@@ -7290,8 +7132,8 @@ void draw(picture pic = currentpicture,
                             after,
                             margin,
                             nullpen,
-                            rayArrows(visible = false),
-                            rayPolarization(visible = false),
+                            RayArrows(visible = false),
+                            RayPolarization(visible = false),
                             individual_wavefronts,
                             draw_reflections,
                             intensity_opacity);
@@ -7329,9 +7171,9 @@ void draw(picture pic = currentpicture,
           real after = nan,
           real margin = 0,
           pen p = currentpen,
-          RayArrows arrows = rayArrows(),
-          RayPolarization polarization = rayPolarization(),
-          RayWavefront wavefronts = rayWavefront(),
+          RayArrows arrows = RayArrows(),
+          RayPolarization polarization = RayPolarization(),
+          RayWavefront wavefronts = RayWavefront(),
           bool draw_reflections = config.rendering.draw_reflections,
           bool intensity_opacity = config.rendering.use_intensity_opacity) {
     if (T == null) return;
@@ -7385,10 +7227,10 @@ void draw(picture pic = currentpicture,
           real length = infinity,
           real margin = 0,
           pen p = currentpen,
-          RayArrows arrows = rayArrows(),
+          RayArrows arrows = RayArrows(),
           pair anchor = (infinity, infinity),
-          RayPolarization polarization = rayPolarization(),
-          RayWavefront wavefronts = rayWavefront()) {
+          RayPolarization polarization = RayPolarization(),
+          RayWavefront wavefronts = RayWavefront()) {
     pair z = (abs(anchor.x) == infinity || abs(anchor.y) == infinity) ? r.p : projection(r, anchor);
     ResolvedArrow arrow = arrows.getArrow(0, 1);
     pen pen_eff = resolveRayPen(p, r, config.rendering.use_intensity_opacity);
@@ -7698,7 +7540,7 @@ void draw(picture pic = currentpicture,
              before = before,
              after = after,
              p = p_ray,
-             arrows = rayArrows(first = true, middle = false, last = true));
+             arrows = RayArrows(first = true, middle = false, last = true));
 
     for (int k = 0; k < stageTips.length; ++k) {
         if (!stageIsReal[k]) {
@@ -7955,6 +7797,10 @@ Inset PolarizationInset(Polarization pol,
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white) {
+    real min_arrow_fraction = 0.18;
+    real unpol_threshold = 1e-4;
+    int unpol_spokes = 4;
+    int ellipse_steps = 36;
     Inset ins;
     ins.pos = pos;
     ins.target = target;
@@ -7986,7 +7832,7 @@ Inset PolarizationInset(Polarization pol,
     real display_factor = orbit_r / scale_norm;
     real dop = pol.dop();
     real I_pol = dop * local_i;
-    real min_arrow_size = config.rendering.polarization_inset_min_arrow_fraction * orbit_r;
+    real min_arrow_size = min_arrow_fraction * orbit_r;
 
     // =========================================================================
     // 1. STARBURST SPOKES (Unpolarized & Partially Polarized)
@@ -7994,7 +7840,7 @@ Inset PolarizationInset(Polarization pol,
     // Only drawn when there is a significant unpolarized fraction (DoP < 95%)
     if (dop < 0.95 && local_i > config.math.eps) {
         real unpol_r = display_factor * sqrt(local_i);
-        int spokes = config.rendering.polarization_inset_unpolarized_spokes;
+        int spokes = unpol_spokes;
         if (spokes <= 0) spokes = 8;
 
         real psi = pol.psi();
@@ -8057,7 +7903,7 @@ Inset PolarizationInset(Polarization pol,
         } else {
             // Elliptical / Circular:
             guide ellipse_path;
-            int steps = config.rendering.polarization_inset_ellipse_steps;
+            int steps = ellipse_steps;
             for (int k = 0; k <= steps; ++k) {
                 real tau = k * 2.0 * pi / steps;
                 real x_loc = a * cos(tau);
@@ -8079,9 +7925,9 @@ Inset PolarizationInset(Polarization pol,
     // =========================================================================
     object[] lines;
     lines.push(object(Label(format("\tiny $I = %#.3f$", local_i))));
-    if (dop >= config.rendering.polarization_inset_unpolarized_threshold && dop < 0.999) {
+    if (dop >= unpol_threshold && dop < 0.999) {
         lines.push(object(Label(format("\tiny $\mathrm{DoP} = %.0f\%$", dop * 100.0))));
-    } else if (dop < config.rendering.polarization_inset_unpolarized_threshold) {
+    } else if (dop < unpol_threshold) {
         lines.push(object(Label("\tiny (Unpolarized)")));
     }
 

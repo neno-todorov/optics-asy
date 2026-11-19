@@ -2153,7 +2153,7 @@ FresnelResult rg_fu = fresnelUniaxial(rg_ru, rg_h, Materials.VACUUM, rg_uo, rg_u
 assert_near("Uniaxial R + T = 1", rg_fu.R + rg_fu.T, 1.0, 1e-12);
 assert_near("Uniaxial T = incident-weighted To/Te",
             rg_fu.T,
-            (rg_fu.To * rg_ru.pol.sPower() + rg_fu.Te * rg_ru.pol.pPower()) / rg_ru.intensity(),
+            (rg_fu.Ts * rg_ru.pol.sPower() + rg_fu.Tp * rg_ru.pol.pPower()) / rg_ru.intensity(),
             1e-12);
 
 // Dense isotropic glass -> crystal beyond the ordinary critical angle
@@ -2166,7 +2166,7 @@ mediumResolver rg_resD = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fr
 Ray rg_rd = Ray((-1, 0), dir(60), rg_dense, pol = Polarization.unpolarized());
 FresnelResult rg_fuT = fresnelUniaxial(rg_rd, rg_h, rg_dense, rg_lo, rg_le, rg_resD);
 FresnelResult rg_fiT = fresnelIsotropic(rg_dense, rg_lo, rg_rd, rg_h, rg_resD);
-assert_bool("Ordinary mode is totally reflected", rg_fuT.tir_o, true);
+assert_bool("Ordinary mode is totally reflected", rg_fuT.tir, true);
 assert_near("Uniaxial TIR |rs| = 1", length(rg_fuT.rs), 1.0, 1e-12);
 assert_near_pair("Uniaxial TIR rs equals isotropic TIR rs (same phase convention)", rg_fuT.rs, rg_fiT.rs, 1e-12);
 write("");
@@ -2478,7 +2478,7 @@ Ray rg_ray92 = Ray((-1, 0), dir(35), rg_dense, pol = Polarization.linear(45.0));
 FresnelResult rg_fr92 = fresnelUniaxial(rg_ray92, rg_h, rg_dense, rg_lo, rg_e92, rg_resD);
 assert_near("Total energy bookkeeping R+T", rg_fr92.R + rg_fr92.T, 1.0, 1e-9);
 if (rg_fr92.tir_e) {
-    assert_near("Extraordinary TIR has zero transmitted power", rg_fr92.Te, 0.0, 1e-9);
+    assert_near("Extraordinary TIR has zero transmitted power", rg_fr92.Tp, 0.0, 1e-9);
     assert_near("Extraordinary TIR has unit reflected power", rg_fr92.Rp, 1.0, 1e-9);
 }
 assert_true("Total reflectance within physical bounds", rg_fr92.R >= -1e-9 && rg_fr92.R <= 1.0 + 1e-9);
@@ -2604,14 +2604,14 @@ mediumResolver res_cryst = new Medium(pair p, Ray r, Medium m1, Medium m2, bool 
 };
 FresnelResult res96 = fresnelUniaxial(r_oblique, h_cryst, Materials.VACUUM, cal_o, cal_e, res_cryst);
 // 1. Both channels must be propagating
-assert_bool("Ordinary mode propagates", res96.tir_o, false);
+assert_bool("Ordinary mode propagates", res96.tir, false);
 assert_bool("Extraordinary mode propagates", res96.tir_e, false);
 // 2. Poynting walk-off check: extraordinary group direction d_e != waveNormal_e
 real walkoff_dot = dot(res96.d_e, res96.wave_normal_e);
 assert_true("Poynting walk-off exists (d_e != k_e)", walkoff_dot < 0.9999 && walkoff_dot > 0.0);
 // 3. Strict Independent Power Conservation: Rs + To == 1.0 and Rp + Te == 1.0
-assert_near("Ordinary mode energy conservation (Rs + To == 1.0)", res96.Rs + res96.To, 1.0, 1e-8);
-assert_near("Extraordinary mode energy conservation (Rp + Te == 1.0)", res96.Rp + res96.Te, 1.0, 1e-8);
+assert_near("Ordinary mode energy conservation (Rs + Ts == 1.0)", res96.Rs + res96.Ts, 1.0, 1e-8);
+assert_near("Extraordinary mode energy conservation (Rp + Tp == 1.0)", res96.Rp + res96.Tp, 1.0, 1e-8);
 write("");
 
 // ============================================================================
@@ -2658,13 +2658,13 @@ write("Test Case 98: Dual-Mode Anisotropic TIR (Evanescent Field Phase Retardanc
 real th_tir_both = 50.0;
 Ray r_tir_both = Ray.angle(p = (-2, 0), angle = th_tir_both, medium = cal_o_dense);
 FresnelResult res98 = fresnelUniaxial(r_tir_both, h_cryst, cal_o_dense, Materials.AIR, Materials.AIR, res_air);
-assert_bool("Both modes in TIR: o-mode", res98.tir_o, true);
+assert_bool("Both modes in TIR: o-mode", res98.tir, true);
 assert_bool("Both modes in TIR: e-mode", res98.tir_e, true);
 // Magnitudes must be identically unity
 assert_near("TIR Rs magnitude == 1.0", res98.Rs, 1.0, 1e-8);
 assert_near("TIR Rp magnitude == 1.0", res98.Rp, 1.0, 1e-8);
-assert_near("TIR To flux == 0.0", res98.To, 0.0, 1e-8);
-assert_near("TIR Te flux == 0.0", res98.Te, 0.0, 1e-8);
+assert_near("TIR Ts flux == 0.0", res98.Ts, 0.0, 1e-8);
+assert_near("TIR Tp flux == 0.0", res98.Tp, 0.0, 1e-8);
 // Complex amplitudes must have non-zero imaginary parts (differential phase retardance)
 assert_true("Evanescent rs has complex phase", abs(res98.rs.y) > 0.1);
 assert_true("Evanescent rp has complex phase", abs(res98.rp.y) > 0.1);
@@ -2698,7 +2698,7 @@ FresnelResult res_uni_limit =
 assert_near("Isotropic limit: Rs matches isotropic solver", res_uni_limit.Rs, res_iso_base.Rs, 1e-12);
 assert_near("Isotropic limit: Rp matches isotropic solver", res_uni_limit.Rp, res_iso_base.Rp, 1e-12);
 assert_near_pair("Isotropic limit: o-ray direction matches isotropic refraction",
-                 res_uni_limit.d_o,
+                 res_uni_limit.d,
                  res_iso_base.d,
                  1e-12);
 assert_near_pair("Isotropic limit: e-ray direction matches isotropic refraction",
@@ -2706,7 +2706,7 @@ assert_near_pair("Isotropic limit: e-ray direction matches isotropic refraction"
                  res_iso_base.d,
                  1e-12);
 assert_near("Isotropic limit: zero walk-off between o and e modes",
-            dot(res_uni_limit.d_o, res_uni_limit.d_e),
+            dot(res_uni_limit.d, res_uni_limit.d_e),
             1.0,
             1e-12);
 write("");
@@ -3669,6 +3669,44 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Trace tf = system(pf_lens, screen).trace(Beam.collimated((-10, 0), (1, 0), 16.0, 5, pol = Polarization.linear(0.0), coherence_id = 1));
     Ray[] at_focus = tf.arrivals(screen);
     assert_near("PhaseFocus rays arrive at screen and interfere constructively at focus (I = 25)", interfere(at_focus), 25.0, 1e-3);
+}
+
+// 17. Trace hit traversal and ray-option constructors
+{
+    OpticalSystem sys_hits = system(Lens.thin((10, 0), 0, 100, 20), Absorber((20, -10) -- (20, 10)));
+    Trace t_hits = sys_hits.trace(Ray((-10, 0), (1, 0)));
+    Interaction[] all_hits = t_hits.interactions();
+    assert_near("Trace.length matches interaction count", t_hits.length(), all_hits.length, 1e-9);
+    assert_near("Trace negative interaction index selects last hit", t_hits.interaction(-1).hit.p.x, 20.0, 1e-6);
+
+    RayArrows arrows = RayArrows(visible = false, last = true, size = 7.0);
+    assert_bool("RayArrows preserves final visibility", arrows.getArrow(2, 3).visible, true);
+    assert_near("RayArrows preserves appearance", arrows.getArrow(2, 3).size, 7.0, 1e-9);
+
+    RayPolarization pol_markers = RayPolarization(visible = false, last = true, count = 3);
+    RayPolarization pol_resolved = pol_markers.getPolarization(2, 3);
+    assert_bool("RayPolarization preserves final visibility", pol_resolved.visible, true);
+    assert_near("RayPolarization constructor preserves marker count", pol_resolved.count, 3.0, 1e-9);
+
+    RayWavefront wavefront = RayWavefront(visible = false, last = true, count = 2);
+    RayWavefront wf_resolved = wavefront.getWavefront(2, 3);
+    assert_bool("RayWavefront preserves final visibility", wf_resolved.visible, true);
+    assert_near("RayWavefront constructor preserves marker count", wf_resolved.count, 2.0, 1e-9);
+
+    Ray marker_ray = Ray((0, 0), (1, 0), pol = Polarization.circular());
+    RayArrows no_arrows = RayArrows(visible = false);
+    RayWavefront no_wavefronts = RayWavefront(visible = false);
+    picture p_count2, p_spacing2;
+    draw(p_count2, Label(""), marker_ray, length = 10,
+         arrows = no_arrows,
+         polarization = RayPolarization(visible = true, count = 2, before = 0, after = 0, show_s = false, show_p = true),
+         wavefronts = no_wavefronts);
+    draw(p_spacing2, Label(""), marker_ray, length = 10,
+         arrows = no_arrows,
+         polarization = RayPolarization(visible = true, spacing = 2, before = 0, after = 0, show_s = false, show_p = true),
+         wavefronts = no_wavefronts);
+    assert_near("Count-based marker sampler draws two markers", p_count2.nodes.length - 1, 2.0, 1e-9);
+    assert_near("Spacing-based marker sampler includes both endpoints", p_spacing2.nodes.length - 1, 6.0, 1e-9);
 }
 
 // Summary
