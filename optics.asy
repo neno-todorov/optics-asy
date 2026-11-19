@@ -203,16 +203,16 @@ pen dark_blue = rgb(0.26, 0.42, 0.58);   // Dark blue
 pen dark_green = rgb(0.29, 0.52, 0.29);  // Dark green
 pen dark_yellow = rgb(0.64, 0.55, 0.23); // Dark yellow
 pen dark_brown = rgb(0.49, 0.36, 0.26);  // Dark brown
-pen Red(real x = 1.0) { return interp(white, base_red, x); }
-pen Blue(real x = 1.0) { return interp(white, base_blue, x); }
-pen Green(real x = 1.0) { return interp(white, base_green, x); }
-pen Yellow(real x = 1.0) { return interp(white, base_yellow, x); }
-pen Brown(real x = 1.0) { return interp(white, base_brown, x); }
-pen DarkRed(real x = 1.0) { return interp(white, dark_red, x); }
-pen DarkBlue(real x = 1.0) { return interp(white, dark_blue, x); }
-pen DarkGreen(real x = 1.0) { return interp(white, dark_green, x); }
-pen DarkYellow(real x = 1.0) { return interp(white, dark_yellow, x); }
-pen DarkBrown(real x = 1.0) { return interp(white, dark_brown, x); }
+pen redTint(real x = 1.0) { return interp(white, base_red, x); }
+pen blueTint(real x = 1.0) { return interp(white, base_blue, x); }
+pen greenTint(real x = 1.0) { return interp(white, base_green, x); }
+pen yellowTint(real x = 1.0) { return interp(white, base_yellow, x); }
+pen brownTint(real x = 1.0) { return interp(white, base_brown, x); }
+pen darkRedTint(real x = 1.0) { return interp(white, dark_red, x); }
+pen darkBlueTint(real x = 1.0) { return interp(white, dark_blue, x); }
+pen darkGreenTint(real x = 1.0) { return interp(white, dark_green, x); }
+pen darkYellowTint(real x = 1.0) { return interp(white, dark_yellow, x); }
+pen darkBrownTint(real x = 1.0) { return interp(white, dark_brown, x); }
 
 // Compare version components numerically; lexical string comparison makes
 // versions such as 3.9 sort after 3.11.
@@ -285,7 +285,7 @@ complex csqrt_outgoing(complex z) {
 }
 
 // String Case Helpers
-string LowerCase(string s) {
+string lowerCase(string s) {
     string result = "";
     for (int i = 0; i < length(s); ++i) {
         int c = ascii(s[i]);
@@ -295,7 +295,7 @@ string LowerCase(string s) {
     return result;
 }
 
-string UpperCase(string s) {
+string upperCase(string s) {
     string result = "";
     for (int i = 0; i < length(s); ++i) {
         int c = ascii(s[i]);
@@ -905,7 +905,7 @@ VolumeProperty volumeProperty(string name, int priority = 0) {
 
 // Composable Factories
 VolumeProperty
-RefractiveIndex(real A = 1.0, real B = 0.0, indexProfile n_profile = null, gradientProfile grad_profile = null) {
+refractiveIndex(real A = 1.0, real B = 0.0, indexProfile n_profile = null, gradientProfile grad_profile = null) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "RefractiveIndex";
     vp.spatial_index = (n_profile != null);
@@ -932,7 +932,7 @@ RefractiveIndex(real A = 1.0, real B = 0.0, indexProfile n_profile = null, gradi
     return vp;
 }
 
-VolumeProperty GRIN(indexProfile n_profile, gradientProfile grad_profile = null) {
+VolumeProperty grin(indexProfile n_profile, gradientProfile grad_profile = null) {
     VolumeProperty vp = volumeProperty("GRIN", 10);
     vp.spatial_index = true;
     vp.phase_modifier = new real(real n0, pair p, pair d, real lambda, Polarization pol) {
@@ -948,22 +948,22 @@ VolumeProperty GRIN(indexProfile n_profile, gradientProfile grad_profile = null)
     return vp;
 }
 
-VolumeProperty Absorption(real alpha) {
+VolumeProperty absorption(real alpha) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Absorption";
     vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) { return alpha; };
     return vp;
 }
 
-VolumeProperty Gain(real g) {
-    VolumeProperty vp = Absorption(-g);
+VolumeProperty gain(real g) {
+    VolumeProperty vp = absorption(-g);
     vp.name = "Gain";
     return vp;
 }
 
 // Linear dichroism.  alpha_s acts on light polarized along `axis`
 // (measured in the Stokes frame, 0 = s/TE), alpha_p on the orthogonal state.
-VolumeProperty Dichroic(real alpha_s, real alpha_p, real axis = 0.0) {
+VolumeProperty dichroic(real alpha_s, real alpha_p, real axis = 0.0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Dichroic";
     real axis = radians(axis);
@@ -988,7 +988,7 @@ VolumeProperty Dichroic(real alpha_s, real alpha_p, real axis = 0.0) {
 
 // Sellmeier dispersion n^2(lambda) = 1 + sum B_i lambda^2 / (lambda^2 - C_i),
 // with lambda in um and C_i in um^2.  Homogeneous: no GRIN integration.
-VolumeProperty Sellmeier(real[] B, real[] C) {
+VolumeProperty sellmeier(real[] B, real[] C) {
     if (B.length != C.length) abort("Sellmeier: B and C must have equal length.");
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Sellmeier";
@@ -1006,7 +1006,7 @@ VolumeProperty Sellmeier(real[] B, real[] C) {
     return vp;
 }
 
-VolumeProperty UniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0)) {
+VolumeProperty uniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0)) {
     if (no <= 0 || ne <= 0) abort("Uniaxial refractive indices must be positive.");
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Uniaxial Extraordinary";
@@ -1078,7 +1078,7 @@ VolumeProperty UniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0))
 }
 
 // Optical Activity / Natural Polarization Rotation
-VolumeProperty OpticalActivity(real rot_per_unit) {
+VolumeProperty opticalActivity(real rot_per_unit) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "OpticalActivity";
 
@@ -1096,7 +1096,7 @@ VolumeProperty OpticalActivity(real rot_per_unit) {
 }
 
 // Faraday Rotation: theta = V * (B . d) * ds (Non-reciprocal magnetic rotation)
-VolumeProperty FaradayRotator(real V, pair B = (1, 0)) {
+VolumeProperty faradayRotator(real V, pair B = (1, 0)) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "FaradayRotator";
 
@@ -1121,8 +1121,8 @@ Medium medium(string name = "",
               gradientProfile grad_profile = null) {
     Medium m = new Medium;
     m.name = name;
-    if (A != 1.0 || B != 0.0 || n_profile != null) m.add(RefractiveIndex(A, B, n_profile, grad_profile));
-    if (alpha != 0) m.add(Absorption(alpha));
+    if (A != 1.0 || B != 0.0 || n_profile != null) m.add(refractiveIndex(A, B, n_profile, grad_profile));
+    if (alpha != 0) m.add(absorption(alpha));
     return m;
 }
 
@@ -1145,7 +1145,7 @@ struct Materials {
 
 // Implicit String-to-Medium Casting (Case-Insensitive & Type-Safe)
 Medium operator cast(string name) {
-    string n = UpperCase(name);
+    string n = upperCase(name);
     if (n == "VACUUM" || n == "VAC") return Materials.VACUUM;
     if (n == "AIR") return Materials.AIR;
     if (n == "WATER") return Materials.WATER;
@@ -1162,13 +1162,13 @@ Medium operator cast(string name) {
 Medium uniaxialExtraordinary(string name, real no, real ne, pair optic_axis = (1, 0)) {
     Medium m = new Medium;
     m.name = name;
-    m.add(UniaxialExtraordinary(no, ne, optic_axis));
+    m.add(uniaxialExtraordinary(no, ne, optic_axis));
     return m;
 }
 
 // VolumeProperty that stores kappa alongside the real index.
 private
-VolumeProperty ComplexRefractiveIndex(real kappa) {
+VolumeProperty complexRefractiveIndex(real kappa) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "ComplexRefractiveIndex";
     vp.extinction = new real(pair p, pair d, real lambda, Polarization pol) { return kappa; };
@@ -1193,9 +1193,9 @@ Medium complexMedium(string name, real n, real kappa, real alpha = 0.0) {
     if (kappa < 0) abort("complexMedium: kappa must be >= 0 (passive medium).");
     Medium m = new Medium;
     m.name = name;
-    m.add(RefractiveIndex(n, 0.0, null, null));
-    m.add(ComplexRefractiveIndex(kappa));
-    if (alpha != 0) m.add(Absorption(alpha));
+    m.add(refractiveIndex(n, 0.0, null, null));
+    m.add(complexRefractiveIndex(kappa));
+    if (alpha != 0) m.add(absorption(alpha));
     return m;
 }
 
@@ -2122,8 +2122,8 @@ struct Surface {
         return this;
     }
 
-    Surface properties( ... Property[] pList) {
-        for (Property p : pList) insertSorted(p);
+    Surface properties( ... Property[] p_list) {
+        for (Property p : p_list) insertSorted(p);
         return this;
     }
 
@@ -2267,8 +2267,8 @@ struct Element {
         return this;
     }
 
-    Element properties( ... Property[] pList) {
-        for (Property p : pList) this.add(p);
+    Element properties( ... Property[] p_list) {
+        for (Property p : p_list) this.add(p);
         return this;
     }
 
@@ -2920,7 +2920,7 @@ struct Trace {
         return ix.transmitted[idx];
     }
 
-    Ray[] Transmitted(int ix_index) {
+    Ray[] transmittedRays(int ix_index) {
         Interaction ix = interaction(ix_index);
         if (ix == null) return new Ray[];
         return ix.transmitted;
@@ -2934,7 +2934,7 @@ struct Trace {
         return ix.reflected[idx];
     }
 
-    Ray[] Reflected(int ix_index) {
+    Ray[] reflectedRays(int ix_index) {
         Interaction ix = interaction(ix_index);
         if (ix == null) return new Ray[];
         return ix.reflected;
@@ -3058,7 +3058,7 @@ struct Trace {
         return b;
     }
 
-    Trace follow( ... int[] newRoute) { return view(root_id, newRoute, root_ids, is_reflection); }
+    Trace follow( ... int[] new_route) { return view(root_id, new_route, root_ids, is_reflection); }
 
     Element getElement(Hit h) {
         if (h == null || h.element_index < 0 || h.element_index >= system_elements.length) return null;
@@ -3153,7 +3153,7 @@ struct Trace {
         bool tree_active = (curr_id >= 0 && curr_id < ray_tree.length);
 
         for (int i = 0; i < length(route_string); ++i) {
-            string c = UpperCase(substr(route_string, i, 1));
+            string c = upperCase(substr(route_string, i, 1));
             if (c != "T" && c != "R") continue;
 
             if (tree_active && curr_id >= 0 && curr_id < ray_tree.length) {
@@ -3375,8 +3375,8 @@ struct OpticalSystem {
         this.elements.push(e);
         this.invalidateCache();
     }
-    void add(Element[] eList) {
-        this.elements.append(eList);
+    void add(Element[] e_list) {
+        this.elements.append(e_list);
         this.invalidateCache();
     }
     void add(OpticalSystem s) { this.add(s.elements); }
@@ -3391,7 +3391,7 @@ struct OpticalSystem {
         return total;
     }
 
-    FlatSurfaceRecord[] flatSurfaces() {
+    FlatSurfaceRecord[] flat_surfaces() {
         bool valid = this.cache_valid && (this.cached_transforms.length == this.elements.length);
         if (valid) {
             for (int i = 0; i < this.elements.length; ++i) {
@@ -3429,7 +3429,7 @@ struct OpticalSystem {
         validateConfig();
         if (ds <= 0 || far <= 0 || max_depth < 1)
             abort("OpticalSystem.trace requires positive ds/far and max_depth >= 1.");
-        FlatSurfaceRecord[] flat_surfaces = this.flatSurfaces();
+        FlatSurfaceRecord[] flat_surfaces = this.flat_surfaces();
         Element[] trace_elements = elements;
         Medium trace_ambient = ambient;
         mediumResolver resolve = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
@@ -3582,7 +3582,7 @@ Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
 }
 
 // Surface Property: Refract (Updated with Complex Fresnel Phase Retardance)
-Property Refract(Medium inside, Medium ambient = null) {
+Property refract(Medium inside, Medium ambient = null) {
     return property(
         "Refract",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -3593,7 +3593,7 @@ Property Refract(Medium inside, Medium ambient = null) {
 // Ideal lossless, non-polarizing coating between equal-index media.
 // R is power reflectance; T = 1 - R.
 // Reflection and transmission phases are configurable in radians.
-Property Coating(Medium inside,
+Property coating(Medium inside,
                  Medium ambient = null,
                  real R = 0.5,
                  real reflection_phase = pi / 2,
@@ -3644,7 +3644,7 @@ Property Coating(Medium inside,
 
 // Ideal polarizing beam-splitting coating with independent s and p reflectances.
 // Default Rs = 1.0, Rp = 0.0 transmits p-polarized (TM) light and reflects s-polarized (TE) light.
-Property PolarizingCoating(Medium inside,
+Property polarizingCoating(Medium inside,
                            Medium ambient = null,
                            real Rs = 1.0,
                            real Rp = 0.0,
@@ -3813,7 +3813,7 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
     return fa;
 }
 
-Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = null) {
+Property thinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = null) {
     return property(
         "ThinFilmStack",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -3829,13 +3829,13 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
 }
 
 // Convenience factory: single thin-film layer of specified thickness
-Property SingleLayerCoating(Medium layer_medium, real thickness_nm, Medium inside, Medium ambient = null) {
+Property singleLayerCoating(Medium layer_medium, real thickness_nm, Medium inside, Medium ambient = null) {
     ThinFilmLayer[] layers = {ThinFilmLayer(layer_medium, thickness_nm)};
-    return ThinFilmStack(layers, inside, ambient);
+    return thinFilmStack(layers, inside, ambient);
 }
 
 // Convenience factory: physical quarter-wave anti-reflection (AR) coating at design_lambda
-Property AntiReflectionCoating(Medium layer_medium,
+Property antiReflectionCoating(Medium layer_medium,
                                Medium inside,
                                Medium ambient = null,
                                real design_lambda = config.physics.lambda) {
@@ -3843,28 +3843,28 @@ Property AntiReflectionCoating(Medium layer_medium,
     real n_eff = max(config.math.eps, n_layer.x);
     real d_qw = design_lambda / (4.0 * n_eff);
     ThinFilmLayer[] layers = {ThinFilmLayer(layer_medium, d_qw)};
-    return ThinFilmStack(layers, inside, ambient);
+    return thinFilmStack(layers, inside, ambient);
 }
 
 // Convenience factory: Distributed Bragg Reflector (DBR) multilayer coating
 // Alternates N pairs of high-index (med_H) and low-index (med_L) quarter-wave layers.
-Property DistributedBraggReflector(Medium med_H,
+Property distributedBraggReflector(Medium med_H,
                                    Medium med_L,
                                    int pairs = 4,
                                    Medium inside = null,
                                    Medium ambient = null,
                                    real design_lambda = config.physics.lambda) {
     if (pairs < 1) abort("DistributedBraggReflector: pairs must be >= 1.");
-    complex nH = complexN(med_H, lambda = design_lambda);
-    complex nL = complexN(med_L, lambda = design_lambda);
-    real dH = design_lambda / (4.0 * max(config.math.eps, nH.x));
-    real dL = design_lambda / (4.0 * max(config.math.eps, nL.x));
+    complex n_h = complexN(med_H, lambda = design_lambda);
+    complex n_l = complexN(med_L, lambda = design_lambda);
+    real d_h = design_lambda / (4.0 * max(config.math.eps, n_h.x));
+    real d_l = design_lambda / (4.0 * max(config.math.eps, n_l.x));
     ThinFilmLayer[] layers = new ThinFilmLayer[];
     for (int i = 0; i < pairs; ++i) {
-        layers.push(ThinFilmLayer(med_H, dH));
-        layers.push(ThinFilmLayer(med_L, dL));
+        layers.push(ThinFilmLayer(med_H, d_h));
+        layers.push(ThinFilmLayer(med_L, d_l));
     }
-    return ThinFilmStack(layers, inside, ambient);
+    return thinFilmStack(layers, inside, ambient);
 }
 
 // Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
@@ -3955,7 +3955,7 @@ Ray[] doubleRefractionExit(Ray r,
     return emitFresnelPair(r, h, res);
 }
 
-Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
+Property doubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
     return property(
         "DoubleRefraction",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -3967,7 +3967,7 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
         });
 }
 
-Property Reflect(real phase_shift = pi) {
+Property reflect(real phase_shift = pi) {
     return property(
         "Reflect",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -3983,7 +3983,7 @@ Property Reflect(real phase_shift = pi) {
         new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
-Property IdealReflect(real f, real phase_shift = pi) {
+Property idealReflect(real f, real phase_shift = pi) {
     return property(
         "IdealReflect",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -4006,7 +4006,7 @@ Property IdealReflect(real f, real phase_shift = pi) {
 }
 
 // PROPERTY: Used for ideal spherical interfaces with paraxial approximation
-Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
+Property idealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
     pair A = unitOr(axis);
     pair Q = (-A.y, A.x);
 
@@ -4073,7 +4073,7 @@ Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
         new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
-Property Focus(real f) {
+Property focus(real f) {
     return property(
         "Focus",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -4085,7 +4085,7 @@ Property Focus(real f) {
         PropertyStage.Deflect);
 }
 
-Property PhaseFocus(real f) {
+Property phaseFocus(real f) {
     return property(
         "PhaseFocus",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -4102,7 +4102,7 @@ Property PhaseFocus(real f) {
         PropertyStage.Deflect);
 }
 
-Property IdealFocus(real f) {
+Property idealFocus(real f) {
     return property(
         "IdealFocus",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -4151,7 +4151,7 @@ pair wavevectorShiftAxis(pair in_dir, pair target_dir, real delta_k, bool reflec
 }
 
 Property
-Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false, real[] efficiencies = new real[]{}) {
+diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false, real[] efficiencies = new real[]{}) {
     if (lines_per_mm <= 0) abort("Diffract: lines_per_mm must be positive.");
     if (efficiencies.length > 0 && efficiencies.length != orders.length)
         abort("Diffract: efficiencies length must match orders length (or be empty).");
@@ -4161,7 +4161,7 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
     return property(
         "Diffract",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
-            Ray[] validRays;
+            Ray[] valid_rays;
             bool use_efficiencies = (efficiencies.length == orders.length);
             pair N = phaseGradientNormal(r, h);
             pair T = -unitOr(h.tangent, (N.y, -N.x));
@@ -4186,18 +4186,18 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
                     real eff = use_efficiencies ? max(0.0, efficiencies[i]) : 1.0;
                     real intensity = r.intensity() * eff;
                     Ray diff_ray = spawnRay(r, h, v_out, intensity, m2, phase_shift);
-                    validRays.push(diff_ray);
+                    valid_rays.push(diff_ray);
                 }
             }
 
-            if (validRays.length > 0 && !use_efficiencies) {
-                real split_intensity = r.intensity() / validRays.length;
-                for (int i = 0; i < validRays.length; ++i) {
-                    validRays[i].pol.scaleTo(split_intensity);
+            if (valid_rays.length > 0 && !use_efficiencies) {
+                real split_intensity = r.intensity() / valid_rays.length;
+                for (int i = 0; i < valid_rays.length; ++i) {
+                    valid_rays[i].pol.scaleTo(split_intensity);
                 }
             }
 
-            return validRays;
+            return valid_rays;
         },
         PropertyStage.Interact,
         0,
@@ -4208,7 +4208,7 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
         });
 }
 
-Property PhaseShift(real delta_k, bool reflective = false) {
+Property phaseShift(real delta_k, bool reflective = false) {
     return property(
         "PhaseShift",
         new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -4232,7 +4232,7 @@ Property PhaseShift(real delta_k, bool reflective = false) {
         });
 }
 
-Property Absorb() {
+Property absorb() {
     return property("Absorb", new Ray[](Ray r, Hit h, mediumResolver resolve) { return new Ray[]; });
 }
 
@@ -4242,7 +4242,7 @@ Property Absorb() {
 // two are independent: rotating a waveplate's fast axis does not tilt the
 // plate.
 // General linear retarder: retardance delta (rad), fast axis at fast_axis.
-Property Retard(real delta, real fast_axis = 0.0) {
+Property retard(real delta, real fast_axis = 0.0) {
     real ax = radians(fast_axis);
     return property(
         "Retarder",
@@ -4472,7 +4472,7 @@ struct BeamSplitter {
                          pen stroke = gray(0.3),
                          string name = "Plate Beam Splitter") {
         // angle = tilt angle (e.g. 45 deg tilts the plate to reflect horizontal rays UPWARD at 90 deg!)
-        return linearElement(center, angle, diameter, Coating(left, right, R), stroke, name);
+        return linearElement(center, angle, diameter, coating(left, right, R), stroke, name);
     }
 
   private
@@ -4507,7 +4507,7 @@ struct BeamSplitter {
         s_outer.fill = fill;
         s_outer.center = center;
         s_outer.axis = ax;
-        s_outer.add(Refract(glass, ambient));
+        s_outer.add(refract(glass, ambient));
         e.add(s_outer);
 
         Surface s_diag = new Surface;
@@ -4532,7 +4532,7 @@ struct BeamSplitter {
                         pen fill = 0.08paleblue + white,
                         string name = "Cube Beam Splitter") {
         if (R < 0.0 || R > 1.0) abort("BeamSplitter.cube: R must be between 0 and 1.");
-        return makeCube(center, angle, size, Coating(glass, glass, R), glass, ambient, stroke, fill, name);
+        return makeCube(center, angle, size, coating(glass, glass, R), glass, ambient, stroke, fill, name);
     }
 
     static Element pbs(pair center,
@@ -4548,7 +4548,7 @@ struct BeamSplitter {
         return makeCube(center,
                         angle,
                         size,
-                        PolarizingCoating(glass, glass, Rs = Rs, Rp = Rp),
+                        polarizingCoating(glass, glass, Rs = Rs, Rp = Rp),
                         glass,
                         ambient,
                         stroke,
@@ -4558,13 +4558,13 @@ struct BeamSplitter {
 }
 
 // Universal Refractive Interface Primitive
-Element Interface(path boundary,
+Element interface(path boundary,
                   Medium inside,
                   Medium ambient = null,
                   pen stroke = black,
                   pen fill = nullpen,
                   string name = "Interface") {
-    Property[] props = {Refract(inside, ambient)};
+    Property[] props = {refract(inside, ambient)};
     return element(boundary,
                    props,
                    stroke,
@@ -4584,9 +4584,9 @@ struct Polarizer {
                       real thickness = 2.0,
                       real extinction = 1000.0) {
         // Index-free dichroic medium: no Fresnel loss, only diattenuation.
-        Medium pol_med = medium("Polarizer").add(Dichroic(0.0, extinction, axis));
+        Medium pol_med = medium("Polarizer").add(dichroic(0.0, extinction, axis));
         path plate = box((-thickness / 2, -diameter / 2), (thickness / 2, diameter / 2));
-        Element e = Interface(shift(center) * rotate(angle) * plate, pol_med);
+        Element e = interface(shift(center) * rotate(angle) * plate, pol_med);
         e.name = "Linear Polarizer";
         e.center = center;
         e.axis = dir(angle);
@@ -4603,7 +4603,7 @@ struct Polarizer {
                             real angle = 0.0,
                             pen stroke = black,
                             string name = "Retarder") {
-        return linearElement(center, angle, diameter, Retard(delta, fast_axis), stroke, name);
+        return linearElement(center, angle, diameter, retard(delta, fast_axis), stroke, name);
     }
 
     // 2. Quarter-Wave Plate (QWP) - Retardance = pi/2
@@ -4637,7 +4637,7 @@ struct Mirror {
                         real diameter,
                         pen stroke = config.rendering.pen_mirror,
                         string name = "Flat Mirror") {
-        return linearElement(center, angle, diameter, Reflect(), stroke, name);
+        return linearElement(center, angle, diameter, reflect(), stroke, name);
     }
 
     // TRUE Physical Spherical Mirror (Has real spherical aberration!)
@@ -4649,7 +4649,7 @@ struct Mirror {
                              string name = "Spherical Mirror") {
         pair N = dir(angle);
         path boundary = sphericalMirrorArc(vertex, N, f, diameter);
-        Property[] props = {Reflect()};
+        Property[] props = {reflect()};
         return element(boundary, props, stroke, nullpen, name, vertex, N);
     }
 
@@ -4662,7 +4662,7 @@ struct Mirror {
                                   string name = "Ideal Spherical Mirror") {
         pair N = dir(angle);
         path boundary = sphericalMirrorArc(vertex, N, f, diameter);
-        Property[] props = {IdealReflect(f)};
+        Property[] props = {idealReflect(f)};
         return element(boundary, props, stroke, nullpen, name, vertex, N);
     }
 
@@ -4684,19 +4684,19 @@ struct Mirror {
 
         transform T = shift(vertex) * rotate(angle);
         path boundary = T * g;
-        Property[] props = {Reflect()};
+        Property[] props = {reflect()};
         return element(boundary, props, stroke, nullpen, name, vertex, dir(angle));
     }
 
     static Element custom(path boundary, pen stroke = config.rendering.pen_mirror, string name = "Custom Mirror") {
-        Property[] props = {Reflect()};
+        Property[] props = {reflect()};
         return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary));
     }
 
 }
 
 // Ideal Spherical interface using paraxial approximation
-Element SphericalInterface(pair vertex,
+Element sphericalInterface(pair vertex,
                            real angle,
                            real R,
                            real diameter = 2R,
@@ -4705,7 +4705,7 @@ Element SphericalInterface(pair vertex,
                            pen stroke = black,
                            string name = "SphericalInterface") {
     pair N = dir(angle);
-    Property[] props = {IdealRefract(vertex, N, R, inside, ambient)};
+    Property[] props = {idealRefract(vertex, N, R, inside, ambient)};
     path boundary = sphericalArc(vertex, N, R, diameter);
     return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
 }
@@ -4784,12 +4784,12 @@ struct Lens {
     static Element
     idealFace(pair V, real angle, real R, real diameter, Medium glass, Medium ambient, pen stroke, string label_name) {
         if (abs(R) > config.math.eps && abs(R) != infinity) {
-            return SphericalInterface(V, angle, R, diameter, glass, ambient, stroke, label_name);
+            return sphericalInterface(V, angle, R, diameter, glass, ambient, stroke, label_name);
         }
         return linearElement(V,
                              angle,
                              diameter,
-                             IdealRefract(V, dir(angle), 0.0, glass, ambient),
+                             idealRefract(V, dir(angle), 0.0, glass, ambient),
                              stroke,
                              label_name,
                              glass);
@@ -4801,7 +4801,7 @@ struct Lens {
                         real diameter,
                         pen stroke = config.rendering.pen_lens,
                         string name = "Thin Lens") {
-        Element e = linearElement(center, angle, diameter, Focus(f), stroke, name);
+        Element e = linearElement(center, angle, diameter, focus(f), stroke, name);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
         return e;
@@ -4813,7 +4813,7 @@ struct Lens {
                              real diameter,
                              pen stroke = config.rendering.pen_lens,
                              string name = "Phase Thin Lens") {
-        Element e = linearElement(center, angle, diameter, PhaseFocus(f), stroke, name);
+        Element e = linearElement(center, angle, diameter, phaseFocus(f), stroke, name);
         e.focal_length = f;
         e.custom_draw = drawThinLens;
         return e;
@@ -4828,7 +4828,7 @@ struct Lens {
                               Medium glass,
                               Medium ambient = null,
                               pen stroke = config.rendering.pen_lens,
-                              pen fill = Blue(0.12),
+                              pen fill = blueTint(0.12),
                               string name = "Ideal Thick Lens") {
         real t_safe = max(thickness, config.geometry.eps);
         transform T = shift(center) * rotate(angle);
@@ -4863,7 +4863,7 @@ struct Lens {
                          string name = "Thick Lens") {
         path local_p = LensPath.thickLens(R1, R2, thickness, diameter);
         transform T = shift(center) * rotate(angle);
-        Element e = Interface(T * local_p, glass, ambient, stroke, fill, name);
+        Element e = interface(T * local_p, glass, ambient, stroke, fill, name);
 
         // Explicitly assign the real optical axis and center (do not let Interface guess!):
         e.center = center;
@@ -4950,7 +4950,7 @@ struct Lens {
                           pen stroke = config.rendering.pen_lens,
                           pen fill = nullpen,
                           string name = "Custom Lens") {
-        return Interface(boundary, glass, ambient, stroke, fill, name);
+        return interface(boundary, glass, ambient, stroke, fill, name);
     }
 }
 
@@ -4986,12 +4986,12 @@ void drawGrating(picture pic = currentpicture, Element e) {
 }
 
 // Absorber, Aperture, Grating & Phase Gradient Factories
-Element Absorber(path boundary, pen stroke = config.rendering.pen_absorber, string name = "Absorber") {
-    Property[] props = {Absorb()};
+Element absorber(path boundary, pen stroke = config.rendering.pen_absorber, string name = "Absorber") {
+    Property[] props = {absorb()};
     return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary));
 }
 
-Element Aperture(pair center, real diameter, real hole, real angle = 0, pen stroke = black, string name = "Aperture") {
+Element aperture(pair center, real diameter, real hole, real angle = 0, pen stroke = black, string name = "Aperture") {
     pair ax = dir(angle);
     pair q = (-ax.y, ax.x);
     pair top1 = center + hole / 2 * q;
@@ -5002,22 +5002,22 @@ Element Aperture(pair center, real diameter, real hole, real angle = 0, pen stro
     e.name = name;
     e.center = center;
     e.axis = ax;
-    e.add(Absorber(top1 -- top2, stroke, name + " top"));
-    e.add(Absorber(bot1 -- bot2, stroke, name + " bottom"));
+    e.add(absorber(top1 -- top2, stroke, name + " top"));
+    e.add(absorber(bot1 -- bot2, stroke, name + " bottom"));
     return e;
 }
 
-Element PhaseGradient(pair center,
+Element phaseGradient(pair center,
                       real diameter,
                       real angle,
                       real delta_k,
                       bool reflective = false,
                       pen stroke = lightblue,
                       string name = "Phase Gradient") {
-    return linearElement(center, angle, diameter, PhaseShift(delta_k, reflective), stroke, name);
+    return linearElement(center, angle, diameter, phaseShift(delta_k, reflective), stroke, name);
 }
 
-Element Grating(pair center,
+Element grating(pair center,
                 real diameter,
                 real angle,
                 real lines_per_mm,
@@ -5027,20 +5027,20 @@ Element Grating(pair center,
                 pen stroke = lightblue,
                 string name = "Grating") {
     Element e =
-        linearElement(center, angle, diameter, Diffract(lines_per_mm, orders, reflective, efficiencies), stroke, name);
+        linearElement(center, angle, diameter, diffract(lines_per_mm, orders, reflective, efficiencies), stroke, name);
     e.custom_draw = drawGrating;
     return e;
 }
 
 // Generic Two-Mode Birefringent Crystal (Accepts any ordinary + extraordinary media)
-Element Crystal(path boundary,
+Element crystal(path boundary,
                 Medium med_o,
                 Medium med_e,
                 Medium ambient = null,
                 pen stroke = black,
                 pen fill = nullpen,
                 string name = "Crystal") {
-    Property[] props = {DoubleRefraction(med_o, med_e, ambient)};
+    Property[] props = {doubleRefraction(med_o, med_e, ambient)};
     return element(boundary,
                    props,
                    stroke,
@@ -5053,7 +5053,7 @@ Element Crystal(path boundary,
 }
 
 // Convenience Uniaxial Crystal Factory (Builds med_o and med_e in 1 line)
-Element UniaxialCrystal(path boundary,
+Element uniaxialCrystal(path boundary,
                         real no,
                         real ne,
                         pair optic_axis = (1, 0),
@@ -5063,7 +5063,7 @@ Element UniaxialCrystal(path boundary,
                         string name = "Uniaxial Crystal") {
     Medium med_o = medium(name + " Ordinary", no);
     Medium med_e = uniaxialExtraordinary(name + " Extraordinary", no, ne, optic_axis);
-    return Crystal(boundary, med_o, med_e, ambient, stroke, fill, name);
+    return crystal(boundary, med_o, med_e, ambient, stroke, fill, name);
 }
 
 // Dynamic Geometric Alignment API
@@ -5375,7 +5375,7 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     real launch_distance = 0.5 * config.physics.far;
     real min_proj = infinity;
     real max_proj = -infinity;
-    FlatSurfaceRecord[] recs = sys.flatSurfaces();
+    FlatSurfaceRecord[] recs = sys.flat_surfaces();
     for (FlatSurfaceRecord rec : recs) {
         if (rec.min_bound.x < infinity && rec.max_bound.x > -infinity) {
             pair[] pts = {rec.min_bound,
@@ -6021,11 +6021,11 @@ private frame makeFramedBox(frame content, real margin, pen border, pen fill) {
 }
 
 private
-void drawTargetConnector(frame f, pair target_pt, pair anchor_pt, frame box_frame, pen line_pen, pen dot_pen) {
+void drawTargetConnector(frame f, pair target_pt, pair anchor_pt, frame box_frame, pen pen_line, pen pen_dot) {
     if (target_pt == anchor_pt) return;
     pair hit_pt = point(box_frame, unitOr(target_pt - anchor_pt));
-    draw(f, target_pt -- hit_pt, line_pen);
-    dot(f, target_pt, dot_pen);
+    draw(f, target_pt -- hit_pt, pen_line);
+    dot(f, target_pt, pen_dot);
 }
 
 struct Inset {
@@ -6682,10 +6682,10 @@ void drawBundleContours(picture pic = currentpicture, Trace[] traces, RayWavefro
     if (min_global_o_p_l >= max_global_o_p_l - config.math.eps) return;
 
     // 3. Determine Target OPL values
-    real[] targetOPLs = computeBundleTargetOPLs(min_global_o_p_l, max_global_o_p_l, spacing, count);
+    real[] target_o_p_ls = computeBundleTargetOPLs(min_global_o_p_l, max_global_o_p_l, spacing, count);
 
     // 4. Trace Wavefront Contours at Each Target OPL
-    for (real L_target : targetOPLs) {
+    for (real L_target : target_o_p_ls) {
         guide current_wf;
         int current_run = 0;
         TracePoint prev_t_p;
@@ -7504,9 +7504,9 @@ void draw(picture pic = currentpicture,
 
     // Resolve true optical stages (skipping internal glass propagation)
     int num_segs = traces[0].segments().length;
-    pair[] stageTips, stageBases;
-    bool[] stageIsReal;
-    int[] stageSegIdx;
+    pair[] stage_tips, stageBases;
+    bool[] stage_is_real;
+    int[] stage_seg_idx;
 
     for (int s = 1; s < num_segs; ++s) {
         Segment seg0 = traces[0].segments()[s];
@@ -7522,10 +7522,10 @@ void draw(picture pic = currentpicture,
         pair ax_d = unitOr(axis_segs[ax_idx].b - ax_p1, axis_segs[ax_idx].before.d);
         pair base = ax_p1 + dot(tip - ax_p1, ax_d) * ax_d;
 
-        stageTips.push(tip);
+        stage_tips.push(tip);
         stageBases.push(base);
-        stageIsReal.push(is_real);
-        stageSegIdx.push(s);
+        stage_is_real.push(is_real);
+        stage_seg_idx.push(s);
     }
 
     // Render Axis, Rays, Extensions & Arrows
@@ -7542,25 +7542,25 @@ void draw(picture pic = currentpicture,
              p = p_ray,
              arrows = RayArrows(first = true, middle = false, last = true));
 
-    for (int k = 0; k < stageTips.length; ++k) {
-        if (!stageIsReal[k]) {
-            int s_idx = stageSegIdx[k];
+    for (int k = 0; k < stage_tips.length; ++k) {
+        if (!stage_is_real[k]) {
+            int s_idx = stage_seg_idx[k];
             for (Trace t : traces)
-                if (s_idx < t.segments().length) draw(pic, t.segments()[s_idx].a -- stageTips[k], p_virtual);
+                if (s_idx < t.segments().length) draw(pic, t.segments()[s_idx].a -- stage_tips[k], p_virtual);
         }
     }
 
     draw(pic, obj_base -- obj_tip, p_object, EndArrow(DefaultHead, size = arrow_size, filltype = Draw));
 
-    for (int k = 0; k < stageTips.length; ++k) {
-        if (!intermediate && k < stageTips.length - 1) continue;
-        real h_img = length(stageTips[k] - stageBases[k]);
+    for (int k = 0; k < stage_tips.length; ++k) {
+        if (!intermediate && k < stage_tips.length - 1) continue;
+        real h_img = length(stage_tips[k] - stageBases[k]);
         if (h_img < config.math.eps) continue;
         real eff_arrow = scale_arrows ? (h_img / h_obj) * arrow_size : arrow_size;
-        pen pen_arr = (k == stageTips.length - 1) ? p_image : (0.7 * p_image + 0.3 * white);
-        if (!stageIsReal[k]) pen_arr = pen_arr + dashed;
+        pen pen_arr = (k == stage_tips.length - 1) ? p_image : (0.7 * p_image + 0.3 * white);
+        if (!stage_is_real[k]) pen_arr = pen_arr + dashed;
         draw(pic,
-             stageBases[k] -- stageTips[k],
+             stageBases[k] -- stage_tips[k],
              pen_arr,
              EndArrow(DefaultHead, size = eff_arrow, filltype = Draw));
     }
@@ -7582,9 +7582,9 @@ void draw(picture pic = currentpicture,
           bool show_point_labels = true,
           bool show_focal_dimension = true,
           pen p_axis = gray(0.5) + dashed,
-          pen p_planes = DarkBlue(1.0) + dashed,
+          pen p_planes = darkBlueTint(1.0) + dashed,
           pen p_focal_planes = gray(0.5) + dashed,
-          pen p_points = DarkBlue(1.0),
+          pen p_points = darkBlueTint(1.0),
           pen p_nodal = black) {
     if (abs(cp.f2) == infinity || isnan(cp.f2)) return;
 
@@ -7786,7 +7786,7 @@ void drawInsetHeader(picture pic, real y, string title, string tag, pen border) 
 }
 
 // Polarization Inset Factory (From raw Polarization state)
-Inset PolarizationInset(Polarization pol,
+Inset polarizationInset(Polarization pol,
                         pair pos = (nan, nan),
                         pair target = (nan, nan),
                         real size = 20.0,
@@ -7937,7 +7937,7 @@ Inset PolarizationInset(Polarization pol,
 }
 
 // Trace Overload: Automatically extracts target point from the ray segment
-Inset PolarizationInset(Trace tr,
+Inset polarizationInset(Trace tr,
                         int segment_index = 0,
                         real relative = nan,
                         real absolute = nan,
@@ -7971,7 +7971,7 @@ Inset PolarizationInset(Trace tr,
         ref_amp = (start_i > config.math.eps) ? sqrt(start_i) : 1.0;
     }
 
-    return PolarizationInset(local_pol,
+    return polarizationInset(local_pol,
                              pos = pos,
                              target = target_point,
                              size = size,
@@ -8018,7 +8018,7 @@ struct InsetPanel {
                    pen border = rgb(0.0, 0.2, 0.6),
                    pen fill = white,
                    pen badge_text = white) {
-        Inset ins = PolarizationInset(tr,
+        Inset ins = polarizationInset(tr,
                                       segment_index = segment_index,
                                       relative = relative,
                                       absolute = absolute,
@@ -8186,7 +8186,7 @@ screenInterference(Ray[] sources,
         real x_coord = t * actual_span / 2.0;
         pair P_y = screen_center + x_coord * u_screen;
 
-        Ray[] raysAtP;
+        Ray[] rays_at_p;
         for (Ray src : sources) {
             if (src == null) continue;
             Ray r_k = copy(src);
@@ -8206,10 +8206,10 @@ screenInterference(Ray[] sources,
                 r_k.p = P_y;
             }
 
-            raysAtP.push(r_k);
+            rays_at_p.push(r_k);
         }
 
-        Polarization pol_P = interfereState(raysAtP);
+        Polarization pol_P = interfereState(rays_at_p);
         real I_P = pol_P.intensity();
 
         prof.x[i] = x_coord;
@@ -8222,7 +8222,7 @@ screenInterference(Ray[] sources,
 }
 
 // InterferenceInset Factory (Type Inset, using interfere/interfereState)
-Inset InterferenceInset(Ray[] sources,
+Inset interferenceInset(Ray[] sources,
                         pair screen_center = (0, 0),
                         pair screen_axis = (0, 1),
                         real span = nan,
@@ -8235,7 +8235,7 @@ Inset InterferenceInset(Ray[] sources,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = Red(1.0),
+                        pen pen_laser = redTint(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
@@ -8351,7 +8351,7 @@ Inset InterferenceInset(Ray[] sources,
 }
 
 // Trace[] overload for InterferenceInset
-Inset InterferenceInset(Trace[] traces,
+Inset interferenceInset(Trace[] traces,
                         pair screen_center = (0, 0),
                         pair screen_axis = (0, 1),
                         real span = nan,
@@ -8364,7 +8364,7 @@ Inset InterferenceInset(Trace[] traces,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = Red(1.0),
+                        pen pen_laser = redTint(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
@@ -8374,7 +8374,7 @@ Inset InterferenceInset(Trace[] traces,
         if (tr != null && tr.last() != null) sources.push(tr.last());
     }
 
-    return InterferenceInset(sources,
+    return interferenceInset(sources,
                              screen_center,
                              screen_axis,
                              span,
@@ -8394,7 +8394,7 @@ Inset InterferenceInset(Trace[] traces,
                              rotation);
 }
 
-Inset InterferenceInset(Trace trace,
+Inset interferenceInset(Trace trace,
                         pair screen_center = (0, 0),
                         pair screen_axis = (0, 1),
                         real span = nan,
@@ -8407,12 +8407,12 @@ Inset InterferenceInset(Trace trace,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = Red(1.0),
+                        pen pen_laser = redTint(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
                         real rotation = 0.0) {
-    return InterferenceInset(trace.subtraces(),
+    return interferenceInset(trace.subtraces(),
                              screen_center,
                              screen_axis,
                              span,
@@ -8536,21 +8536,21 @@ arrowbar InwardArrows(arrowhead arrowhead = DefaultHead,
         real offset = offset == 0 ? size : offset;
         int L = length(g);
         pair p0 = point(g, 0);
-        pair pN = point(g, L);
-        if (p0 == pN) {
+        pair p_n = point(g, L);
+        if (p0 == p_n) {
             warning("InwardArrows", "Cannot add inward arrows to a single pair.");
             return false;
         }
 
         // First segment direction
         pair dir0 = unit(dir(g, 0)); // Tangent direction at start
-        pair arrowStart = p0 - offset * dir0;
-        add(pic, arrow(arrowhead, arrowStart -- p0, p, size, angle, filltype, margin));
+        pair arrow_start = p0 - offset * dir0;
+        add(pic, arrow(arrowhead, arrow_start -- p0, p, size, angle, filltype, margin));
 
         // Last segment direction
-        pair dirN = unit(dir(g, L)); // Tangent direction at end
-        pair arrowEnd = pN + offset * dirN;
-        add(pic, arrow(arrowhead, arrowEnd -- pN, p, size, angle, filltype, margin));
+        pair dir_n = unit(dir(g, L)); // Tangent direction at end
+        pair arrow_end = p_n + offset * dir_n;
+        add(pic, arrow(arrowhead, arrow_end -- p_n, p, size, angle, filltype, margin));
 
         // Draw the original path
         draw(pic, g, p);

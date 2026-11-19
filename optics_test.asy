@@ -191,8 +191,8 @@ real n0_grin = 1.5;
 real g_grin = 0.1;
 indexProfile grin_prof = new real(pair p, real lambda) { return n0_grin * (1.0 - 0.5 * g_grin ^ 2 * p.y ^ 2); };
 gradientProfile grin_grad = new pair(pair p, real lambda) { return (0.0, -n0_grin * g_grin ^ 2 * p.y); };
-Medium grin_medium = medium("Parabolic GRIN").add(GRIN(grin_prof, grin_grad));
-Element grin_box = Interface(box((0.0, -20.0), (70.0, 20.0)), grin_medium, Materials.VACUUM);
+Medium grin_medium = medium("Parabolic GRIN").add(grin(grin_prof, grin_grad));
+Element grin_box = interface(box((0.0, -20.0), (70.0, 20.0)), grin_medium, Materials.VACUUM);
 OpticalSystem sys_g_r_i_n = system(grin_box, Materials.VACUUM);
 
 real y0_grin = 1.0;
@@ -213,7 +213,7 @@ write("");
 write("Test Case 6: Extraordinary Wave Walk-Off in Uniaxial Crystal");
 real no_c = 1.5, ne_c = 2.0;
 pair optic_axis = (1.0, 0.0);
-VolumeProperty uniaxial = UniaxialExtraordinary(no = no_c, ne = ne_c, optic_axis = optic_axis);
+VolumeProperty uniaxial = uniaxialExtraordinary(no = no_c, ne = ne_c, optic_axis = optic_axis);
 real theta_k_deg = 45.0;
 real theta_k_rad = radians(theta_k_deg);
 pair k_norm = (cos(theta_k_rad), sin(theta_k_rad));
@@ -241,7 +241,7 @@ Medium calcite_o = medium("Calcite Ordinary", 1.658);
 // The extraordinary index comes from the uniaxial solver alone: Medium.n()
 // multiplies index factors, so adding a scalar 1.486 would square the index.
 Medium calcite_e = uniaxialExtraordinary("Calcite Extraordinary", 1.658, 1.486, (1.0, 0.0));
-Element crystal = Crystal(box((0.0, -10.0), (20.0, 10.0)), calcite_o, calcite_e, Materials.VACUUM);
+Element crystal = crystal(box((0.0, -10.0), (20.0, 10.0)), calcite_o, calcite_e, Materials.VACUUM);
 OpticalSystem crystal_sys = system(crystal, Materials.VACUUM);
 
 Ray ray_crystal = Ray(p = (-10.0, 0.0), d = (cos(pi / 6.0), sin(pi / 6.0)), medium = Materials.VACUUM);
@@ -274,7 +274,7 @@ real lambda = 500.0;
 real lambda_units = lambda / 1000.0;
 real d_grating_um = 1000.0 / lines_per_mm;
 int m_order = 1;
-Element test_grating = Grating(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, lines_per_mm = lines_per_mm);
+Element test_grating = grating(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, lines_per_mm = lines_per_mm);
 OpticalSystem grating_sys = system(test_grating, Materials.VACUUM);
 
 Ray ray_grating = Ray(p = (0.0, -1.0), d = (0.0, 1.0), medium = Materials.VACUUM, lambda = lambda);
@@ -328,7 +328,7 @@ write("");
 // ============================================================================
 write("Test Case 10: Malus's Law via Dichroic Absorption");
 Element malus_polarizer =
-    Interface(box((0.0, -10.0), (10.0, 10.0)), medium("Malus Pol").add(Dichroic(0.0, 100.0)), Materials.VACUUM);
+    interface(box((0.0, -10.0), (10.0, 10.0)), medium("Malus Pol").add(dichroic(0.0, 100.0)), Materials.VACUUM);
 OpticalSystem malus_sys = system(malus_polarizer, Materials.VACUUM);
 
 real theta_pol_deg = 30.0;
@@ -351,7 +351,7 @@ write("");
 write("Test Case 11: Optical Activity in Chiral Medium");
 real sugar_distance = 10.0;
 real sugar_rotation_per_um = 50.0 / geometryToUm(sugar_distance);
-Medium sugar_water = medium("Sugar Water").add(OpticalActivity(sugar_rotation_per_um));
+Medium sugar_water = medium("Sugar Water").add(opticalActivity(sugar_rotation_per_um));
 
 Polarization p_in = Polarization.linear(0.0, 1.0); // S = (1, 1, 0, 0)
 Polarization p_out = sugar_water.stepPolarization(p_in, (0, 0), (1, 0), 633.0, 10.0);
@@ -372,7 +372,7 @@ real d1 = 10.0, d2 = 20.0, far_reach = 45.0;
 real n_glass_abs = 1.5;
 real alpha_glass = 0.1 / geometryToUm(d2);
 Medium absorbing_glass = medium("Absorbing Glass", n_glass_abs, alpha = alpha_glass);
-Element glass_block = Interface(box((d1, -10.0), (d1 + d2, 10.0)), absorbing_glass, Materials.VACUUM);
+Element glass_block = interface(box((d1, -10.0), (d1 + d2, 10.0)), absorbing_glass, Materials.VACUUM);
 OpticalSystem multi_sys = system(glass_block, Materials.VACUUM);
 
 Ray ray_multi = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
@@ -393,7 +393,7 @@ write("");
 write("Test Case 13: Faraday Rotation (Non-Reciprocal Polarization)");
 real V_verdet = 30.0 / geometryToUm(3.0); // deg / (Tesla * µm)
 pair B_field = (1.0, 0.0);                // 1 Tesla along +x-axis
-Medium faraday_medium = medium("Faraday Glass").add(FaradayRotator(V_verdet, B_field));
+Medium faraday_medium = medium("Faraday Glass").add(faradayRotator(V_verdet, B_field));
 
 // Forward propagation: d = (1, 0) over ds = 3.0 units. Expected rotation = +30 deg.
 Polarization pol_init_f = Polarization.linear(0.0, 1.0); // Pure S
@@ -419,7 +419,7 @@ write("");
 write("Test Case 14: PhaseGradient element / PhaseShift wavevector deflection");
 real deltaK_shift = 0.5;
 Element pg_interface =
-    PhaseGradient(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, delta_k = deltaK_shift, reflective = false);
+    phaseGradient(center = (0.0, 0.0), diameter = 10.0, angle = 90.0, delta_k = deltaK_shift, reflective = false);
 OpticalSystem pg_sys = system(pg_interface, Materials.VACUUM);
 
 Ray ray_pg = Ray(p = (0.0, -1.0), d = (0.0, 1.0), medium = Materials.VACUUM);
@@ -473,7 +473,7 @@ write("");
 // Test Case 16: Aperture Blocking & Spatial Filtering
 // ============================================================================
 write("Test Case 16: Aperture Blocking & Spatial Filtering");
-Element spatial_filter = Aperture(center = (50.0, 0.0), diameter = 50.0, hole = 10.0, angle = 0.0);
+Element spatial_filter = aperture(center = (50.0, 0.0), diameter = 50.0, hole = 10.0, angle = 0.0);
 OpticalSystem filter_sys = system(spatial_filter, Materials.VACUUM);
 
 Ray ray_inside = Ray(p = (0.0, 2.0), d = (1.0, 0.0), medium = Materials.VACUUM);
@@ -523,8 +523,8 @@ real d_entry = 10.0;
 real d_slab = 20.0;
 real far_exit = 40.0;
 
-Medium active_medium = medium("Amplifying Gas", 1.0).add(Gain(g_amp));
-Element gain_slab = Interface(box((d_entry, -10.0), (d_entry + d_slab, 10.0)), active_medium, Materials.VACUUM);
+Medium active_medium = medium("Amplifying Gas", 1.0).add(gain(g_amp));
+Element gain_slab = interface(box((d_entry, -10.0), (d_entry + d_slab, 10.0)), active_medium, Materials.VACUUM);
 OpticalSystem amp_sys = system(gain_slab, Materials.VACUUM);
 
 Ray ray_amp = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
@@ -550,7 +550,7 @@ real theta_B_deg = degrees(atan(n_glass_br / n_air));
 real theta_B_rad = radians(theta_B_deg);
 
 Medium glass_brewster = medium("Brewster Glass", n_glass_br);
-Element brewster_window = Interface(box((0.0, -20.0), (10.0, 20.0)), glass_brewster, Materials.VACUUM);
+Element brewster_window = interface(box((0.0, -20.0), (10.0, 20.0)), glass_brewster, Materials.VACUUM);
 OpticalSystem brewster_sys = system(brewster_window, Materials.VACUUM);
 
 Ray ray_p = Ray(p = (-10.0 * cos(theta_B_rad), -10.0 * sin(theta_B_rad)),
@@ -624,7 +624,7 @@ write("Test Case 21: Nested Spatial Containment (Glass Lens in Water Tank)");
 Medium water = medium("Water", 1.333333);
 Medium glass_in_water = medium("Glass", 1.50);
 
-Element water_tank = Interface(box((0.0, -40.0), (200.0, 40.0)), water, Materials.VACUUM);
+Element water_tank = interface(box((0.0, -40.0), (200.0, 40.0)), water, Materials.VACUUM);
 Element lens_inside = Lens.biconvex(center = (100.0, 0.0),
                                     angle = 0.0,
                                     R1 = 50.0,
@@ -703,7 +703,7 @@ write("Test Case 24: Multi-Order Diffraction Grating Energy Conservation");
 int[] diff_orders = {-1, 0, 1};
 real[] diff_efficiencies = {0.25, 0.50, 0.25};
 
-Element tri_grating = Grating(center = (0.0, 0.0),
+Element tri_grating = grating(center = (0.0, 0.0),
                               diameter = 20.0,
                               angle = 90.0,
                               lines_per_mm = 300.0,
@@ -799,8 +799,8 @@ real n0_g = 1.5, g_g = 0.10;
 indexProfile gp = new real(pair p, real lambda) { return n0_g * (1.0 - 0.5 * g_g ^ 2 * p.y ^ 2); };
 gradientProfile gg = new pair(pair p, real lambda) { return (0.0, -n0_g * g_g ^ 2 * p.y); };
 
-Medium grin_med = medium("Parabolic GRIN").add(GRIN(gp, gg));
-Element grin_slab = Interface(box((0.0, -10.0), (50.0, 10.0)), grin_med, Materials.VACUUM);
+Medium grin_med = medium("Parabolic GRIN").add(grin(gp, gg));
+Element grin_slab = interface(box((0.0, -10.0), (50.0, 10.0)), grin_med, Materials.VACUUM);
 OpticalSystem sys_grin_compare = system(grin_slab, Materials.VACUUM);
 
 real y0_test = 0.2;
@@ -827,7 +827,7 @@ write("");
 write("Test Case 29: GRIN OPL Midpoint Integration");
 indexProfile axial_gradient_index = new real(pair p, real lambda) { return 1.0 + p.x; };
 gradientProfile axial_gradient = new pair(pair p, real lambda) { return (1.0, 0.0); };
-Medium axial_gradient_medium = medium("Axial gradient").add(GRIN(axial_gradient_index, axial_gradient));
+Medium axial_gradient_medium = medium("Axial gradient").add(grin(axial_gradient_index, axial_gradient));
 OpticalSystem empty_system = system(new Element[]);
 Trace axial_gradient_trace = empty_system.trace(Ray((0, 0), (1, 0), axial_gradient_medium), ds = 0.05, far = 1.0);
 assert_near("GRIN OPL integral of n(x)=1+x over [0,1]", axial_gradient_trace.opl(), geometryToUm(1.5), 1e-8);
@@ -848,8 +848,8 @@ Property half_power = property(
     },
     PropertyStage.AfterBoundary);
 path test_boundary = linearBoundary((0, 0), (1, 0), 20);
-Element bare_interface = Interface(test_boundary, medium("test glass", 1.5));
-Element coated_interface = Interface(test_boundary, medium("test glass", 1.5));
+Element bare_interface = interface(test_boundary, medium("test glass", 1.5));
+Element coated_interface = interface(test_boundary, medium("test glass", 1.5));
 coated_interface.surfaces[0].add(half_power);
 Ray coating_probe = Ray.angle((-5, 0), 10, Materials.VACUUM);
 real bare_power = system(bare_interface).trace(coating_probe).transmitted(0).intensity();
@@ -916,7 +916,7 @@ write("");
 // Test Case 31: Dichroic Extinction Ratio
 // ============================================================================
 write("Test Case 31: Dichroic Extinction Ratio");
-Medium pol_medium = medium("DichroicFilter").add(Dichroic(0.0, 10.0 / geometryToUm(1.0)));
+Medium pol_medium = medium("DichroicFilter").add(dichroic(0.0, 10.0 / geometryToUm(1.0)));
 Polarization out_unpol = pol_medium.stepPolarization(Polarization.unpolarized(1.0), (0, 0), (1, 0), 633.0, 1.0);
 
 assert_stokes_physical("Filter output physical state", out_unpol);
@@ -1018,7 +1018,7 @@ indexProfile sellmeier_b_k7 = new real(pair p, real lambda) {
     return sqrt(1.0 + (1.03961212 * w2) / (w2 - 0.00600069867) + (0.231792344 * w2) / (w2 - 0.0200179144) +
                 (1.01046945 * w2) / (w2 - 103.560653));
 };
-Medium bk7_disp = medium("BK7 Sellmeier").add(GRIN(sellmeier_b_k7));
+Medium bk7_disp = medium("BK7 Sellmeier").add(grin(sellmeier_b_k7));
 assert_near("BK7 refractive index at d-line (587.56 nm)", bk7_disp.n(lambda = lambda_test_nm), 1.51680, 1e-4);
 write("");
 
@@ -1027,7 +1027,7 @@ write("");
 // ============================================================================
 write("Test Case 36: Transmissive PhaseShift Target Medium Continuity");
 Medium dense_glass = medium("Dense Glass", 2.0);
-Element meta_sheet = PhaseGradient(center = (0, 0), diameter = 20, angle = 90, delta_k = 0.2, reflective = false);
+Element meta_sheet = phaseGradient(center = (0, 0), diameter = 20, angle = 90, delta_k = 0.2, reflective = false);
 OpticalSystem ps_sys = system(meta_sheet, dense_glass);
 
 Ray r_ps = Ray(p = (-5, 0), d = (1, 0), medium = Materials.VACUUM);
@@ -1080,7 +1080,7 @@ pair b_right = (L / 2.0, H_base);
 path prism_path = b_left -- b_right -- apex -- cycle;
 
 Medium glass15 = medium("Glass 1.5", 1.50);
-Element prism = Interface(prism_path, glass15, Materials.VACUUM);
+Element prism = interface(prism_path, glass15, Materials.VACUUM);
 OpticalSystem prism_sys = system(prism, Materials.VACUUM);
 
 real theta_i = degrees(asin(1.5 * sin(radians(30.0))));
@@ -1109,7 +1109,7 @@ write("");
 // ============================================================================
 write("Test Case 39: TIR Optical Waveguide / Light Pipe");
 path core_path = box((0, -5), (100, 5));
-Element guide = Interface(core_path, medium("Core", 1.50), Materials.VACUUM);
+Element guide = interface(core_path, medium("Core", 1.50), Materials.VACUUM);
 OpticalSystem guide_sys = system(guide, Materials.VACUUM);
 
 Ray r_guide = Ray(p = (0.01, 0), d = (cos(radians(25.0)), sin(radians(25.0))), medium = medium("Core", 1.50));
@@ -1142,7 +1142,7 @@ Medium glass_br_41 = medium("Glass", 1.50);
 real theta_B_deg_41 = degrees(atan(1.50 / 1.0));
 
 path boundary_plane = (0, -50) -- (0, 50);
-Element iface = Interface(boundary_plane, Materials.VACUUM, glass_br_41);
+Element iface = interface(boundary_plane, Materials.VACUUM, glass_br_41);
 OpticalSystem br_sys = system(iface, Materials.VACUUM);
 
 Ray r_unpol = Ray.toPoint(target = (0, 0),
@@ -1173,7 +1173,7 @@ write("");
 // ============================================================================
 write("Test Case 42: Porro Prism Double-TIR Retroreflector");
 path porro_path = (0, -20) -- (20, 0) -- (0, 20) -- cycle;
-Element porro = Interface(porro_path, medium("Glass", 1.50), Materials.VACUUM);
+Element porro = interface(porro_path, medium("Glass", 1.50), Materials.VACUUM);
 OpticalSystem porro_sys = system(porro, Materials.VACUUM);
 
 Ray r_porro = Ray(p = (-10, 8.0), d = (1, 0), medium = Materials.VACUUM);
@@ -1502,7 +1502,7 @@ write("Test Case 53: Dichroic Medium Propagation & Mueller Theory");
 real alpha_s_val = 0.0;
 real alpha_p_val = 1.0 / geometryToUm(2.0);
 real prop_dist = 2.0;
-Medium dichroic_filter = medium("DichroicFilter").add(Dichroic(alpha_s_val, alpha_p_val));
+Medium dichroic_filter = medium("DichroicFilter").add(dichroic(alpha_s_val, alpha_p_val));
 Polarization sync_input = Polarization.linear(45.0, 1.0);
 Polarization sync_output = dichroic_filter.stepPolarization(sync_input, (0, 0), (1, 0), 633.0, prop_dist);
 
@@ -1644,7 +1644,7 @@ real L = 50.0;
 real w = 2.0 * tan(radians(theta));
 real h = 2.0;
 path rhomb_path = (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle;
-Element rhomb = Interface(rhomb_path, glass_rhomb);
+Element rhomb = interface(rhomb_path, glass_rhomb);
 OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 // Launch linear 45-deg ray: S = (1, 0, 1, 0)
 Ray r_in = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.linear(45.0, 1.0));
@@ -1669,7 +1669,7 @@ real u = Tan(22.5);
 real A_c = 1.0 + u * u, B_c = 1.0 + 1.0 / (n_bk7 * n_bk7), C_c = 1.0 / (n_bk7 * n_bk7);
 real theta = aSin(sqrt((B_c + sqrt(B_c * B_c - 4.0 * A_c * C_c)) / (2.0 * A_c)));
 real L = 50.0, w = 2.0 * tan(radians(theta)), h = 2.0;
-Element rhomb = Interface(
+Element rhomb = interface(
     (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle, glass_rhomb_unpol);
 OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 Ray r_unpol_rhomb = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.unpolarized(1.0));
@@ -1779,7 +1779,7 @@ Medium m_air = medium("Air", n_air);
 Medium m_glass = medium("BK7", n_glass);
 
 path boundary_plane = (0, -50) -- (0, 50);
-Element iface = Interface(boundary_plane, m_air, m_glass);
+Element iface = interface(boundary_plane, m_air, m_glass);
 OpticalSystem sys = system(iface, Materials.VACUUM);
 
 real theta_B_deg = degrees(atan(n_glass / n_air)); // ~56.6 deg
@@ -1859,7 +1859,7 @@ Medium m_iso = medium("Glass_Iso", n_test);
 Medium m_uni_o = medium("Uni_O", n_test);
 Medium m_uni_e = uniaxialExtraordinary("Uni_E", n_test, n_test, (1.0, 0.0));
 
-Element crystal_iso = Crystal(box((0.0, -20.0), (20.0, 20.0)), m_uni_o, m_uni_e, Materials.VACUUM);
+Element crystal_iso = crystal(box((0.0, -20.0), (20.0, 20.0)), m_uni_o, m_uni_e, Materials.VACUUM);
 OpticalSystem sys = system(crystal_iso, Materials.VACUUM);
 
 // Launch at 30 deg incidence
@@ -1892,7 +1892,7 @@ pair optic_axis = unit((1.0, 1.0)); // 45 deg tilted optic axis
 Medium calcite_o = medium("Calcite_O", no_cal);
 Medium calcite_e = uniaxialExtraordinary("Calcite_E", no_cal, ne_cal, optic_axis);
 
-Element crystal = Crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e, Materials.VACUUM);
+Element crystal = crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e, Materials.VACUUM);
 OpticalSystem sys_energy = system(crystal, Materials.VACUUM);
 
 // Launch arbitrary elliptical polarization at 40 deg incidence
@@ -1940,7 +1940,7 @@ assert_near("Absorbed elliptical state keeps DoP = 1",
 assert_near("Absorbed elliptical state keeps azimuth", rg_ellOut.psi(), rg_ell.psi(), 1e-9);
 
 // Through the tracer: linearly polarized ray across an absorbing, index-matched slab
-Element rg_absSlab = Interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
+Element rg_absSlab = interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
 Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(30.0, 1.0)), far = 20).last();
 real rg_slab_distance = 10.0;
 real rg_k_slab = rg_alpha * (633.0 * nm_to_um) / (4.0 * pi);
@@ -1971,7 +1971,7 @@ write("");
 write("Test Case 68: Birefringent slab exit directions and lateral walk-off");
 Medium rg_co = medium("rg calcite o", 1.658);
 Medium rg_ce = uniaxialExtraordinary("rg calcite e", 1.658, 1.486, unit((1, 1)));
-Element rg_slab = Crystal(box((0, -50), (10, 50)), rg_co, rg_ce, Materials.VACUUM);
+Element rg_slab = crystal(box((0, -50), (10, 50)), rg_co, rg_ce, Materials.VACUUM);
 OpticalSystem rg_slabSys = system(rg_slab);
 pair rg_dIn = dir(20);
 Trace rg_tE = rg_slabSys.trace(Ray((-10, 0), rg_dIn, pol = Polarization.linear(90.0, 1.0)), far = 20);
@@ -1995,7 +1995,7 @@ write("");
 write("Test Case 69: Extraordinary-ray optical path length");
 real rg_no = 1.658, rg_ne = 1.486, rg_t = 10.0;
 Medium rg_ceX = uniaxialExtraordinary("rg e (axis x)", rg_no, rg_ne, (1, 0));
-Element rg_slabX = Crystal(box((0, -50), (rg_t, 50)), medium("rg o", rg_no), rg_ceX, Materials.VACUUM);
+Element rg_slabX = crystal(box((0, -50), (rg_t, 50)), medium("rg o", rg_no), rg_ceX, Materials.VACUUM);
 real rg_thIn = 30.0;
 Trace rg_tX = system(rg_slabX).trace(Ray((0, 0) - 5 * dir(rg_thIn), dir(rg_thIn), pol = Polarization.linear(90.0, 1.0)),
                                      far = 20);
@@ -2014,7 +2014,7 @@ real rg_geomLen = rg_t / rg_g.x;
 assert_true("e-ray OPL differs from naive n_phase * L",
             abs(rg_oplMeasured - rg_eIn.medium.n((0, 0), rg_eIn.wave_normal) * rg_geomLen) > 1e-3);
 // Isotropic limit: OPL reduces to n * L
-Element rg_slabIso = Crystal(box((0, -50), (rg_t, 50)),
+Element rg_slabIso = crystal(box((0, -50), (rg_t, 50)),
                              medium("o", 1.6),
                              uniaxialExtraordinary("e", 1.6, 1.6, (1, 0)),
                              Materials.VACUUM);
@@ -2031,7 +2031,7 @@ write("");
 // ============================================================================
 write("Test Case 70: Interface energy balance after bulk absorption");
 Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 2.0 / geometryToUm(10.0));
-Trace rg_tAbs = system(Interface(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
+Trace rg_tAbs = system(interface(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
 Interaction rg_exitIx = rg_tAbs.interaction(1);
 assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
 assert_near("Exit-face R matches normal-incidence Fresnel", rg_exitIx.R, (0.5 / 2.5) ^ 2, 1e-9);
@@ -2050,9 +2050,9 @@ write("");
 write("Test Case 71: Absorbing GRIN medium attenuation along curved path");
 indexProfile rg_gp = new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.01 * p.y ^ 2); };
 gradientProfile rg_gg = new pair(pair p, real lambda) { return (0, -1.5 * 0.01 * p.y); };
-Medium rg_gm = medium("rg absorbing GRIN").add(GRIN(rg_gp, rg_gg)).add(Absorption(0.05 * 9.5 / geometryToUm(9.5)));
+Medium rg_gm = medium("rg absorbing GRIN").add(grin(rg_gp, rg_gg)).add(absorption(0.05 * 9.5 / geometryToUm(9.5)));
 Trace rg_tg =
-    system(Interface(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
+    system(interface(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
 real rg_arc = arclength(rg_tg.segments()[0].traj);
 Interaction rg_gix = rg_tg.interaction(0);
 assert_true("GRIN trajectory is curved (arc length > 9.5)", rg_arc > 9.5);
@@ -2073,7 +2073,7 @@ write("");
 // ============================================================================
 write("Test Case 72: Mirror polarization handedness");
 Trace rg_tm = system(Mirror.flat((10, 0), 180, 10)).trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
-Trace rg_tdi = system(Interface((10, -10) -- (10, 10), Materials.VACUUM, medium("g", 1.5)))
+Trace rg_tdi = system(interface((10, -10) -- (10, 10), Materials.VACUUM, medium("g", 1.5)))
                           .trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
 assert_near("Mirror: RCP -> LCP (S3 = -1)", rg_tm.reflected(0).pol.S3, -1.0, 1e-9);
 assert_near("Mirror agrees with dielectric normal-incidence handedness flip",
@@ -2197,7 +2197,7 @@ write("");
 // stays fully polarized and Stokes power is conserved across the interface
 // ============================================================================
 write("Test Case 77: Fresnel Mueller transmission/reflection invariants");
-Element rg_iface = Interface((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
+Element rg_iface = interface((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
 real[] rg_incs = {0.0, 20.0, 50.0, 70.0, 85.0};
 for (real th : rg_incs) {
     Polarization rg_pin = Polarization.fromAngles(30.0, 12.0, 1.0);
@@ -2243,8 +2243,8 @@ write("");
 write("Test Case 79: GRIN boundary detection with tiny fixed steps");
 indexProfile rg_lin = new real(pair p, real lambda) { return 1.5 + 0.01 * p.y; };
 gradientProfile rg_linG = new pair(pair p, real lambda) { return (0, 0.01); };
-Medium rg_gl = medium("rg linear GRIN").add(GRIN(rg_lin, rg_linG));
-OpticalSystem rg_thinGrin = system(Interface(box((0, -1), (0.02, 1)), rg_gl, Materials.VACUUM));
+Medium rg_gl = medium("rg linear GRIN").add(grin(rg_lin, rg_linG));
+OpticalSystem rg_thinGrin = system(interface(box((0, -1), (0.02, 1)), rg_gl, Materials.VACUUM));
 config.physics.grin_solver = GRINSolverType.RK4;
 Trace rg_tTiny = rg_thinGrin.trace(Ray((0.01, 0), (1, 0), rg_gl), ds = 5e-5, far = 1.0);
 config.physics.grin_solver = GRINSolverType.RK45;
@@ -2259,10 +2259,10 @@ write("");
 // ============================================================================
 write("Test Case 80: GRIN OPL to a boundary (partial final step)");
 Medium rg_axial = medium("rg axial")
-                      .add(GRIN(
+                      .add(grin(
                           new real(pair p, real lambda) { return 1.0 + p.x; },
                           new pair(pair p, real lambda) { return (1.0, 0.0); }));
-Trace rg_tAx = system(Interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
+Trace rg_tAx = system(interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
                    .trace(Ray((0, 0), (1, 0), rg_axial), ds = 0.05);
 assert_near("OPL = integral_0^0.73 (1 + x) dx",
             rg_tAx.interaction(0).incident.opl,
@@ -2277,7 +2277,7 @@ write("");
 write("Test Case 81: GRIN solver convergence");
 OpticalSystem rg_grinOpen = system(new Element[]);
 Medium rg_par = medium("rg parabolic")
-                    .add(GRIN(
+                    .add(grin(
                         new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.3 ^ 2 * p.y ^ 2); },
                         new pair(pair p, real lambda) { return (0, -1.5 * 0.3 ^ 2 * p.y); }));
 Ray rg_r0 = Ray((0, 1.0), (1, 0), rg_par);
@@ -2298,10 +2298,10 @@ write("");
 // ============================================================================
 write("Test Case 82: Sellmeier factory");
 Medium rg_bk7 = medium("rg BK7").add(
-    Sellmeier(new real[]{1.03961212, 0.231792344, 1.01046945}, new real[]{0.00600069867, 0.0200179144, 103.560653}));
+    sellmeier(new real[]{1.03961212, 0.231792344, 1.01046945}, new real[]{0.00600069867, 0.0200179144, 103.560653}));
 assert_near("Sellmeier BK7 n_d (587.56 nm)", rg_bk7.n(lambda = 587.5618), 1.51680, 1e-4);
 assert_true("Normal dispersion: n_F(486.1) > n_C(656.3)", rg_bk7.n(lambda = 486.1) > rg_bk7.n(lambda = 656.3));
-Trace rg_tS = system(Interface(box((0, -10), (10, 10)), rg_bk7, Materials.VACUUM)).trace(Ray((-5, 0), dir(10)));
+Trace rg_tS = system(interface(box((0, -10), (10, 10)), rg_bk7, Materials.VACUUM)).trace(Ray((-5, 0), dir(10)));
 assert_near("Ray in homogeneous Sellmeier glass is a single straight segment", length(rg_tS.segments()[1].traj), 1.0);
 write("");
 
@@ -2312,7 +2312,7 @@ write("");
 // ============================================================================
 write("Test Case 83: Scaled GRIN profile ray invariance");
 Medium rg_parScaled = medium("rg scaled", 1.3)
-                          .add(GRIN(
+                          .add(grin(
                               new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.3 ^ 2 * p.y ^ 2); },
                               new pair(pair p, real lambda) { return (0, -1.5 * 0.3 ^ 2 * p.y); }));
 real rg_yScaled = rg_grinOpen.trace(Ray((0, 1.0), (1, 0), rg_parScaled), ds = 0.05, far = 4.0).last().p.y;
@@ -2326,7 +2326,7 @@ write("");
 // Test Case 84 (Regression): Hit.entering reports entry into closed elements
 // ============================================================================
 write("Test Case 84: Hit.entering orientation");
-Element rg_box = Interface(box((0, -5), (10, 5)), medium("g", 1.5));
+Element rg_box = interface(box((0, -5), (10, 5)), medium("g", 1.5));
 Hit rg_hIn = rg_box.surfaces[0].intersect(Ray((-5, 0), (1, 0)));
 Hit rg_hOut = rg_box.surfaces[0].intersect(Ray((5, 0), (1, 0)));
 assert_bool("Ray from outside is entering", rg_hIn.entering, true);
@@ -2337,7 +2337,7 @@ write("");
 // Test Case 85 (Regression): copy(Surface) keeps the precomputed inverse
 // ============================================================================
 write("Test Case 85: Surface copy keeps inverse transform");
-Element rg_shifted = shift(30, 7) * rotate(25) * Interface(box((0, -5), (10, 5)), medium("g", 1.5));
+Element rg_shifted = shift(30, 7) * rotate(25) * interface(box((0, -5), (10, 5)), medium("g", 1.5));
 Surface rg_flat = rg_shifted.flatten()[0];
 Surface rg_flatCopy = copy(rg_flat);
 Ray rg_probe = Ray((0, 7), (1, 0));
@@ -2352,7 +2352,7 @@ write("");
 // Test Case 86 (Regression): beam factories inherit the medium at the source
 // ============================================================================
 write("Test Case 86: Beam rays resolve their starting medium");
-OpticalSystem rg_inGlass = system(Interface(box((-10, -10), (10, 10)), medium("g", 1.5)));
+OpticalSystem rg_inGlass = system(interface(box((-10, -10), (10, 10)), medium("g", 1.5)));
 Ray[] rg_beam = Beam.parallel((0, -2), (0, 2), 3, (1, 0));
 Trace rg_tb = rg_inGlass.trace(rg_beam[1]);
 assert_near("Beam ray launched inside glass starts in glass", rg_tb.first().medium.n(), 1.5, 1e-12);
@@ -2363,7 +2363,7 @@ write("");
 // Test Case 87: Linear dichroism with a rotated axis
 // ============================================================================
 write("Test Case 87: Rotated dichroic axis");
-Medium rg_dich = medium("rg dichroic 30").add(Dichroic(0.0, 50.0, 30.0));
+Medium rg_dich = medium("rg dichroic 30").add(dichroic(0.0, 50.0, 30.0));
 Polarization rg_pass = rg_dich.stepPolarization(Polarization.linear(30.0), (0, 0), (1, 0), 633, 1.0);
 Polarization rg_block = rg_dich.stepPolarization(Polarization.linear(120.0), (0, 0), (1, 0), 633, 1.0);
 Polarization rg_mid = rg_dich.stepPolarization(Polarization.linear(75.0), (0, 0), (1, 0), 633, 1.0);
@@ -2383,7 +2383,7 @@ mediumResolver rg_resE = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fr
 FresnelResult rg_graze = fresnelIsotropic(Materials.VACUUM, medium("g", 1.5), Ray((-1, 0), dir(89.99)), rg_h, rg_resE);
 assert_true("Grazing incidence: R finite and close to 1", rg_graze.R > 0.99 && rg_graze.R <= 1.0);
 assert_near("Grazing incidence: R + T = 1", rg_graze.R + rg_graze.T, 1.0, 1e-12);
-Trace rg_dark = system(Interface(box((0, -5), (10, 5)), medium("g", 1.5)))
+Trace rg_dark = system(interface(box((0, -5), (10, 5)), medium("g", 1.5)))
                     .trace(Ray((-5, 0), (1, 0), pol = Polarization.unpolarized(0.0)));
 assert_near("Zero-intensity ray spawns no children", rg_dark.length(), 0.0);
 OpticalSystem rg_cavity = system(new Element[]{Mirror.flat((0, 0), 0, 10), Mirror.flat((10, 0), 180, 10)});
@@ -2590,7 +2590,7 @@ write("Test Case 96: Independent Poynting Flux Conservation in Birefringent Crys
 real no_calc = 1.658, ne_calc = 1.486;
 pair c_tilted = dir(35.0);
 Medium cal_o = medium("Calcite O", no_calc);
-Medium cal_e = medium("Calcite E").add(UniaxialExtraordinary(no_calc, ne_calc, c_tilted));
+Medium cal_e = medium("Calcite E").add(uniaxialExtraordinary(no_calc, ne_calc, c_tilted));
 // Oblique incidence from vacuum at 30 degrees
 real th_inc_deg = 30.0;
 Ray r_oblique = Ray.angle(p = (-2, 0), angle = th_inc_deg, medium = Materials.VACUUM);
@@ -2624,7 +2624,7 @@ write("Test Case 97: Birefringent TIR Asymmetry (Glan-Prism Operating Regime)");
 //   theta_c,e = asin(1 / ne(theta)) ~ 40.3 deg (for axis along surface)
 // At 38.0 degrees: ordinary mode undergoes TIR, while extraordinary mode transmits cleanly!
 Medium cal_o_dense = medium("Dense Calcite O", no_calc);
-Medium cal_e_dense = medium("Dense Calcite E").add(UniaxialExtraordinary(no_calc, ne_calc, (0, 1)));
+Medium cal_e_dense = medium("Dense Calcite E").add(uniaxialExtraordinary(no_calc, ne_calc, (0, 1)));
 real th_glan_deg = 38.0;
 // 1. Launch ordinary ray (n = 1.658) hitting air interface
 Ray r_o_glan = Ray.angle(p = (-2, 0), angle = th_glan_deg, medium = cal_o_dense);
@@ -2682,7 +2682,7 @@ write("Test Case 99: Isotropic Limit Verification (no == ne)");
 real n_iso_val = 1.55;
 Medium med_iso_match = medium("Iso Match", n_iso_val);
 Medium med_crystal_limit_o = medium("Limit O", n_iso_val);
-Medium med_crystal_limit_e = medium("Limit E").add(UniaxialExtraordinary(n_iso_val, n_iso_val, dir(30)));
+Medium med_crystal_limit_e = medium("Limit E").add(uniaxialExtraordinary(n_iso_val, n_iso_val, dir(30)));
 Ray r_limit = Ray.angle(p = (-2, 0), angle = 40.0, medium = Materials.VACUUM);
 Hit h_limit;
 h_limit.valid = true;
@@ -2724,7 +2724,7 @@ Polarization p_polarized = Polarization.stokes(1.0, -1.0, 0.0, 0.0);
 pair launch_dir = dir(th_B_deg);
 pair launch_pt = -5.0 * launch_dir;
 Ray r_brewster = Ray(p = launch_pt, d = launch_dir, medium = Materials.VACUUM, pol = p_polarized);
-Element brewster_surface = Interface(linearBoundary((0, 0), (0, 1), 20), glass_brewster, Materials.VACUUM);
+Element brewster_surface = interface(linearBoundary((0, 0), (0, 1), 20), glass_brewster, Materials.VACUUM);
 Trace t_brewster = system(brewster_surface).trace(r_brewster);
 // Transmitted ray must carry 100% of incident power (zero reflection)
 Ray trans_B = t_brewster.transmitted(0);
@@ -2739,8 +2739,8 @@ write("");
 write("Test Case 101: End-to-End Crystal Eigenmode Polarization Purity");
 // Launch unpolarized light into a Calcite Crystal slab
 Medium cal_o_slab = medium("Calcite Slab O", 1.658);
-Medium cal_e_slab = medium("Calcite Slab E").add(UniaxialExtraordinary(1.658, 1.486, dir(45)));
-Element crystal_slab = Crystal(box((-2, -5), (2, 5)), cal_o_slab, cal_e_slab, Materials.VACUUM);
+Medium cal_e_slab = medium("Calcite Slab E").add(uniaxialExtraordinary(1.658, 1.486, dir(45)));
+Element crystal_slab = crystal(box((-2, -5), (2, 5)), cal_o_slab, cal_e_slab, Materials.VACUUM);
 Ray unpol_ray = Ray.angle(p = (-5, 0), angle = 10.0, medium = Materials.VACUUM, pol = Polarization.unpolarized());
 Trace t_crystal = system(crystal_slab).trace(unpol_ray);
 // Entry interface must spawn 2 rays
@@ -3073,7 +3073,7 @@ mediumResolver resolve_tf = new Medium(pair p, Ray r, Medium m1, Medium m2, bool
 
 // 1. Empty stack (0 layers): must reproduce bare Fresnel interface
 ThinFilmLayer[] empty_stack = new ThinFilmLayer[];
-Property prop_empty = ThinFilmStack(empty_stack, glass_lossless, Materials.VACUUM);
+Property prop_empty = thinFilmStack(empty_stack, glass_lossless, Materials.VACUUM);
 Ray r_tf_in = Ray((-10, 0), (1, 0), Materials.VACUUM, lambda = 633.0);
 Ray[] out_empty = prop_empty.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("Empty ThinFilmStack generates 2 rays (transmitted + reflected)", out_empty.length == 2, true);
@@ -3086,7 +3086,7 @@ real n_ar = sqrt(1.5);
 real d_ar = 633.0 / (4.0 * n_ar);
 Medium med_ar = medium("ar_coating", n_ar);
 ThinFilmLayer[] ar_stack = {ThinFilmLayer(med_ar, d_ar)};
-Property prop_ar = ThinFilmStack(ar_stack, glass_lossless, Materials.VACUUM);
+Property prop_ar = thinFilmStack(ar_stack, glass_lossless, Materials.VACUUM);
 Ray[] out_ar = prop_ar.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("AR coating eliminates reflection (only transmitted ray generated)", out_ar.length == 1, true);
 assert_near("AR coating transmitted intensity == 1.0 (zero reflectance)", out_ar[0].intensity(), 1.0, 1e-10);
@@ -3102,7 +3102,7 @@ for (int i = 0; i < 4; ++i) {
     dbr_stack.push(ThinFilmLayer(med_H, d_H));
     dbr_stack.push(ThinFilmLayer(med_L, d_L));
 }
-Property prop_dbr = ThinFilmStack(dbr_stack, glass_lossless, Materials.VACUUM);
+Property prop_dbr = thinFilmStack(dbr_stack, glass_lossless, Materials.VACUUM);
 Ray[] out_dbr = prop_dbr.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("DBR generates transmitted and reflected rays", out_dbr.length == 2, true);
 assert_near("DBR high reflectance (~95.1%)", out_dbr[1].intensity(), 0.95098536, 1e-5);
@@ -3169,12 +3169,12 @@ assert_bool("Beam.converging ray count == 3", b_conv.length == 3, true);
 assert_bool("Beam.converging propagates coherence_id", b_conv[0].coherence_id == 99, true);
 
 // 6. Thin-film coating convenience properties
-Property ar_prop_wrapper = AntiReflectionCoating(medium("ar_wrap", sqrt(1.5)), glass_lossless, Materials.VACUUM, 633.0);
+Property ar_prop_wrapper = antiReflectionCoating(medium("ar_wrap", sqrt(1.5)), glass_lossless, Materials.VACUUM, 633.0);
 Ray[] out_ar_wrap = ar_prop_wrapper.generate(r_tf_in, hit_tf, resolve_tf);
 assert_bool("AntiReflectionCoating eliminates reflection", out_ar_wrap.length == 1, true);
 assert_near("AntiReflectionCoating transmitted intensity == 1.0", out_ar_wrap[0].intensity(), 1.0, 1e-10);
 
-Property dbr_wrapper = DistributedBraggReflector(med_H,
+Property dbr_wrapper = distributedBraggReflector(med_H,
                                                  med_L,
                                                  pairs = 4,
                                                  inside = glass_lossless,
@@ -3219,7 +3219,7 @@ assert_near("m_bk7 bulk absorption is zero", m_bk7.absorption(lambda = 633.0), 0
 // 4. Skin-depth attenuation inside metal via trace
 // Light entering gold at normal incidence: Rs ~ 0.9282, T ~ 0.07176
 // Inside gold, it decays with skin depth delta = 1/alpha = lambda / (4*pi*kappa) ~ 0.0163 um
-Element gold_block = Interface(box((10, -10), (10.05, 10)), m_gold, Materials.VACUUM);
+Element gold_block = interface(box((10, -10), (10.05, 10)), m_gold, Materials.VACUUM);
 Trace tr_gold = system(gold_block).trace(Ray((0, 0), (1, 0), lambda = 633.0), far = 20);
 // The ray inside gold penetrates 0.05 um (~3 skin depths) to the back interface
 Ray r_inside_gold = tr_gold.ray_tree[1];
@@ -3283,7 +3283,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 
     Medium glass15 = medium("TestGlass15", 1.5);
     // Open line (0,-5)--(0,5) has normal (+1,0): left = VACUUM, right = glass15
-    OpticalSystem sys_if = system(Interface((0, -5) -- (0, 5), Materials.VACUUM, glass15), Materials.VACUUM);
+    OpticalSystem sys_if = system(interface((0, -5) -- (0, 5), Materials.VACUUM, glass15), Materials.VACUUM);
 
     Ray r_s = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(0.0));
     Ray r_p = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(90.0));
@@ -3297,7 +3297,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("Normal reflection pure-p phase = 0", ref_p.phase, 0.0, 1e-6);
 
     // Pure-p TIR phase differs from pure-s TIR phase (left = glass15, right = VACUUM)
-    OpticalSystem sys_tir = system(Interface((0, -10) -- (0, 10), glass15, Materials.VACUUM), glass15);
+    OpticalSystem sys_tir = system(interface((0, -10) -- (0, 10), glass15, Materials.VACUUM), glass15);
     Ray tir_s = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(0.0))).reflected(0);
     Ray tir_p = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(90.0))).reflected(0);
     assert_near("TIR s reflection alive", (tir_s != null) ? 1.0 : 0.0, 1.0, 1e-9);
@@ -3323,10 +3323,10 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     config.physics.min_intensity = 1e-3;
 
     // 4a. 0-layer ThinFilmStack matches bare Interface at 35 deg (AIR -> BK7)
-    Element bare_if = Interface((0, -10) -- (0, 10), Materials.AIR, Materials.BK7);
+    Element bare_if = interface((0, -10) -- (0, 10), Materials.AIR, Materials.BK7);
     Element tf0_if =
         element((0, -10) -- (0, 10),
-                                     properties(ThinFilmStack(new ThinFilmLayer[]{}, Materials.AIR, Materials.BK7)),
+                                     properties(thinFilmStack(new ThinFilmLayer[]{}, Materials.AIR, Materials.BK7)),
                                      medium = Materials.BK7);
     Ray r_ob = Ray.angle((-1, 0), 35.0, Materials.AIR, pol = Polarization.linear(45.0));
     Trace t_bare = system(bare_if, Materials.AIR).trace(r_ob);
@@ -3341,7 +3341,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     // 4b. n1 != 1 TIR (BK7 -> Air at 45 deg with a 100nm MgF2 film must still undergo TIR)
     ThinFilmLayer[] mgf2 = {ThinFilmLayer(medium("MgF2", 1.38), 100.0)};
     Element tf_tir = element((0, -10) -- (0, 10),
-                                                  properties(ThinFilmStack(mgf2, Materials.BK7, Materials.AIR)),
+                                                  properties(thinFilmStack(mgf2, Materials.BK7, Materials.AIR)),
                                                   medium = Materials.AIR);
     Trace t_tir = system(tf_tir, Materials.BK7).trace(Ray.angle((-1, 0), 45.0, Materials.BK7));
     assert_near("BK7->Air 45 deg coated stack TIR R == 1", t_tir.interaction(0).R, 1.0, 1e-6);
@@ -3353,7 +3353,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     // 4c. Thick Gold film must have R < 1 (no -i*sin(delta) blowup)
     ThinFilmLayer[] thick_au = {ThinFilmLayer(Materials.GOLD, 5000.0)};
     Element tf_au = element((0, -10) -- (0, 10),
-                                                 properties(ThinFilmStack(thick_au, Materials.AIR, Materials.BK7)),
+                                                 properties(thinFilmStack(thick_au, Materials.AIR, Materials.BK7)),
                                                  medium = Materials.BK7);
     Trace t_au = system(tf_au, Materials.AIR).trace(Ray.angle((-1, 0), 45.0, Materials.AIR));
     assert_near("Thick Gold TMM R < 1", (t_au.interaction(0).R < 1.0) ? 1.0 : 0.0, 1.0, 1e-9);
@@ -3361,7 +3361,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     // 4d. Transmission diattenuation on oblique high-index quarter-wave film
     ThinFilmLayer[] tio2 = {ThinFilmLayer(medium("TiO2", 2.4), 633.0 / (4.0 * 2.4))};
     Element tf_diat = element((0, -10) -- (0, 10),
-                                                   properties(ThinFilmStack(tio2, Materials.AIR, Materials.BK7)),
+                                                   properties(thinFilmStack(tio2, Materials.AIR, Materials.BK7)),
                                                    medium = Materials.BK7);
     Trace t_diat =
         system(tf_diat, Materials.AIR).trace(Ray.angle((-1, 0), 50.0, Materials.AIR, pol = Polarization.linear(45.0)));
@@ -3378,8 +3378,8 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 {
     path big_2node = (-6, 0) .. controls(-3, 8) and
                      (3, 8) .. (6, 0) .. controls(3, -8) and (-3, -8) .. cycle;
-    Element outer_2node = Interface(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
-    Element inner_box = Interface(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
+    Element outer_2node = interface(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
+    Element inner_box = interface(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
     OpticalSystem nested_sys = system(outer_2node, inner_box);
     // Ray starting inside SmallBox must resolve Inner17 (1.7), not Outer14 (1.4)
     Trace t_nest = nested_sys.trace(Ray((0, 0), (1, 0), lambda = 633.0));
@@ -3388,12 +3388,12 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 
 // 6. Bidirectional Grating + align(), rotated SphericalInterface (Fixes 6 & 7)
 {
-    Element gr = Grating((0, 0), 20.0, 90.0, 500.0, reflective = false, orders = new int[]{1});
+    Element gr = grating((0, 0), 20.0, 90.0, 500.0, reflective = false, orders = new int[]{1});
     Trace t_up = system(gr).trace(Ray((0, -2), (0, 1), lambda = 633.0));
     Trace t_dn = system(gr).trace(Ray((0, 2), (0, -1), lambda = 633.0));
     assert_near("Bidirectional grating keeps +x deflection from above", t_dn.last().d.x, t_up.last().d.x, 1e-6);
 
-    Element gr_al = align(Grating((0, 0), 20.0, 0.0, 500.0, reflective = false, orders = new int[]{1}),
+    Element gr_al = align(grating((0, 0), 20.0, 0.0, 500.0, reflective = false, orders = new int[]{1}),
                           (-10, 0),
                           (10, 10 * tan(radians(30))),
                           lambda = 633.0);
@@ -3401,7 +3401,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     pair d_exp = unit((10, 10 * tan(radians(30))));
     assert_near("Grating align() error norm", length(d_al - d_exp), 0.0, 1e-4);
 
-    Element si_rot = SphericalInterface((0, 0), 90.0, 20.0, 15.0, Materials.BK7, Materials.AIR);
+    Element si_rot = sphericalInterface((0, 0), 90.0, 20.0, 15.0, Materials.BK7, Materials.AIR);
     Ray si_out = system(si_rot, Materials.AIR).trace(Ray((2.0, -10.0), (0, 1))).last();
     assert_near("Rotated SphericalInterface bends toward axis (d.x < 0)", (si_out.d.x < -0.01) ? 1.0 : 0.0, 1.0, 1e-9);
 }
@@ -3411,7 +3411,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     bool old_refl = config.physics.trace_reflections;
     config.physics.trace_reflections = true;
 
-    Element cal = UniaxialCrystal(box((-2, -10), (2, 10)),
+    Element cal = uniaxialCrystal(box((-2, -10), (2, 10)),
                                   no = 1.658,
                                   ne = 1.486,
                                   optic_axis = dir(35.0),
@@ -3435,10 +3435,10 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                               1.5,
                               n_profile = new real(pair p, real lam) { return 1.0 - 0.01 * p.y * p.y; },
                               grad_profile = new pair(pair p, real lam) { return (0.0, -0.02 * p.y); })
-                              .add(FaradayRotator(10.0, (0, 1)));
+                              .add(faradayRotator(10.0, (0, 1)));
 
     // 8a. Absorbed trace: incident.pol carries integrated rotation, last().pol is zeroed
-    Element exit_plate = Absorber((5, -5) -- (5, 5), name = "GRINStop");
+    Element exit_plate = absorber((5, -5) -- (5, 5), name = "GRINStop");
     Trace t_gf =
         system(exit_plate, grin_faraday).trace(Ray((0, 1.0), (1, 0), grin_faraday, pol = Polarization.linear(0.0)));
     real dy_hit = t_gf.hit(0).y - 1.0;
@@ -3519,7 +3519,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     config.physics.trace_reflections = true;
 
     // 11a. Tilted crystal exit below critical angle (away from Brewster): asymmetric reflection + R + T == 1
-    Element cal_exit = UniaxialCrystal(box((-2, -10), (2, 10)),
+    Element cal_exit = uniaxialCrystal(box((-2, -10), (2, 10)),
                                        no = 1.658,
                                        ne = 1.486,
                                        optic_axis = dir(35.0),
@@ -3543,7 +3543,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Medium cal_e = uniaxialExtraordinary("CalE", 1.658, 1.486, dir(35.0));
     Element exit_wall =
         element((2, -10) -- (2, 10),
-                                     properties(DoubleRefraction(medium("CalO", 1.658), cal_e, Materials.AIR)),
+                                     properties(doubleRefraction(medium("CalO", 1.658), cal_e, Materials.AIR)),
                                      medium = Materials.AIR);
     pair wn_in = dir(55.0);
     Ray r_in_e = Ray((0, 0), cal_e.groupDirection(wn_in), cal_e, pol = Polarization.linear(90.0));
@@ -3562,11 +3562,11 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 // 12. Asymmetric cardinalPoints, Trace.arrivals, Trace.leaves, & Trace.subtraces
 {
     // 12a. Asymmetric immersion thick lens (nL = 1.0, n0 = 1.62, nR = 1.33)
-    Medium mL = medium("L", 1.0), m0 = medium("G", 1.62), mR = medium("R", 1.33);
+    Medium m_l = medium("L", 1.0), m0 = medium("G", 1.62), m_r = medium("R", 1.33);
     real d_th = 24.6, R1 = 19.5, R2 = -16.0;
-    OpticalSystem asym_sys = system(new Element[]{SphericalInterface((-d_th / 2, 0), 0, R1, 2 * R1, mL, m0),
-                                                  SphericalInterface((d_th / 2, 0), 0, R2, 2 * R1, mR, m0)});
-    CardinalPoints cp_asym = cardinalPoints(asym_sys, object_medium = mL, paraxial_h = 1e-3);
+    OpticalSystem asym_sys = system(new Element[]{sphericalInterface((-d_th / 2, 0), 0, R1, 2 * R1, m_l, m0),
+                                                  sphericalInterface((d_th / 2, 0), 0, R2, 2 * R1, m_r, m0)});
+    CardinalPoints cp_asym = cardinalPoints(asym_sys, object_medium = m_l, paraxial_h = 1e-3);
     real Phi1 = (1.62 - 1.0) / R1, Phi2 = (1.33 - 1.62) / R2;
     real Phi = Phi1 + Phi2 - (d_th / 1.62) * Phi1 * Phi2;
     assert_near("Asymmetric cardinalPoints f1", cp_asym.f1, 1.0 / Phi, 1e-5);
@@ -3582,7 +3582,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Element m1_c = Mirror.flat((60, 0), 135, 25);
     Element m2_c = Mirror.flat((0, 60), -45, 25);
     Element bs2_c = BeamSplitter.cube((60, 60), 0, 20, R = 0.5, glass = Materials.BK7, ambient = Materials.AIR);
-    Element det_c = Absorber((45, 90) -- (75, 90), name = "Det");
+    Element det_c = absorber((45, 90) -- (75, 90), name = "Det");
     OpticalSystem mzi = system(Materials.AIR, bs_c, m1_c, m2_c, bs2_c, det_c);
     Trace tm = mzi.trace(Ray((-30, 0), (1, 0), coherence_id = 1));
     Ray[] arr = tm.arrivals(det_c);
@@ -3607,7 +3607,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                 1e-6);
 
     // Add an absorber in front of the mirror
-    sys_c.add(Absorber((4, -5) -- (4, 5)));
+    sys_c.add(absorber((4, -5) -- (4, 5)));
     assert_near("Cache invalidates on sys.add() (hit at x = 4)", sys_c.trace(Ray((0, 0), (1, 0))).hit(0).x, 4.0, 1e-6);
 }
 
@@ -3618,7 +3618,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("medium(name, indexProfile) evaluates at y = 2", m_grin_fn.n((0, 2)), 1.42, 1e-9);
 
     Element s_a = Mirror.flat((10, 0), 0, 10);
-    Element s_b = Absorber((2, -5) -- (2, 5));
+    Element s_b = absorber((2, -5) -- (2, 5));
     assert_near("Variadic system(e1, e2) works", system(s_a, s_b).length(), 2, 1e-9);
     assert_near("Variadic system(ambient, e1, e2) sets ambient",
                 system(Materials.WATER, s_a, s_b).ambient.n(),
@@ -3638,7 +3638,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     real phi_tot = phi1 + phi2 - (4.0 / 1.5) * phi1 * phi2;
     assert_near("Lens.idealThick cardinalPoints f2 matches Lensmaker", cp_it.f2, n_a / phi_tot, 1e-5);
 
-    Trace t_mk = system(Interface((0, -5) -- (0, 5), Materials.AIR, m15)).trace(Ray.angle((-2, 0), 20.0));
+    Trace t_mk = system(interface((0, -5) -- (0, 5), Materials.AIR, m15)).trace(Ray.angle((-2, 0), 20.0));
     picture p_mk;
     real ang_mk = markAcute(p_mk, "", 1, 10, t_mk, 0, Ray.Incident);
     assert_near("markAcute(Trace, ...) returns 20 deg", ang_mk, 20.0, 1e-5);
@@ -3647,8 +3647,8 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 // 15. Upgraded draw(CardinalPoints) with asymmetric y bounds & nodal points
 {
     Medium mL_d = medium("L_d", 1.0), m0_d = medium("G_d", 1.62), mR_d = medium("R_d", 1.33);
-    OpticalSystem asym_d = system(SphericalInterface((-10, 0), 0, 20, 30, mL_d, m0_d),
-                                  SphericalInterface((10, 0), 0, -16, 30, mR_d, m0_d));
+    OpticalSystem asym_d = system(sphericalInterface((-10, 0), 0, 20, 30, mL_d, m0_d),
+                                  sphericalInterface((10, 0), 0, -16, 30, mR_d, m0_d));
     CardinalPoints cp_d = cardinalPoints(asym_d, object_medium = mL_d, paraxial_h = 1e-3);
     picture p_cp;
     draw(p_cp, cp_d, y_min = -2.0, y_max = 10.0, axis_margin = 3.5, show_focal_planes = true);
@@ -3665,7 +3665,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("Young 2-slit central constructive peak = 4", prof.intensities[100], 4.0, 1e-4);
 
     Element pf_lens = Lens.phaseThin((0, 0), 0.0, 50.0, 30.0);
-    Element screen = Absorber((50, -20) -- (50, 20));
+    Element screen = absorber((50, -20) -- (50, 20));
     Trace tf = system(pf_lens, screen).trace(Beam.collimated((-10, 0), (1, 0), 16.0, 5, pol = Polarization.linear(0.0), coherence_id = 1));
     Ray[] at_focus = tf.arrivals(screen);
     assert_near("PhaseFocus rays arrive at screen and interfere constructively at focus (I = 25)", interfere(at_focus), 25.0, 1e-3);
@@ -3673,7 +3673,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 
 // 17. Trace hit traversal and ray-option constructors
 {
-    OpticalSystem sys_hits = system(Lens.thin((10, 0), 0, 100, 20), Absorber((20, -10) -- (20, 10)));
+    OpticalSystem sys_hits = system(Lens.thin((10, 0), 0, 100, 20), absorber((20, -10) -- (20, 10)));
     Trace t_hits = sys_hits.trace(Ray((-10, 0), (1, 0)));
     Interaction[] all_hits = t_hits.interactions();
     assert_near("Trace.length matches interaction count", t_hits.length(), all_hits.length, 1e-9);
