@@ -1962,6 +1962,14 @@ mediumIndexAndGradient(Medium m, pair p, pair d, real lambda, Polarization pol =
     return res;
 }
 
+private
+pair[] grinEvalStage(Ray r, pair p, pair v, pair fallback_d) {
+    pair d = unitOr(v, fallback_d);
+    IndexAndGradient ig = mediumIndexAndGradient(r.medium, p, d, r.lambda, r.pol);
+    if (ig.n <= config.physics.min_refractive_index) return new pair[]{d, (0, 0)};
+    return new pair[]{v / ig.n, ig.grad};
+}
+
 // Replace grinAdvanceRK4 and grinAdvanceRK45 (Chunk 1):
 private
 GRINStep grinAdvanceRK4(Ray r, real step) {
@@ -1984,30 +1992,18 @@ GRINStep grinAdvanceRK4(Ray r, real step) {
     pair k1p = d1;
     pair k1v = ig1.grad;
 
-    pair p2 = p1 + 0.5 * step * k1p;
-    pair v2 = v1 + 0.5 * step * k1v;
-    pair d2 = unitOr(v2, d1);
-    IndexAndGradient ig2 = mediumIndexAndGradient(r.medium, p2, d2, r.lambda, r.pol);
-    pair k2p = (ig2.n > config.physics.min_refractive_index) ? (v2 / ig2.n) : d2;
-    pair k2v = (ig2.n > config.physics.min_refractive_index) ? ig2.grad : (0, 0);
+    pair[] s2 = grinEvalStage(r, p1 + 0.5 * step * k1p, v1 + 0.5 * step * k1v, d1);
+    pair k2p = s2[0], k2v = s2[1];
 
-    pair p3 = p1 + 0.5 * step * k2p;
-    pair v3 = v1 + 0.5 * step * k2v;
-    pair d3 = unitOr(v3, d2);
-    IndexAndGradient ig3 = mediumIndexAndGradient(r.medium, p3, d3, r.lambda, r.pol);
-    pair k3p = (ig3.n > config.physics.min_refractive_index) ? (v3 / ig3.n) : d3;
-    pair k3v = (ig3.n > config.physics.min_refractive_index) ? ig3.grad : (0, 0);
+    pair[] s3 = grinEvalStage(r, p1 + 0.5 * step * k2p, v1 + 0.5 * step * k2v, unitOr(v1 + 0.5 * step * k1v, d1));
+    pair k3p = s3[0], k3v = s3[1];
 
-    pair p4 = p1 + step * k3p;
-    pair v4 = v1 + step * k3v;
-    pair d4 = unitOr(v4, d3);
-    IndexAndGradient ig4 = mediumIndexAndGradient(r.medium, p4, d4, r.lambda, r.pol);
-    pair k4p = (ig4.n > config.physics.min_refractive_index) ? (v4 / ig4.n) : d4;
-    pair k4v = (ig4.n > config.physics.min_refractive_index) ? ig4.grad : (0, 0);
+    pair[] s4 = grinEvalStage(r, p1 + step * k3p, v1 + step * k3v, unitOr(v1 + 0.5 * step * k2v, d1));
+    pair k4p = s4[0], k4v = s4[1];
 
     res.ray.p = p1 + (step / 6.0) * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
     pair v_out = v1 + (step / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
-    res.ray.d = unitOr(v_out, d4);
+    res.ray.d = unitOr(v_out, unitOr(v1 + step * k3v, d1));
     res.ray.wave_normal = r.medium.waveNormalFromGroup(res.ray.d, res.ray.p, res.ray.lambda);
     res.error = 0.0;
     return res;
@@ -2042,40 +2038,25 @@ GRINStep grinAdvanceRK45(Ray r, real step) {
     pair k1p = d0;
     pair k1v = ig1.grad;
 
-    pair p2 = p0 + step * (c21 * k1p);
     pair v2 = v0 + step * (c21 * k1v);
-    pair d2 = unitOr(v2, d0);
-    IndexAndGradient ig2 = mediumIndexAndGradient(r.medium, p2, d2, r.lambda, r.pol);
-    pair k2p = (ig2.n > config.physics.min_refractive_index) ? (v2 / ig2.n) : d2;
-    pair k2v = (ig2.n > config.physics.min_refractive_index) ? ig2.grad : (0, 0);
+    pair[] s2 = grinEvalStage(r, p0 + step * (c21 * k1p), v2, d0);
+    pair k2p = s2[0], k2v = s2[1];
 
-    pair p3 = p0 + step * (c31 * k1p + c32 * k2p);
     pair v3 = v0 + step * (c31 * k1v + c32 * k2v);
-    pair d3 = unitOr(v3, d2);
-    IndexAndGradient ig3 = mediumIndexAndGradient(r.medium, p3, d3, r.lambda, r.pol);
-    pair k3p = (ig3.n > config.physics.min_refractive_index) ? (v3 / ig3.n) : d3;
-    pair k3v = (ig3.n > config.physics.min_refractive_index) ? ig3.grad : (0, 0);
+    pair[] s3 = grinEvalStage(r, p0 + step * (c31 * k1p + c32 * k2p), v3, unitOr(v2, d0));
+    pair k3p = s3[0], k3v = s3[1];
 
-    pair p4 = p0 + step * (c41 * k1p + c42 * k2p + c43 * k3p);
     pair v4 = v0 + step * (c41 * k1v + c42 * k2v + c43 * k3v);
-    pair d4 = unitOr(v4, d3);
-    IndexAndGradient ig4 = mediumIndexAndGradient(r.medium, p4, d4, r.lambda, r.pol);
-    pair k4p = (ig4.n > config.physics.min_refractive_index) ? (v4 / ig4.n) : d4;
-    pair k4v = (ig4.n > config.physics.min_refractive_index) ? ig4.grad : (0, 0);
+    pair[] s4 = grinEvalStage(r, p0 + step * (c41 * k1p + c42 * k2p + c43 * k3p), v4, unitOr(v3, d0));
+    pair k4p = s4[0], k4v = s4[1];
 
-    pair p5 = p0 + step * (c51 * k1p + c52 * k2p + c53 * k3p + c54 * k4p);
     pair v5 = v0 + step * (c51 * k1v + c52 * k2v + c53 * k3v + c54 * k4v);
-    pair d5 = unitOr(v5, d4);
-    IndexAndGradient ig5 = mediumIndexAndGradient(r.medium, p5, d5, r.lambda, r.pol);
-    pair k5p = (ig5.n > config.physics.min_refractive_index) ? (v5 / ig5.n) : d5;
-    pair k5v = (ig5.n > config.physics.min_refractive_index) ? ig5.grad : (0, 0);
+    pair[] s5 = grinEvalStage(r, p0 + step * (c51 * k1p + c52 * k2p + c53 * k3p + c54 * k4p), v5, unitOr(v4, d0));
+    pair k5p = s5[0], k5v = s5[1];
 
-    pair p6 = p0 + step * (c61 * k1p + c62 * k2p + c63 * k3p + c64 * k4p + c65 * k5p);
     pair v6 = v0 + step * (c61 * k1v + c62 * k2v + c63 * k3v + c64 * k4v + c65 * k5v);
-    pair d6 = unitOr(v6, d5);
-    IndexAndGradient ig6 = mediumIndexAndGradient(r.medium, p6, d6, r.lambda, r.pol);
-    pair k6p = (ig6.n > config.physics.min_refractive_index) ? (v6 / ig6.n) : d6;
-    pair k6v = (ig6.n > config.physics.min_refractive_index) ? ig6.grad : (0, 0);
+    pair[] s6 = grinEvalStage(r, p0 + step * (c61 * k1p + c62 * k2p + c63 * k3p + c64 * k4p + c65 * k5p), v6, unitOr(v5, d0));
+    pair k6p = s6[0], k6v = s6[1];
 
     pair p_5th =
         p0 + step * ((37.0 / 378.0) * k1p + (250.0 / 621.0) * k3p + (125.0 / 594.0) * k4p + (512.0 / 1771.0) * k6p);
@@ -3062,35 +3043,41 @@ struct Trace {
         return (p - n * after) -- (p + n * before);
     }
 
+    Trace view(int new_root_id, int[] new_route, int[] new_root_ids, bool refl = false) {
+        Trace out = new Trace;
+        out.ray_tree = ray_tree;
+        out.system_elements = system_elements;
+        out.root_id = new_root_id;
+        out.route = copy(new_route);
+        out.root_ids = copy(new_root_ids);
+        out.is_reflection = refl;
+        return out;
+    }
+
+    Ray finalizeRay(Ray r, bool apply_termination = true) {
+        Ray out = copy(r);
+        if (r.hit != null && r.hit.valid) {
+            out.p = r.hit.p;
+            if (length(r.trajectory) > 0) out.d = dir(r.trajectory, length(r.trajectory));
+            out.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
+        } else if (length(r.trajectory) > 0) {
+            real end_t = length(r.trajectory);
+            out.p = point(r.trajectory, end_t);
+            out.d = dir(r.trajectory, end_t);
+            if (out.medium != null) out.wave_normal = out.medium.waveNormalFromGroup(out.d, out.p, out.lambda);
+            out.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, arclength(r.trajectory));
+        }
+        if (apply_termination && (out.terminated || !out.alive)) {
+            out.alive = false;
+            out.pol.scaleTo(0.0);
+        }
+        return out;
+    }
+
     Ray last() {
         int[] branch = activeBranchRayIds();
         if (branch.length == 0) return null;
-        Ray r = copy(ray_tree[branch[branch.length - 1]]);
-        if (r.hit != null && r.hit.valid) {
-            r.p = r.hit.p;
-            // hit.t is only the final chord for curved (GRIN) segments;
-            // attenuation must use the full travelled arc length.
-            r.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
-            // If the ray terminated at the collision (e.g. Absorber / Aperture screen):
-            if (r.terminated || !r.alive) {
-                r.alive = false;
-                r.pol.scaleTo(0.0); // Post-absorption intensity is 0!
-            }
-
-        } else if (length(r.trajectory) > 0) {
-            real end_t = length(r.trajectory);
-            real total_l = arclength(r.trajectory);
-            r.p = point(r.trajectory, end_t);
-            r.d = dir(r.trajectory, end_t);
-            r.wave_normal = r.medium.waveNormalFromGroup(r.d, r.p, r.lambda);
-            r.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, total_l);
-            if (r.terminated || !r.alive) {
-                r.alive = false;
-                r.pol.scaleTo(0.0);
-            }
-        }
-
-        return r;
+        return finalizeRay(ray_tree[branch[branch.length - 1]], true);
     }
 
     Ray first() {
@@ -3155,14 +3142,7 @@ struct Trace {
     }
 
     Trace follow( ... int[] newRoute) {
-        Trace out = new Trace;
-        out.ray_tree = ray_tree;
-        out.root_id = root_id;
-        out.route = copy(newRoute);
-        out.root_ids = copy(root_ids);
-        out.is_reflection = is_reflection;
-        out.system_elements = system_elements;
-        return out;
+        return view(root_id, newRoute, root_ids, is_reflection);
     }
 
     Element getElement(Hit h) {
@@ -3249,14 +3229,7 @@ struct Trace {
             int[] selected_route;
             for (int i = reverse_route.length - 1; i >= 0; -- i) selected_route.push(reverse_route[i]);
 
-            Trace out = new Trace;
-            out.ray_tree = ray_tree;
-            out.root_id = this.root_id;
-            out.root_ids = copy(this.root_ids);
-            out.route = selected_route;
-            out.system_elements = system_elements;
-            out.is_reflection = is_reflection;
-            return out;
+            return view(this.root_id, selected_route, this.root_ids, is_reflection);
         }
 
         return null;
@@ -3295,27 +3268,14 @@ struct Trace {
             route_indices.push(c == "T" ? 0 : 1);
         }
 
-        Trace out = new Trace;
-        out.ray_tree = ray_tree;
-        out.root_id = root_id;
-        out.route = route_indices;
-        out.root_ids = copy(root_ids);
-        out.is_reflection = is_reflection;
-        out.system_elements = system_elements;
-        return out;
+        return view(root_id, route_indices, root_ids, is_reflection);
     }
 
     Trace subtrace(int i) {
         if (root_ids.length == 0) return this;
         int idx = (i < 0) ? i + root_ids.length : i;
         if (idx < 0 || idx >= root_ids.length) return null;
-        Trace sub = new Trace;
-        sub.ray_tree = ray_tree;
-        sub.system_elements = system_elements;
-        sub.root_id = root_ids[idx];
-        sub.route = copy(route);
-        sub.root_ids = new int[];
-        return sub;
+        return view(root_ids[idx], route, new int[]);
     }
 
     if (compareVersion(VERSION, "3.11") < 0) {
@@ -3351,13 +3311,7 @@ struct Trace {
             if (id < 0 || id >= ray_tree.length) continue;
             Ray r = ray_tree[id];
             if (r.hit != null && r.hit.valid && sameElement(getElement(r.hit), target)) {
-                Ray inc = copy(r);
-                inc.p = r.hit.p;
-                if (length(r.trajectory) > 0) {
-                    inc.d = dir(r.trajectory, length(r.trajectory));
-                }
-                inc.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
-                out.push(inc);
+                out.push(finalizeRay(r, false));
             }
             for (int c_id : r.children_ids) q.push(c_id);
         }
@@ -3376,20 +3330,7 @@ struct Trace {
             Ray r = ray_tree[id];
             if (r.children_ids.length == 0) {
                 if (r.alive && !r.terminated) {
-                    Ray leaf = copy(r);
-                    if (r.hit != null && r.hit.valid) {
-                        leaf.p = r.hit.p;
-                        leaf.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
-                    } else if (length(r.trajectory) > 0) {
-                        real end_t = length(r.trajectory);
-                        leaf.p = point(r.trajectory, end_t);
-                        leaf.d = dir(r.trajectory, end_t);
-                        if (leaf.medium != null)
-                            leaf.wave_normal = leaf.medium.waveNormalFromGroup(leaf.d, leaf.p, leaf.lambda);
-                        leaf.pol =
-                            (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, arclength(r.trajectory));
-                    }
-                    out.push(leaf);
+                    out.push(finalizeRay(r, false));
                 }
             } else {
                 for (int c_id : r.children_ids) q.push(c_id);
@@ -3401,15 +3342,7 @@ struct Trace {
 }
 
 Trace copy(Trace src) {
-    if (src == null) return null;
-    Trace out = new Trace;
-    out.ray_tree = src.ray_tree;
-    out.system_elements = src.system_elements;
-    out.root_id = src.root_id;
-    out.route = copy(src.route);
-    out.root_ids = copy(src.root_ids);
-    out.is_reflection = src.is_reflection;
-    return out;
+    return (src != null) ? src.view(src.root_id, src.route, src.root_ids, src.is_reflection) : null;
 }
 
 // The Tracer Engine (Queue-Based BFS)
@@ -3788,40 +3721,7 @@ Property Refract(Medium inside, Medium ambient = null) {
     p.name = "Refract";
 
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
-        Ray[] rays;
-
-        if (!res.tir) {
-            pair[] jt = fluxTransmissionJones(res.ts, res.tp, res.Ts, res.Tp);
-            Polarization trans_pol = copy(r.pol);
-            applyDiattenuation(trans_pol, r.pol, jt[0], jt[1]);
-            real intensity = trans_pol.intensity();
-            if (intensity > config.physics.min_intensity) {
-                real trans_phase = jonesPhaseShift(r.pol, jt[0], jt[1]);
-                Ray trans_ray = spawnRay(r, h, res.d, intensity, res.medium, trans_phase, res.wave_normal);
-                trans_ray.pol = trans_pol;
-                rays.push(trans_ray);
-            }
-        }
-
-        if (res.tir || config.physics.trace_reflections || config.rendering.draw_reflections) {
-            Polarization refl_pol = copy(r.pol);
-            applyDiattenuation(refl_pol, r.pol, res.rs, res.rp);
-            real intensity = refl_pol.intensity();
-            if (intensity > config.physics.min_intensity) {
-                real refl_phase = jonesPhaseShift(r.pol, res.rs, res.rp);
-                Ray refl_ray = spawnRay(r,
-                                        h,
-                                        res.reflected_direction,
-                                        intensity,
-                                        res.source_medium,
-                                        refl_phase,
-                                        res.reflected_wave_normal);
-                refl_ray.pol = refl_pol;
-                rays.push(refl_ray);
-            }
-        }
-        return rays;
+        return emitFresnelPair(r, h, fresnelIsotropic(inside, ambient, r, h, resolve));
     };
     return p;
 }
@@ -4072,39 +3972,7 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
         res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
         res.T = 1.0 - res.R;
 
-        Ray[] rays;
-
-        if (!res.tir) {
-            pair[] jt = fluxTransmissionJones(fa.ts, fa.tp, fa.Ts, fa.Tp);
-            Polarization trans_pol = copy(r.pol);
-            applyDiattenuation(trans_pol, r.pol, jt[0], jt[1]);
-            real I_trans = trans_pol.intensity();
-            if (I_trans > config.physics.min_intensity) {
-                real phase_t = jonesPhaseShift(r.pol, jt[0], jt[1]);
-                Ray tr = spawnRay(r, h, res.d, I_trans, res.medium, phase_t, res.wave_normal);
-                tr.pol = trans_pol;
-                rays.push(tr);
-            }
-        }
-
-        if (config.physics.trace_reflections || config.rendering.draw_reflections || res.tir) {
-            Polarization refl_pol = copy(r.pol);
-            applyDiattenuation(refl_pol, r.pol, fa.rs, fa.rp);
-            real I_refl = refl_pol.intensity();
-            if (I_refl > config.physics.min_intensity) {
-                real phase_r = jonesPhaseShift(r.pol, fa.rs, fa.rp);
-                Ray rr = spawnRay(r,
-                                  h,
-                                  res.reflected_direction,
-                                  I_refl,
-                                  res.source_medium,
-                                  phase_r,
-                                  res.reflected_wave_normal);
-                rr.pol = refl_pol;
-                rays.push(rr);
-            }
-        }
-        return rays;
+        return emitFresnelPair(r, h, res);
     };
     return prop;
 }
@@ -4186,16 +4054,7 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
             }
 
             if (config.physics.trace_reflections || config.rendering.draw_reflections) {
-                Polarization refl_pol = copy(r.pol);
-                applyDiattenuation(refl_pol, r.pol, b.rs, b.rp);
-                real I_refl = refl_pol.intensity();
-                if (I_refl > config.physics.min_intensity) {
-                    real ph_r = jonesPhaseShift(r.pol, b.rs, b.rp);
-                    Ray refl_ray =
-                        spawnRay(r, h, b.reflected_direction, I_refl, f.source_medium, ph_r, b.reflected_wave_normal);
-                    refl_ray.pol = refl_pol;
-                    rays.push(refl_ray);
-                }
+                emitFresnelChild(rays, r, h, b.reflected_direction, b.reflected_wave_normal, f.source_medium, b.rs, b.rp);
             }
 
         } else {
@@ -4242,36 +4101,7 @@ Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
                 res.sync();
             }
 
-            if (!res.tir) {
-                pair[] jt = fluxTransmissionJones(res.ts, res.tp, res.Ts, res.Tp);
-                Polarization trans_pol = copy(r.pol);
-                applyDiattenuation(trans_pol, r.pol, jt[0], jt[1]);
-                real I_trans = trans_pol.intensity();
-                if (I_trans > config.physics.min_intensity) {
-                    real ph_t = jonesPhaseShift(r.pol, jt[0], jt[1]);
-                    Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, ph_t, res.wave_normal);
-                    trans_ray.pol = trans_pol;
-                    rays.push(trans_ray);
-                }
-            }
-
-            if (config.physics.trace_reflections || config.rendering.draw_reflections || res.tir) {
-                Polarization refl_pol = copy(r.pol);
-                applyDiattenuation(refl_pol, r.pol, res.rs, res.rp);
-                real I_refl = refl_pol.intensity();
-                if (I_refl > config.physics.min_intensity) {
-                    real ph_r = jonesPhaseShift(r.pol, res.rs, res.rp);
-                    Ray refl_ray = spawnRay(r,
-                                            h,
-                                            res.reflected_direction,
-                                            I_refl,
-                                            res.source_medium,
-                                            ph_r,
-                                            res.reflected_wave_normal);
-                    refl_ray.pol = refl_pol;
-                    rays.push(refl_ray);
-                }
-            }
+            return emitFresnelPair(r, h, res);
         }
 
         return rays;
@@ -6484,6 +6314,14 @@ void drawPolarizationMarker(picture pic = currentpicture,
 }
 
 private
+pen scaledOpacityPen(pen base, real intensity, bool apply_op = true) {
+    if (!apply_op) return base;
+    real a = opacity(base);
+    if (a == 0) a = 1.0;
+    return base + opacity(a * clamp(intensity, 0.0, 1.0));
+}
+
+private
 void drawPolarization(picture pic = currentpicture,
                       Ray r,
                       path traj,
@@ -6589,12 +6427,7 @@ void drawPolarization(picture pic = currentpicture,
         if (local_i < config.physics.min_intensity) continue;
         if (local_as <= eff_pol.min_amplitude && local_ap <= eff_pol.min_amplitude) continue;
 
-        pen pen_local = p;
-        if (apply_opacity && config.rendering.use_intensity_opacity) {
-            real base_alpha = opacity(p);
-            if (base_alpha == 0) base_alpha = 1.0;
-            pen_local = p + opacity(base_alpha * max(0.0, min(1.0, local_i)));
-        }
+        pen pen_local = scaledOpacityPen(p, local_i, apply_opacity && config.rendering.use_intensity_opacity);
         drawPolarizationMarker(pic, pos, d, local_as, local_ap, 1, pen_local, eff_pol);
     }
 }
@@ -7237,13 +7070,7 @@ void drawRaySegment(picture pic = currentpicture,
                     bool apply_opacity = true) {
     real L_traj = arclength(traj);
     if (L_traj < config.rendering.min_drawable_length) return;
-    pen pen_line = p;
-    if (apply_opacity) {
-        real start_i = max(0.0, min(1.0, r.intensity()));
-        real base_alpha = opacity(p);
-        if (base_alpha == 0) base_alpha = 1.0;
-        pen_line = p + opacity(base_alpha * start_i);
-    }
+    pen pen_line = scaledOpacityPen(p, r.intensity(), apply_opacity);
     arrowbar ab = (arrow.visible && L_traj >= config.rendering.min_drawable_length) ? (arrowbar)arrow : None;
     drawWavefront(pic, r, traj, segment_idx, total_segments, p, wavefronts);
     draw(pic, L, traj, pen_line, ab);
@@ -7274,8 +7101,6 @@ void drawFadingSegment(picture pic = currentpicture,
         return;
     }
 
-    real base_alpha = opacity(p);
-    if (base_alpha == 0) base_alpha = 1.0;
     real step_l = L_traj / steps;
     // Draw exponentially fading sub-segments without arrows
     for (int i = 0; i < steps; ++i) {
@@ -7284,12 +7109,7 @@ void drawFadingSegment(picture pic = currentpicture,
         path sub = subpath(traj, t1, t2);
         real local_dist = (i + 0.5) * step_l;
         real local_i = start_i * exp(-alpha * geometryToUm(local_dist));
-        pen pen_sub = p;
-        if (apply_opacity) {
-            pen_sub = p + opacity(base_alpha * max(0.0, min(1.0, local_i))) + squarecap;
-        } else {
-            pen_sub = p + squarecap;
-        }
+        pen pen_sub = scaledOpacityPen(p, local_i, apply_opacity) + squarecap;
 
         draw(pic, (i == 0 ? L : Label("")), sub, pen_sub, None);
     }
@@ -7299,11 +7119,8 @@ void drawFadingSegment(picture pic = currentpicture,
         arrowhead h = (arrow.head != null) ? arrow.head : config.rendering.arrow_head;
         real sz = isnan(arrow.size) ? config.rendering.arrow_size : arrow.size;
         real pos = isnan(arrow.relative) ? (segment_idx == total_segments - 1 ? 1.0 : 0.5) : arrow.relative;
-        pen pen_arrow = p;
-        if (apply_opacity) {
-            real local_i = start_i * exp(-alpha * geometryToUm(pos * L_traj));
-            pen_arrow = p + opacity(base_alpha * max(0.0, min(1.0, local_i)));
-        }
+        real local_i = start_i * exp(-alpha * geometryToUm(pos * L_traj));
+        pen pen_arrow = scaledOpacityPen(p, local_i, apply_opacity);
         pic.add(arrow(h, traj, invisible, sz, FillDraw(pen_arrow, pen_arrow), position = Relative(pos)));
     }
     // Draw polarization markers
@@ -7366,11 +7183,7 @@ void drawClippedRay(picture pic,
 // Helper to modulate pen opacity by the ray's physical intensity (if enabled)
 private
 pen resolveRayPen(pen pen_base, Ray r, bool apply_op) {
-    if (!apply_op || r == null) return pen_base;
-    real base_alpha = opacity(pen_base);
-    if (base_alpha == 0) base_alpha = 1.0;
-    real I = clamp(r.intensity(), 0.0, 1.0);
-    return pen_base + opacity(base_alpha * I);
+    return (r != null) ? scaledOpacityPen(pen_base, r.intensity(), apply_op) : pen_base;
 }
 
 // Complete Renderer Struct
