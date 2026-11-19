@@ -2055,7 +2055,8 @@ GRINStep grinAdvanceRK45(Ray r, real step) {
     pair k5p = s5[0], k5v = s5[1];
 
     pair v6 = v0 + step * (c61 * k1v + c62 * k2v + c63 * k3v + c64 * k4v + c65 * k5v);
-    pair[] s6 = grinEvalStage(r, p0 + step * (c61 * k1p + c62 * k2p + c63 * k3p + c64 * k4p + c65 * k5p), v6, unitOr(v5, d0));
+    pair[] s6 =
+        grinEvalStage(r, p0 + step * (c61 * k1p + c62 * k2p + c63 * k3p + c64 * k4p + c65 * k5p), v6, unitOr(v5, d0));
     pair k6p = s6[0], k6v = s6[1];
 
     pair p_5th =
@@ -3141,9 +3142,7 @@ struct Trace {
         return b;
     }
 
-    Trace follow( ... int[] newRoute) {
-        return view(root_id, newRoute, root_ids, is_reflection);
-    }
+    Trace follow( ... int[] newRoute) { return view(root_id, newRoute, root_ids, is_reflection); }
 
     Element getElement(Hit h) {
         if (h == null || h.element_index < 0 || h.element_index >= system_elements.length) return null;
@@ -4018,93 +4017,102 @@ Property DistributedBraggReflector(Medium med_H,
 
 // Ideal 2D polarizing splitter: independent scalar ordinary/extraordinary
 // modes. This is deliberately not presented as a general anisotropic solver.
-// Replace DoubleRefraction(...) (Chunk 4):
+private
+Ray[] doubleRefractionEnter(Ray r, Hit h, InterfaceFrame f, Medium med_o, Medium med_e, mediumResolver resolve) {
+    Ray[] rays;
+    real Is_inc = r.pol.sPower();
+    real Ip_inc = r.pol.pPower();
+    FresnelResult b = fresnelUniaxial(r, h, f.source_medium, med_o, med_e, resolve);
+
+    if (!b.tir_o) {
+        real I_o = Is_inc * b.To;
+        if (I_o > config.physics.min_intensity) {
+            real ph_o = atan2(b.ts.y, b.ts.x);
+            Ray o_ray = spawnRay(r, h, b.d_o, I_o, med_o, ph_o, b.wave_normal_o);
+            o_ray.pol = Polarization.stokes(I_o, I_o, 0.0, 0.0);
+            rays.push(o_ray);
+        }
+    }
+
+    if (!b.tir_e) {
+        real I_e = Ip_inc * b.Te;
+        if (I_e > config.physics.min_intensity) {
+            real ph_e = atan2(b.tp.y, b.tp.x);
+            Ray e_ray = spawnRay(r, h, b.d_e, I_e, med_e, ph_e, b.wave_normal_e);
+            e_ray.pol = Polarization.stokes(I_e, -I_e, 0.0, 0.0);
+            rays.push(e_ray);
+        }
+    }
+
+    if (config.physics.trace_reflections || config.rendering.draw_reflections) {
+        emitFresnelChild(rays, r, h, b.reflected_direction, b.reflected_wave_normal, f.source_medium, b.rs, b.rp);
+    }
+    return rays;
+}
+
+private
+Ray[] doubleRefractionExit(Ray r,
+                           Hit h,
+                           InterfaceFrame f,
+                           Medium med_o,
+                           Medium med_e,
+                           Medium ambient,
+                           mediumResolver resolve) {
+    Medium src_med = (r.medium != null) ? r.medium : med_o;
+    FresnelResult res = fresnelIsotropic(src_med, ambient, r, h, resolve);
+
+    if (src_med == med_e) {
+        pair N = f.normal;
+        pair T = (-N.y, N.x);
+        pair inc_wn = unitOr(r.wave_normal, r.d);
+        real kt = res.n1 * dot(inc_wn, T);
+
+        PhaseMatch refl_match = solvePhaseMatch(src_med, N, T, kt, N, h.p, r.lambda);
+        if (!refl_match.tir) {
+            res.reflected_direction = refl_match.group_direction;
+            res.reflected_wave_normal = refl_match.wave_normal;
+        }
+
+        Medium target_med = (f.target_medium != null) ? f.target_medium : Materials.VACUUM;
+        PhaseMatch trans_match = solvePhaseMatch(target_med, N, T, kt, -N, h.p, r.lambda);
+
+        complex Zi = refl_match.tm_impedance;
+        complex Z2 = trans_match.tm_impedance;
+        complex denom_p = Zi + Z2;
+        if (abs2(denom_p) > config.math.solver_denominator_eps) {
+            res.rp = (Zi - Z2) / denom_p;
+            res.tp = (!trans_match.tir) ? ((2.0 * Zi) / denom_p) : (0.0, 0.0);
+        } else {
+            res.rp = (-1.0, 0.0);
+            res.tp = (0.0, 0.0);
+        }
+        res.Rp = abs2(res.rp);
+        res.Tp = trans_match.tir ? 0.0 : max(0.0, 1.0 - res.Rp);
+        res.tir = trans_match.tir;
+        if (!res.tir) {
+            res.d = trans_match.group_direction;
+            res.wave_normal = trans_match.wave_normal;
+        } else {
+            res.d = res.reflected_direction;
+            res.wave_normal = res.reflected_wave_normal;
+        }
+        res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
+        res.T = 1.0 - res.R;
+        res.sync();
+    }
+
+    return emitFresnelPair(r, h, res);
+}
+
 Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
     Property p = new Property;
     p.name = "DoubleRefraction";
     p.generate = new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        Ray[] rays;
         InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
-        bool is_entering = (r.medium != med_o && r.medium != med_e);
-
-        if (is_entering) {
-            real Is_inc = r.pol.sPower();
-            real Ip_inc = r.pol.pPower();
-
-            FresnelResult b = fresnelUniaxial(r, h, f.source_medium, med_o, med_e, resolve);
-
-            if (!b.tir_o) {
-                real I_o = Is_inc * b.To;
-                if (I_o > config.physics.min_intensity) {
-                    real ph_o = atan2(b.ts.y, b.ts.x);
-                    Ray o_ray = spawnRay(r, h, b.d_o, I_o, med_o, ph_o, b.wave_normal_o);
-                    o_ray.pol = Polarization.stokes(I_o, I_o, 0.0, 0.0);
-                    rays.push(o_ray);
-                }
-            }
-
-            if (!b.tir_e) {
-                real I_e = Ip_inc * b.Te;
-                if (I_e > config.physics.min_intensity) {
-                    real ph_e = atan2(b.tp.y, b.tp.x);
-                    Ray e_ray = spawnRay(r, h, b.d_e, I_e, med_e, ph_e, b.wave_normal_e);
-                    e_ray.pol = Polarization.stokes(I_e, -I_e, 0.0, 0.0);
-                    rays.push(e_ray);
-                }
-            }
-
-            if (config.physics.trace_reflections || config.rendering.draw_reflections) {
-                emitFresnelChild(rays, r, h, b.reflected_direction, b.reflected_wave_normal, f.source_medium, b.rs, b.rp);
-            }
-
-        } else {
-            Medium src_med = (r.medium != null) ? r.medium : med_o;
-            FresnelResult res = fresnelIsotropic(src_med, ambient, r, h, resolve);
-
-            if (src_med == med_e) {
-                pair N = f.normal;
-                pair T = (-N.y, N.x);
-                pair inc_wn = unitOr(r.wave_normal, r.d);
-                real kt = res.n1 * dot(inc_wn, T);
-
-                PhaseMatch refl_match = solvePhaseMatch(src_med, N, T, kt, N, h.p, r.lambda);
-                if (!refl_match.tir) {
-                    res.reflected_direction = refl_match.group_direction;
-                    res.reflected_wave_normal = refl_match.wave_normal;
-                }
-
-                Medium target_med = (f.target_medium != null) ? f.target_medium : Materials.VACUUM;
-                PhaseMatch trans_match = solvePhaseMatch(target_med, N, T, kt, -N, h.p, r.lambda);
-
-                complex Zi = refl_match.tm_impedance;
-                complex Z2 = trans_match.tm_impedance;
-                complex denom_p = Zi + Z2;
-                if (abs2(denom_p) > config.math.solver_denominator_eps) {
-                    res.rp = (Zi - Z2) / denom_p;
-                    res.tp = (!trans_match.tir) ? ((2.0 * Zi) / denom_p) : (0.0, 0.0);
-                } else {
-                    res.rp = (-1.0, 0.0);
-                    res.tp = (0.0, 0.0);
-                }
-                res.Rp = abs2(res.rp);
-                res.Tp = trans_match.tir ? 0.0 : max(0.0, 1.0 - res.Rp);
-                res.tir = trans_match.tir;
-                if (!res.tir) {
-                    res.d = trans_match.group_direction;
-                    res.wave_normal = trans_match.wave_normal;
-                } else {
-                    res.d = res.reflected_direction;
-                    res.wave_normal = res.reflected_wave_normal;
-                }
-                res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
-                res.T = 1.0 - res.R;
-                res.sync();
-            }
-
-            return emitFresnelPair(r, h, res);
+        if (r.medium != med_o && r.medium != med_e) {
+            return doubleRefractionEnter(r, h, f, med_o, med_e, resolve);
         }
-
-        return rays;
+        return doubleRefractionExit(r, h, f, med_o, med_e, ambient, resolve);
     };
     return p;
 }
