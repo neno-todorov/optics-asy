@@ -14,6 +14,9 @@ The project naming convention is:
 * snake_case for variables, parameters, and fields;
 * UPPER_SNAKE_CASE for constants.
 
+The predefined color helpers (``Red``, ``DarkBlue``, etc.) are intentionally
+PascalCase, matching Asymptote's color and drawing helper style.
+
 Renames apply to Asymptote code identifiers only. Comments, strings, filenames,
 and standard optical notation such as ``S0``, ``rs``, and ``n1`` are preserved.
 The explicit public-name map runs by default. Local variables and struct fields
@@ -164,16 +167,6 @@ FUNCTION_RENAMES = {
     "draw_polarization": "drawPolarization",
     "LowerCase": "lowerCase",
     "UpperCase": "upperCase",
-    "Red": "redTint",
-    "Blue": "blueTint",
-    "Green": "greenTint",
-    "Yellow": "yellowTint",
-    "Brown": "brownTint",
-    "DarkRed": "darkRedTint",
-    "DarkBlue": "darkBlueTint",
-    "DarkGreen": "darkGreenTint",
-    "DarkYellow": "darkYellowTint",
-    "DarkBrown": "darkBrownTint",
     "RefractiveIndex": "refractiveIndex",
     "GRIN": "grin",
     "Absorption": "absorption",

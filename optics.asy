@@ -3,54 +3,43 @@
 // A 2D optical ray tracing engine for Asymptote (requires Asymptote >= 3.11
 // for the Trace subscript operator; older versions use Trace.get(i)).
 //
-// Naming convention:
-//   * PascalCase       - structs, public optical constructors and factories
-//   * camelCase        - operations, calculations, queries, and helpers
-//   * snake_case       - variables, struct fields, parameters, and local values
-//   * UPPER_SNAKE_CASE - constants and enum-like values
-// Naming details:
-//   * semantic qualifiers precede units: lambda_eff_nm, theta_inc_deg;
-//   * unit suffixes are last: *_nm, *_um, *_mm, *_deg, *_rad;
-//   * pen variables use the pen_* form: pen_ray, pen_laser, pen_line;
-//   * standard optical notation (S0, rs, rp, n1, n2) is preserved.
+// Naming convention for new and renamed API:
+//   * PascalCase for types and namespaces; lowerCamelCase for functions and
+//     factories; snake_case for variables, fields, and parameters.
+//   * Put unit suffixes at the end: wavelength_nm, angle_deg, thickness_um.
+//   * Keep names concise when context is clear (ambient, inside, ray, center).
+//   * Preserve established optical notation such as S0, rs, rp, n1, and n2.
 //
 // Units and physical scale:
-//   * Public wavelength arguments are in nm; material dispersion models use µm
-//     internally.  Wavelengths are never converted to geometry units for
-//     physical calculations.
-//   * Points, paths, ray positions, intersections, and element dimensions use
-//     native Asymptote geometry units and are independent of rendering size.
-//   * config.physics.meters_per_unit defines the physical length represented by
-//     one geometry unit.  Physical distances are converted to µm before they
-//     are used for OPL, phase, absorption, or polarization evolution.
-//   * Ray.opl is stored in µm.  vacuumWaveNumber() returns rad/µm, so
-//     vacuumWaveNumber(lambda) * Ray.opl is a dimensionless phase.
-//   * Length-dependent material coefficients (for example absorption and
-//     rotation coefficients) are interpreted per µm.
+//   * Physical wavelengths use nm; dispersion models convert them to µm where
+//     needed. Visual wavelength controls such as vis_lambda use geometry units.
+//   * Geometry (points, paths, ray positions, and element dimensions) uses
+//     native Asymptote units and does not depend on output or page size.
+//   * config.physics.meters_per_unit gives the physical length per geometry
+//     unit. Physical distances are converted to µm for OPL, phase, absorption,
+//     and polarization evolution. Length-dependent material coefficients are
+//     specified per µm.
+//   * Ray.opl is in µm and vacuumWaveNumber() returns rad/µm; their product is
+//     a dimensionless phase.
 //
 // Polarization and Fresnel conventions:
-//   * Stokes vectors use one fixed global basis: s (= z, TE, out of the
-//     drawing plane) and p (= in-plane, TM).
-//   * S1 = Is - Ip; S2 and S3 describe the relative phase between the s and p
-//     field components.
-//   * Fresnel amplitudes use rs = (n1 ci - n2 ct)/(...) and
-//     rp = (n2 ci - n1 ct)/(...); mirrors use the n2 -> infinity limit.
-//   * In anisotropic media, d is the energy/group direction and wave_normal
-//     is the phase-propagation direction.
-// Electromagnetic sign conventions (applies to FresnelAmplitudes and ThinFilmStack):
-//   * Spatial propagation into medium 2 (+z) decays when Im(q2) <= 0.
-//   * Complex refractive index: n_tilde = n - i*kappa (kappa >= 0 for passive media).
-//   * The unified complex Fresnel kernel chooses the physical outgoing branch
-//     with Re(q2) >= 0 and Im(q2) <= 0.
-//   * Public wavelengths remain in nanometres; optical path length in micrometres.
+//   * The Stokes basis is global: s is z/TE (out of the drawing plane), and p
+//     is in-plane/TM. S1 = Is - Ip; S2 and S3 encode the s/p coherence and phase.
+//   * For isotropic media, rs = (n1 cos(theta_i) - n2 cos(theta_t)) /
+//     (n1 cos(theta_i) + n2 cos(theta_t)); rp uses the corresponding p formula.
+//     Ideal mirrors use the perfect-conductor limit.
+//   * In anisotropic media, d is the energy/group direction and wave_normal is
+//     the phase-propagation direction.
+//   * Passive media use n_tilde = n - i*kappa, with kappa >= 0. For propagation
+//     into medium 2 (+z), the outgoing Fresnel branch has Re(q2) >= 0 and
+//     Im(q2) <= 0, so evanescent fields decay away from the interface.
 //
 // Complex number convention:
-//   * `typedef pair complex` is a readability alias only; the compiler treats
-//     both names as `pair`.  Use `complex` for optical field amplitudes,
-//     refractive indices, and Fresnel coefficients; use `pair` for geometric
-//     vectors, positions, and directions.
+//   * `typedef pair complex` is a readability alias; both names are `pair` to
+//     the compiler. Use `complex` for optical amplitudes, indices, and Fresnel
+//     coefficients, and `pair` for geometric vectors, positions, and directions.
 //
-// Run the test suite with:  asy -noV optics_test.asy
+// Run the test suite with: asy -noV optics_test.asy
 
 // ============================================================================
 // SECTION 01: PREAMBLE, CONFIG, UNITS, MATH & GEOMETRY PRIMITIVES
@@ -203,16 +192,16 @@ pen dark_blue = rgb(0.26, 0.42, 0.58);   // Dark blue
 pen dark_green = rgb(0.29, 0.52, 0.29);  // Dark green
 pen dark_yellow = rgb(0.64, 0.55, 0.23); // Dark yellow
 pen dark_brown = rgb(0.49, 0.36, 0.26);  // Dark brown
-pen redTint(real x = 1.0) { return interp(white, base_red, x); }
-pen blueTint(real x = 1.0) { return interp(white, base_blue, x); }
-pen greenTint(real x = 1.0) { return interp(white, base_green, x); }
-pen yellowTint(real x = 1.0) { return interp(white, base_yellow, x); }
-pen brownTint(real x = 1.0) { return interp(white, base_brown, x); }
-pen darkRedTint(real x = 1.0) { return interp(white, dark_red, x); }
-pen darkBlueTint(real x = 1.0) { return interp(white, dark_blue, x); }
-pen darkGreenTint(real x = 1.0) { return interp(white, dark_green, x); }
-pen darkYellowTint(real x = 1.0) { return interp(white, dark_yellow, x); }
-pen darkBrownTint(real x = 1.0) { return interp(white, dark_brown, x); }
+pen Red(real x = 1.0) { return interp(white, base_red, x); }
+pen Blue(real x = 1.0) { return interp(white, base_blue, x); }
+pen Green(real x = 1.0) { return interp(white, base_green, x); }
+pen Yellow(real x = 1.0) { return interp(white, base_yellow, x); }
+pen Brown(real x = 1.0) { return interp(white, base_brown, x); }
+pen DarkRed(real x = 1.0) { return interp(white, dark_red, x); }
+pen DarkBlue(real x = 1.0) { return interp(white, dark_blue, x); }
+pen DarkGreen(real x = 1.0) { return interp(white, dark_green, x); }
+pen DarkYellow(real x = 1.0) { return interp(white, dark_yellow, x); }
+pen DarkBrown(real x = 1.0) { return interp(white, dark_brown, x); }
 
 // Compare version components numerically; lexical string comparison makes
 // versions such as 3.9 sort after 3.11.
@@ -4828,7 +4817,7 @@ struct Lens {
                               Medium glass,
                               Medium ambient = null,
                               pen stroke = config.rendering.pen_lens,
-                              pen fill = blueTint(0.12),
+                              pen fill = Blue(0.12),
                               string name = "Ideal Thick Lens") {
         real t_safe = max(thickness, config.geometry.eps);
         transform T = shift(center) * rotate(angle);
@@ -7582,9 +7571,9 @@ void draw(picture pic = currentpicture,
           bool show_point_labels = true,
           bool show_focal_dimension = true,
           pen p_axis = gray(0.5) + dashed,
-          pen p_planes = darkBlueTint(1.0) + dashed,
+          pen p_planes = DarkBlue(1.0) + dashed,
           pen p_focal_planes = gray(0.5) + dashed,
-          pen p_points = darkBlueTint(1.0),
+          pen p_points = DarkBlue(1.0),
           pen p_nodal = black) {
     if (abs(cp.f2) == infinity || isnan(cp.f2)) return;
 
@@ -8235,7 +8224,7 @@ Inset interferenceInset(Ray[] sources,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = redTint(1.0),
+                        pen pen_laser = Red(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
@@ -8364,7 +8353,7 @@ Inset interferenceInset(Trace[] traces,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = redTint(1.0),
+                        pen pen_laser = Red(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
@@ -8407,7 +8396,7 @@ Inset interferenceInset(Trace trace,
                         real size = 28.0,
                         string title = "Screen Interference",
                         string tag = "",
-                        pen pen_laser = redTint(1.0),
+                        pen pen_laser = Red(1.0),
                         pen border = rgb(0.0, 0.2, 0.6),
                         pen fill = white,
                         pen badge_text = white,
