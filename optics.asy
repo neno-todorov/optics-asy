@@ -268,12 +268,11 @@ real vacuumWaveNumber(real lambda_nm) {
 //
 // Given  q2 = sqrt(n_tilde^2 - n1^2 * sin^2(theta_i)),  the two square-root
 // branches correspond to exponential growth and decay into the second medium.
-// For passive media (kappa >= 0) we must select the branch with Im(q2) >= 0
+// For passive media (kappa >= 0) we select the branch with Im(q2) <= 0
 // so that the transmitted field decays (or at worst propagates) away from the
-// interface.  Asymptote's built-in `sqrt(pair)` returns the principal branch
-// (Re >= 0), which happens to satisfy Im >= 0 when Im(arg) > 0 but fails for
-// purely real negative arguments (evanescent TIR) where it gives Im < 0.
-// This wrapper corrects that edge case.
+// interface under the module's n - i*kappa convention. For a purely real
+// negative argument (evanescent TIR), the principal square root has positive
+// imaginary part, so this helper selects its negative.
 private
 complex csqrt_outgoing(complex z) {
     if (abs(z.y) < config.math.eps && z.x < 0) {
@@ -546,7 +545,7 @@ struct Polarization {
         return p;
     }
 
-    // Optional backward-compatible alias if optics_test.asy calls fromAngles:
+    // Alias for elliptical polarization specified by Poincare-sphere angles.
     static Polarization fromAngles(real psi, real chi, real intensity = 1.0) {
         return ellipticalFromAngles(psi, chi, intensity);
     }
@@ -661,7 +660,6 @@ void applyDiattenuation(Polarization target, Polarization src, real T1, real T2,
 }
 
 // 2. Overload for complex Fresnel amplitude coefficients (js, jp)
-// Replace applyDiattenuation(Polarization, Polarization, pair, pair):
 void applyDiattenuation(Polarization target, Polarization src, pair js, pair jp) {
     if (target == null || src == null) return;
 
@@ -672,7 +670,6 @@ void applyDiattenuation(Polarization target, Polarization src, pair js, pair jp)
     applyDiattenuation(target, src, T1, T2, cross);
 }
 
-// Add these two private helpers right after applyDiattenuation(...) (Chunk 1):
 private
 real jonesPhaseShift(Polarization pol, complex js, complex jp) {
     if (pol == null) return atan2(js.y, js.x);
@@ -897,10 +894,8 @@ struct Medium {
     }
 }
 
-// Complex-index materials (M3)
-// Approach B: kappa drives interface amplitude physics only.  Bulk attenuation
-// remains the job of the existing Beer-Lambert `absorption` property.
-// This avoids double-counting when both properties are present.
+// Complex-index materials: kappa affects interface amplitudes; bulk attenuation
+// is handled by the Beer-Lambert `absorption` property to avoid double-counting.
 VolumeProperty volumeProperty(string name, int priority = 0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = name;
@@ -1189,11 +1184,11 @@ complexN(Medium m, pair p = (0, 0), pair d = (1, 0), real lambda = config.physic
     return m.getN(p, d, lambda, pol);
 }
 
-// Factory: Medium with a complex refractive index n_tilde = n + i*kappa.
+// Factory: Medium with a complex refractive index n_tilde = n - i*kappa.
 //   name  : descriptive label.
 //   n     : real phase-velocity index.
 //   kappa : extinction coefficient (>= 0).
-//   alpha : Beer-Lambert coefficient per um (default 0, Approach B).
+//   alpha : Beer-Lambert coefficient per um (default 0).
 Medium complexMedium(string name, real n, real kappa, real alpha = 0.0) {
     if (kappa < 0) abort("complexMedium: kappa must be >= 0 (passive medium).");
     Medium m = new Medium;
@@ -1236,11 +1231,10 @@ struct FresnelAmplitudes {
     real Ts;
     real Tp;
 
-    // q2 = sqrt(n_tilde2^2 - n1^2*sin^2(theta_i)).
-    // Im(q2) >= 0 selects the outgoing (decaying or propagating) solution.
+    // q2 = sqrt(n_tilde2^2 - n1^2*sin^2(theta_i)); outgoing waves use Im(q2) <= 0.
     complex q2;
 
-    // True when the field in medium 2 is evanescent (Im(q2) > 0).
+    // True when the field in medium 2 is evanescent (Im(q2) < 0).
     bool evanescent;
 }
 
@@ -1395,7 +1389,7 @@ FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cos
     return fa;
 }
 
-// Backward-compatible overload for real n1:
+// Convenience overload for a real incident index:
 FresnelAmplitudes fresnelAmplitudesKernel(real n1, complex n2_in, real cosi) {
     return fresnelAmplitudesKernel((n1, 0.0), n2_in, cosi);
 }
@@ -1486,7 +1480,7 @@ struct Ray {
     int[] ignored_flat_indices = new int[];
     Hit hit = null;
     path trajectory = nullpath;
-    // REPLACED: Es, Ep, and unpolarized are now encapsulated!
+    // Polarization state, including both field components and intensity.
     Polarization pol;
     Polarization end_pol = null;
     static int Incident = 1;
@@ -1577,8 +1571,7 @@ struct Ray {
         return toPoint(target, dir(angle), distance, medium, lambda, pol, phase, coherence_id);
     }
 
-    // Added Phase Methods
-    // Replace Ray.totalPhase() inside struct Ray:
+    // Accumulated phase at this ray's current point.
     real totalPhase() {
         real k0 = vacuumWaveNumber(this.lambda);
         return this.phase - k0 * this.opl;
@@ -1817,8 +1810,8 @@ typedef Medium
 mediumResolver(pair, Ray, Medium, Medium, bool);
 typedef Ray[] rayGenerator(Ray r, Hit h, mediumResolver resolve);
 typedef pair propertyAlignFunc(pair in_dir, pair target_dir, real lambda, int order_index);
-// Surface actions run in stage/priority/declaration order.  Built-ins retain
-// their legacy callbacks; `apply` is the preferred extension API.
+// Surface properties run in stage, priority, and declaration order.
+// Create custom properties with property(name, action, stage, priority, align).
 struct PropertyStage {
     static int BeforeBoundary = 0;
     static int Deflect = 10;
@@ -1910,7 +1903,6 @@ pair[] grinEvalStage(Ray r, pair p, pair v, pair fallback_d) {
     return new pair[]{v / ig.n, ig.grad};
 }
 
-// Replace grinAdvanceRK4 and grinAdvanceRK45 (Chunk 1):
 private
 GRINStep grinAdvanceRK4(Ray r, real step) {
     GRINStep res = new GRINStep;
@@ -2872,7 +2864,8 @@ struct Trace {
         return segs;
     }
 
-    private Interaction buildInteraction(Ray r) {
+  private
+    Interaction buildInteraction(Ray r) {
         Interaction ix = new Interaction;
         ix.hit = r.hit;
         ix.incident = copy(r);
@@ -2895,9 +2888,8 @@ struct Trace {
         return ix;
     }
 
-    private int[] hitBranchRayIds() {
-        return branchRayIds(true);
-    }
+  private
+    int[] hitBranchRayIds() { return branchRayIds(true); }
 
     Interaction[] interactions() {
         Interaction[] ixs;
@@ -3101,10 +3093,7 @@ struct Trace {
         return history;
     }
 
-    // TO DO: `return out` is not "clear subtrace" if the last element is Absorber the last ray of the main trace will
-    // be absorbed and for the subray it won't be absorbed, so something like trace.follow().incident(-n) will be the
-    // same for n = 1 and n = 2, which is not very consistent, the main idea is trace.follow(A, B, C) to return traced
-    // system(A, B, C) as rays but preserving the ray properties of the main trace
+    // Return the subtree reached through the requested ordered element path.
     Trace follow( ... Element[] elements) {
         if (elements.length == 0) return this;
         // Resolve the requested physical sequence directly against the ray
@@ -3640,9 +3629,11 @@ Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
 
 // Surface Property: Refract (Updated with Complex Fresnel Phase Retardance)
 Property Refract(Medium inside, Medium ambient = null) {
-    return property("Refract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        return emitFresnelPair(r, h, fresnelIsotropic(inside, ambient, r, h, resolve));
-    });
+    return property(
+        "Refract",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            return emitFresnelPair(r, h, fresnelIsotropic(inside, ambient, r, h, resolve));
+        });
 }
 
 // Ideal lossless, non-polarizing coating between equal-index media.
@@ -3655,43 +3646,46 @@ Property Coating(Medium inside,
                  real transmission_phase = 0.0) {
     if (R < 0.0 || R > 1.0) abort("Coating: R must be between 0 and 1.");
 
-    return property("Coating", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
+    return property(
+        "Coating",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
-        // This ideal coating model requires equal-index ports.
-        real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
-        if (abs(res.n1 - res.n2) > 1e-6 * n_scale) abort("Coating requires equal refractive indices on both sides.");
+            // This ideal coating model requires equal-index ports.
+            real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
+            if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
+                abort("Coating requires equal refractive indices on both sides.");
 
-        // Equal-index ports should not produce TIR.
-        if (res.tir) abort("Coating: unexpected TIR for equal-index media.");
+            // Equal-index ports should not produce TIR.
+            if (res.tir) abort("Coating: unexpected TIR for equal-index media.");
 
-        Ray[] rays;
-        real T = 1.0 - R;
+            Ray[] rays;
+            real T = 1.0 - R;
 
-        // Transmission: coating-defined power and phase.
-        real I_trans = r.intensity() * T;
-        if (I_trans > config.physics.min_intensity) {
-            Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
-            // An ideal non-polarizing coating preserves normalized Stokes
-            // polarization; spawnRay already scales it to I_trans.
-            rays.push(trans_ray);
-        }
+            // Transmission: coating-defined power and phase.
+            real I_trans = r.intensity() * T;
+            if (I_trans > config.physics.min_intensity) {
+                Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
+                // An ideal non-polarizing coating preserves normalized Stokes
+                // polarization; spawnRay already scales it to I_trans.
+                rays.push(trans_ray);
+            }
 
-        // Reflection: coating-defined power and phase.
-        real I_refl = r.intensity() * R;
-        if (I_refl > config.physics.min_intensity &&
-            (config.physics.trace_reflections || config.rendering.draw_reflections)) {
-            Ray refl_ray = spawnRay(r,
-                                    h,
-                                    res.reflected_direction,
-                                    I_refl,
-                                    res.source_medium,
-                                    reflection_phase,
-                                    res.reflected_wave_normal);
-            rays.push(refl_ray);
-        }
-        return rays;
-    });
+            // Reflection: coating-defined power and phase.
+            real I_refl = r.intensity() * R;
+            if (I_refl > config.physics.min_intensity &&
+                (config.physics.trace_reflections || config.rendering.draw_reflections)) {
+                Ray refl_ray = spawnRay(r,
+                                        h,
+                                        res.reflected_direction,
+                                        I_refl,
+                                        res.source_medium,
+                                        reflection_phase,
+                                        res.reflected_wave_normal);
+                rays.push(refl_ray);
+            }
+            return rays;
+        });
 }
 
 // Ideal polarizing beam-splitting coating with independent s and p reflectances.
@@ -3704,51 +3698,53 @@ Property PolarizingCoating(Medium inside,
                            real transmission_phase = 0.0) {
     if (Rs < 0.0 || Rs > 1.0 || Rp < 0.0 || Rp > 1.0) abort("PolarizingCoating: Rs and Rp must be between 0 and 1.");
 
-    return property("PolarizingCoating", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
+    return property(
+        "PolarizingCoating",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
-        real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
-        if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
-            abort("PolarizingCoating requires equal refractive indices on both sides.");
+            real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
+            if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
+                abort("PolarizingCoating requires equal refractive indices on both sides.");
 
-        Ray[] rays;
-        real Ts = 1.0 - Rs;
-        real Tp = 1.0 - Rp;
+            Ray[] rays;
+            real Ts = 1.0 - Rs;
+            real Tp = 1.0 - Rp;
 
-        complex js_trans = (sqrt(Ts) * cos(transmission_phase), sqrt(Ts) * sin(transmission_phase));
-        complex jp_trans = (sqrt(Tp) * cos(transmission_phase), sqrt(Tp) * sin(transmission_phase));
+            complex js_trans = (sqrt(Ts) * cos(transmission_phase), sqrt(Ts) * sin(transmission_phase));
+            complex jp_trans = (sqrt(Tp) * cos(transmission_phase), sqrt(Tp) * sin(transmission_phase));
 
-        complex js_refl = (sqrt(Rs) * cos(reflection_phase), sqrt(Rs) * sin(reflection_phase));
-        complex jp_refl = (sqrt(Rp) * cos(reflection_phase), sqrt(Rp) * sin(reflection_phase));
+            complex js_refl = (sqrt(Rs) * cos(reflection_phase), sqrt(Rs) * sin(reflection_phase));
+            complex jp_refl = (sqrt(Rp) * cos(reflection_phase), sqrt(Rp) * sin(reflection_phase));
 
-        // Transmitted ray
-        real T_weighted =
-            (r.intensity() > 0) ? (Ts * r.pol.sPower() + Tp * r.pol.pPower()) / r.intensity() : 0.5 * (Ts + Tp);
-        real I_trans = r.intensity() * T_weighted;
-        if (I_trans > config.physics.min_intensity) {
-            Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
-            applyDiattenuation(trans_ray.pol, r.pol, js_trans, jp_trans);
-            rays.push(trans_ray);
-        }
+            // Transmitted ray
+            real T_weighted =
+                (r.intensity() > 0) ? (Ts * r.pol.sPower() + Tp * r.pol.pPower()) / r.intensity() : 0.5 * (Ts + Tp);
+            real I_trans = r.intensity() * T_weighted;
+            if (I_trans > config.physics.min_intensity) {
+                Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
+                applyDiattenuation(trans_ray.pol, r.pol, js_trans, jp_trans);
+                rays.push(trans_ray);
+            }
 
-        // Reflected ray
-        real R_weighted =
-            (r.intensity() > 0) ? (Rs * r.pol.sPower() + Rp * r.pol.pPower()) / r.intensity() : 0.5 * (Rs + Rp);
-        real I_refl = r.intensity() * R_weighted;
-        if (I_refl > config.physics.min_intensity &&
-            (config.physics.trace_reflections || config.rendering.draw_reflections)) {
-            Ray refl_ray = spawnRay(r,
-                                    h,
-                                    res.reflected_direction,
-                                    I_refl,
-                                    res.source_medium,
-                                    reflection_phase,
-                                    res.reflected_wave_normal);
-            applyDiattenuation(refl_ray.pol, r.pol, js_refl, jp_refl);
-            rays.push(refl_ray);
-        }
-        return rays;
-    });
+            // Reflected ray
+            real R_weighted =
+                (r.intensity() > 0) ? (Rs * r.pol.sPower() + Rp * r.pol.pPower()) / r.intensity() : 0.5 * (Rs + Rp);
+            real I_refl = r.intensity() * R_weighted;
+            if (I_refl > config.physics.min_intensity &&
+                (config.physics.trace_reflections || config.rendering.draw_reflections)) {
+                Ray refl_ray = spawnRay(r,
+                                        h,
+                                        res.reflected_direction,
+                                        I_refl,
+                                        res.source_medium,
+                                        reflection_phase,
+                                        res.reflected_wave_normal);
+                applyDiattenuation(refl_ray.pol, r.pol, js_refl, jp_refl);
+                rays.push(refl_ray);
+            }
+            return rays;
+        });
 }
 
 ThinFilmLayer thinFilmLayer(Medium medium, real thickness_nm) { return ThinFilmLayer(medium, thickness_nm); }
@@ -3864,16 +3860,18 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
 }
 
 Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = null) {
-    return property("ThinFilmStack", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
+    return property(
+        "ThinFilmStack",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
-        FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
-        res.applyAmplitudes(fa);
-        res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
-        res.T = 1.0 - res.R;
+            FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
+            res.applyAmplitudes(fa);
+            res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
+            res.T = 1.0 - res.R;
 
-        return emitFresnelPair(r, h, res);
-    });
+            return emitFresnelPair(r, h, res);
+        });
 }
 
 // Convenience factory: single thin-film layer of specified thickness
@@ -4004,144 +4002,166 @@ Ray[] doubleRefractionExit(Ray r,
 }
 
 Property DoubleRefraction(Medium med_o, Medium med_e, Medium ambient = null) {
-    return property("DoubleRefraction", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
-        if (r.medium != med_o && r.medium != med_e) {
-            return doubleRefractionEnter(r, h, f, med_o, med_e, resolve);
-        }
-        return doubleRefractionExit(r, h, f, med_o, med_e, ambient, resolve);
-    });
+    return property(
+        "DoubleRefraction",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            InterfaceFrame f = interfaceFrame(med_o, ambient, r, h, resolve);
+            if (r.medium != med_o && r.medium != med_e) {
+                return doubleRefractionEnter(r, h, f, med_o, med_e, resolve);
+            }
+            return doubleRefractionExit(r, h, f, med_o, med_e, ambient, resolve);
+        });
 }
 
 Property Reflect(real phase_shift = pi) {
-    return property("Reflect", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        pair N = phaseGradientNormal(r, h);
-        pair reflected_wave_normal = unitOr(r.wave_normal - 2 * dot(r.wave_normal, N) * N, r.d);
-        pair reflected = r.medium.groupDirection(reflected_wave_normal);
-        Ray out = spawnRay(r, h, reflected, r.intensity(), r.medium, phase_shift, reflected_wave_normal);
-        applyMirrorPolarization(out.pol);
-        return new Ray[]{out};
-    }, PropertyStage.Interact, 0,
-       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
+    return property(
+        "Reflect",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            pair N = phaseGradientNormal(r, h);
+            pair reflected_wave_normal = unitOr(r.wave_normal - 2 * dot(r.wave_normal, N) * N, r.d);
+            pair reflected = r.medium.groupDirection(reflected_wave_normal);
+            Ray out = spawnRay(r, h, reflected, r.intensity(), r.medium, phase_shift, reflected_wave_normal);
+            applyMirrorPolarization(out.pol);
+            return new Ray[]{out};
+        },
+        PropertyStage.Interact,
+        0,
+        new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 Property IdealReflect(real f, real phase_shift = pi) {
-    return property("IdealReflect", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        if (abs(f) <= config.math.eps) return new Ray[];
-        pair A = unitOr(h.axis); // Inward optical axis
-        // Theoretical focus F
-        pair F = h.center + f * A;
-        pair u_F = unitOr(F - h.p, A);
-        // Exact parabolic bisector normal at the curved hit point h.p
-        pair N_ideal = unitOr(-A - u_F, A);
-        // Exact specular reflection across the ideal normal
-        pair v_out = unitOr(r.d - 2.0 * dot(r.d, N_ideal) * N_ideal, r.d);
-        Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium, phase_shift);
-        applyMirrorPolarization(out.pol);
-        return new Ray[]{out};
-    }, PropertyStage.Interact, 0,
-       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
+    return property(
+        "IdealReflect",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            if (abs(f) <= config.math.eps) return new Ray[];
+            pair A = unitOr(h.axis); // Inward optical axis
+            // Theoretical focus F
+            pair F = h.center + f * A;
+            pair u_F = unitOr(F - h.p, A);
+            // Exact parabolic bisector normal at the curved hit point h.p
+            pair N_ideal = unitOr(-A - u_F, A);
+            // Exact specular reflection across the ideal normal
+            pair v_out = unitOr(r.d - 2.0 * dot(r.d, N_ideal) * N_ideal, r.d);
+            Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium, phase_shift);
+            applyMirrorPolarization(out.pol);
+            return new Ray[]{out};
+        },
+        PropertyStage.Interact,
+        0,
+        new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 // PROPERTY: Used for ideal spherical interfaces with paraxial approximation
-// Replace IdealRefract(...) (Chunk 4):
 Property IdealRefract(pair V, pair axis, real R, Medium m1, Medium m2) {
     pair A = unitOr(axis);
     pair Q = (-A.y, A.x);
 
-    return property("IdealRefract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        if (abs(R) <= config.math.eps) return new Ray[];
+    return property(
+        "IdealRefract",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            if (abs(R) <= config.math.eps) return new Ray[];
 
-        real dx = dot(r.d, A);
-        real dy = dot(r.d, Q);
-        real sgn = (dx >= 0) ? 1.0 : -1.0;
+            real dx = dot(r.d, A);
+            real dy = dot(r.d, Q);
+            real sgn = (dx >= 0) ? 1.0 : -1.0;
 
-        Medium m_in = (r.medium != null) ? r.medium : Materials.VACUUM;
-        Medium med_a = (m1 != null) ? m1 : Materials.VACUUM;
-        Medium med_b = (m2 != null) ? m2 : resolve(h.p + config.geometry.eps_intersection * r.d, r, m1, m2, sgn >= 0);
-        if (med_b == null) med_b = Materials.VACUUM;
+            Medium m_in = (r.medium != null) ? r.medium : Materials.VACUUM;
+            Medium med_a = (m1 != null) ? m1 : Materials.VACUUM;
+            Medium med_b =
+                (m2 != null) ? m2 : resolve(h.p + config.geometry.eps_intersection * r.d, r, m1, m2, sgn >= 0);
+            if (med_b == null) med_b = Materials.VACUUM;
 
-        real n_in = m_in.n(h.p, r.d, r.lambda, r.pol);
-        real n_a = med_a.n(h.p, r.d, r.lambda, r.pol);
-        Medium m_out = (abs(n_in - n_a) < 1e-5) ? med_b : med_a;
+            real n_in = m_in.n(h.p, r.d, r.lambda, r.pol);
+            real n_a = med_a.n(h.p, r.d, r.lambda, r.pol);
+            Medium m_out = (abs(n_in - n_a) < 1e-5) ? med_b : med_a;
 
-        real n1 = n_in;
-        real n2 = m_out.n(h.p, r.d, r.lambda, r.pol);
-        real Phi = (abs(R) <= config.math.eps || abs(R) == infinity) ? 0.0 : (n2 - n1) / (sgn * R);
+            real n1 = n_in;
+            real n2 = m_out.n(h.p, r.d, r.lambda, r.pol);
+            real Phi = (abs(R) <= config.math.eps || abs(R) == infinity) ? 0.0 : (n2 - n1) / (sgn * R);
 
-        pair rel = h.p - V;
-        real hx = dot(rel, A);
-        real hy = dot(rel, Q);
+            pair rel = h.p - V;
+            real hx = dot(rel, A);
+            real hy = dot(rel, Q);
 
-        real x_out_loc = 0.0;
-        bool parallel_out = false;
+            real x_out_loc = 0.0;
+            bool parallel_out = false;
 
-        if (abs(dy) < config.math.eps) {
-            if (abs(Phi) < config.math.eps)
-                parallel_out = true;
-            else
-                x_out_loc = sgn * (n2 / Phi);
-        } else {
-            real x_in_loc = hx - hy * (dx / dy);
-            real s1 = -sgn * x_in_loc;
-            real inv_s2 = (abs(s1) > config.math.eps) ? ((Phi - n1 / s1) / n2) : (Phi / n2);
-            if (abs(inv_s2) < 1e-8) {
-                parallel_out = true;
+            if (abs(dy) < config.math.eps) {
+                if (abs(Phi) < config.math.eps)
+                    parallel_out = true;
+                else
+                    x_out_loc = sgn * (n2 / Phi);
             } else {
-                x_out_loc = sgn / inv_s2;
+                real x_in_loc = hx - hy * (dx / dy);
+                real s1 = -sgn * x_in_loc;
+                real inv_s2 = (abs(s1) > config.math.eps) ? ((Phi - n1 / s1) / n2) : (Phi / n2);
+                if (abs(inv_s2) < 1e-8) {
+                    parallel_out = true;
+                } else {
+                    x_out_loc = sgn / inv_s2;
+                }
             }
-        }
 
-        pair v_out;
-        if (parallel_out) {
-            v_out = sgn * A;
-        } else {
-            pair dir_loc = (x_out_loc - hx) * A + (-hy) * Q;
-            if (sgn * dot(dir_loc, A) < 0) dir_loc = -dir_loc;
-            v_out = unitOr(dir_loc, r.d);
-        }
+            pair v_out;
+            if (parallel_out) {
+                v_out = sgn * A;
+            } else {
+                pair dir_loc = (x_out_loc - hx) * A + (-hy) * Q;
+                if (sgn * dot(dir_loc, A) < 0) dir_loc = -dir_loc;
+                v_out = unitOr(dir_loc, r.d);
+            }
 
-        Ray out = spawnRay(r, h, v_out, r.intensity(), m_out, 0);
-        return new Ray[]{out};
-    }, PropertyStage.Interact, 0,
-       new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
+            Ray out = spawnRay(r, h, v_out, r.intensity(), m_out, 0);
+            return new Ray[]{out};
+        },
+        PropertyStage.Interact,
+        0,
+        new pair(pair in_dir, pair target_dir, real lambda, int order_index) { return target_dir - in_dir; });
 }
 
 Property Focus(real f) {
-    return property("Focus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        pair v_out = thinLensRefractDir(r, h, f);
-        Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
-        out.wave_normal = v_out;
-        return new Ray[]{out};
-    }, PropertyStage.Deflect);
+    return property(
+        "Focus",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            pair v_out = thinLensRefractDir(r, h, f);
+            Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
+            out.wave_normal = v_out;
+            return new Ray[]{out};
+        },
+        PropertyStage.Deflect);
 }
 
 Property PhaseFocus(real f) {
-    return property("PhaseFocus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        pair v_out = thinLensRefractDir(r, h, f);
-        pair A = unitOr(h.axis);
-        pair T = (-A.y, A.x);
-        real y = dot(h.p - h.center, T);
-        real n_med = (r.medium != null) ? r.medium.n(h.p, r.d, r.lambda, r.pol) : 1.0;
-        real k0 = vacuumWaveNumber(r.lambda);
-        real phase_delay =
-            (abs(f) > config.math.eps) ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f))) : 0.0;
-        return new Ray[]{spawnRay(r, h, v_out, r.intensity(), r.medium, phase_delay, v_out)};
-    }, PropertyStage.Deflect);
+    return property(
+        "PhaseFocus",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            pair v_out = thinLensRefractDir(r, h, f);
+            pair A = unitOr(h.axis);
+            pair T = (-A.y, A.x);
+            real y = dot(h.p - h.center, T);
+            real n_med = (r.medium != null) ? r.medium.n(h.p, r.d, r.lambda, r.pol) : 1.0;
+            real k0 = vacuumWaveNumber(r.lambda);
+            real phase_delay =
+                (abs(f) > config.math.eps) ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f))) : 0.0;
+            return new Ray[]{spawnRay(r, h, v_out, r.intensity(), r.medium, phase_delay, v_out)};
+        },
+        PropertyStage.Deflect);
 }
 
 Property IdealFocus(real f) {
-    return property("IdealFocus", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        pair A = unitOr(h.axis);
-        pair F = h.center + f * A;
-        pair v_out = unitOr(F - h.p, r.d);
-        Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
-        out.wave_normal = v_out;
-        return new Ray[]{out};
-    }, PropertyStage.Deflect);
+    return property(
+        "IdealFocus",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            pair A = unitOr(h.axis);
+            pair F = h.center + f * A;
+            pair v_out = unitOr(F - h.p, r.d);
+            Ray out = spawnRay(r, h, v_out, r.intensity(), r.medium);
+            out.wave_normal = v_out;
+            return new Ray[]{out};
+        },
+        PropertyStage.Deflect);
 }
 
-// Replace wavevectorShiftAxis, Diffract, and PhaseShift (Chunk 4):
 private
 pair wavevectorShiftAxis(pair in_dir, pair target_dir, real delta_k, bool reflective) {
     pair u_in = unitOr(in_dir);
@@ -4184,70 +4204,78 @@ Diffract(real lines_per_mm, int[] orders = new int[]{1}, bool reflective = false
 
     real grating_spacing = 1000.0 / lines_per_mm;
 
-    return property("Diffract", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        Ray[] validRays;
-        bool use_efficiencies = (efficiencies.length == orders.length);
-        pair N = phaseGradientNormal(r, h);
-        pair T = -unitOr(h.tangent, (N.y, -N.x));
-        Medium m1 = (r.medium != null) ? r.medium : Materials.VACUUM;
-        real n1 = m1.n(h.p, r.d, r.lambda, r.pol);
-        Medium m2 = m1;
-        if (!reflective) {
-            pair target_point = h.p + config.geometry.eps_intersection * r.d;
-            m2 = resolve(target_point, r, null, null, true);
-            if (m2 == null) m2 = Materials.VACUUM;
-        }
-
-        real n2 = reflective ? n1 : m2.n(h.p, r.d, r.lambda, r.pol);
-        real k_in = dot(r.d, T);
-        real lambda_um = r.lambda * nm_to_um;
-        real phase_shift = reflective ? pi : 0;
-        for (int i = 0; i < orders.length; ++i) {
-            real delta_k = orders[i] * lambda_um / grating_spacing;
-            real k_out = (n1 * k_in + delta_k) / n2;
-            if (abs(k_out) <= 1.0) {
-                pair v_out = diffractionOutputDir(N, T, k_out, reflective);
-                real eff = use_efficiencies ? max(0.0, efficiencies[i]) : 1.0;
-                real intensity = r.intensity() * eff;
-                Ray diff_ray = spawnRay(r, h, v_out, intensity, m2, phase_shift);
-                validRays.push(diff_ray);
+    return property(
+        "Diffract",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            Ray[] validRays;
+            bool use_efficiencies = (efficiencies.length == orders.length);
+            pair N = phaseGradientNormal(r, h);
+            pair T = -unitOr(h.tangent, (N.y, -N.x));
+            Medium m1 = (r.medium != null) ? r.medium : Materials.VACUUM;
+            real n1 = m1.n(h.p, r.d, r.lambda, r.pol);
+            Medium m2 = m1;
+            if (!reflective) {
+                pair target_point = h.p + config.geometry.eps_intersection * r.d;
+                m2 = resolve(target_point, r, null, null, true);
+                if (m2 == null) m2 = Materials.VACUUM;
             }
-        }
 
-        if (validRays.length > 0 && !use_efficiencies) {
-            real split_intensity = r.intensity() / validRays.length;
-            for (int i = 0; i < validRays.length; ++i) {
-                validRays[i].pol.scaleTo(split_intensity);
+            real n2 = reflective ? n1 : m2.n(h.p, r.d, r.lambda, r.pol);
+            real k_in = dot(r.d, T);
+            real lambda_um = r.lambda * nm_to_um;
+            real phase_shift = reflective ? pi : 0;
+            for (int i = 0; i < orders.length; ++i) {
+                real delta_k = orders[i] * lambda_um / grating_spacing;
+                real k_out = (n1 * k_in + delta_k) / n2;
+                if (abs(k_out) <= 1.0) {
+                    pair v_out = diffractionOutputDir(N, T, k_out, reflective);
+                    real eff = use_efficiencies ? max(0.0, efficiencies[i]) : 1.0;
+                    real intensity = r.intensity() * eff;
+                    Ray diff_ray = spawnRay(r, h, v_out, intensity, m2, phase_shift);
+                    validRays.push(diff_ray);
+                }
             }
-        }
 
-        return validRays;
-    }, PropertyStage.Interact, 0,
-       new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
-        int target_order = (orders.length > order_index) ? orders[order_index] : 0;
-        real delta_k = target_order * (lambda * nm_to_um) / grating_spacing;
-        return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
-    });
+            if (validRays.length > 0 && !use_efficiencies) {
+                real split_intensity = r.intensity() / validRays.length;
+                for (int i = 0; i < validRays.length; ++i) {
+                    validRays[i].pol.scaleTo(split_intensity);
+                }
+            }
+
+            return validRays;
+        },
+        PropertyStage.Interact,
+        0,
+        new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
+            int target_order = (orders.length > order_index) ? orders[order_index] : 0;
+            real delta_k = target_order * (lambda * nm_to_um) / grating_spacing;
+            return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
+        });
 }
 
 Property PhaseShift(real delta_k, bool reflective = false) {
-    return property("PhaseShift", new Ray[](Ray r, Hit h, mediumResolver resolve) {
-        pair N = phaseGradientNormal(r, h);
-        pair T = -unitOr(h.tangent, (N.y, -N.x));
-        Medium m1 = (r.medium != null) ? r.medium : Materials.VACUUM;
-        real n1 = m1.n(h.p, r.d, r.lambda, r.pol);
-        Medium m2 = reflective ? m1 : resolve(h.p + config.geometry.eps_intersection * r.d, r, null, null, true);
-        if (m2 == null) m2 = Materials.VACUUM;
-        real n2 = m2.n(h.p, r.d, r.lambda, r.pol);
-        real k_out = (n1 * dot(r.d, T) + delta_k) / n2;
-        if (abs(k_out) > 1.0) return new Ray[];
-        pair v_out = diffractionOutputDir(N, T, k_out, reflective);
-        real p_shift = reflective ? pi : 0;
-        return new Ray[]{spawnRay(r, h, v_out, r.intensity(), reflective ? r.medium : m2, p_shift)};
-    }, PropertyStage.Interact, 0,
-       new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
-        return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
-    });
+    return property(
+        "PhaseShift",
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            pair N = phaseGradientNormal(r, h);
+            pair T = -unitOr(h.tangent, (N.y, -N.x));
+            Medium m1 = (r.medium != null) ? r.medium : Materials.VACUUM;
+            real n1 = m1.n(h.p, r.d, r.lambda, r.pol);
+            Medium m2 = reflective ? m1 : resolve(h.p + config.geometry.eps_intersection * r.d, r, null, null, true);
+            if (m2 == null) m2 = Materials.VACUUM;
+            real n2 = m2.n(h.p, r.d, r.lambda, r.pol);
+            real k_out = (n1 * dot(r.d, T) + delta_k) / n2;
+            if (abs(k_out) > 1.0) return new Ray[];
+            pair v_out = diffractionOutputDir(N, T, k_out, reflective);
+            real p_shift = reflective ? pi : 0;
+            return new Ray[]{spawnRay(r, h, v_out, r.intensity(), reflective ? r.medium : m2, p_shift)};
+        },
+        PropertyStage.Interact,
+        0,
+        new pair(pair in_dir, pair target_dir, real lambda, int order_index) {
+            return wavevectorShiftAxis(in_dir, target_dir, delta_k, reflective);
+        });
 }
 
 Property Absorb() {
@@ -4799,13 +4827,18 @@ void drawThinLens(picture pic, Element e) {
 
 struct Lens {
   private
-    static Element idealFace(pair V, real angle, real R, real diameter,
-                             Medium glass, Medium ambient, pen stroke, string label_name) {
+    static Element
+    idealFace(pair V, real angle, real R, real diameter, Medium glass, Medium ambient, pen stroke, string label_name) {
         if (abs(R) > config.math.eps && abs(R) != infinity) {
             return SphericalInterface(V, angle, R, diameter, glass, ambient, stroke, label_name);
         }
-        return linearElement(V, angle, diameter, IdealRefract(V, dir(angle), 0.0, glass, ambient),
-                             stroke, label_name, glass);
+        return linearElement(V,
+                             angle,
+                             diameter,
+                             IdealRefract(V, dir(angle), 0.0, glass, ambient),
+                             stroke,
+                             label_name,
+                             glass);
     }
 
     static Element thin(pair center,
@@ -5027,7 +5060,7 @@ Element PhaseGradient(pair center,
                       bool reflective = false,
                       pen stroke = lightblue,
                       string name = "Phase Gradient") {
-        return linearElement(center, angle, diameter, PhaseShift(delta_k, reflective), stroke, name);
+    return linearElement(center, angle, diameter, PhaseShift(delta_k, reflective), stroke, name);
 }
 
 Element Grating(pair center,
@@ -5039,7 +5072,8 @@ Element Grating(pair center,
                 real[] efficiencies = new real[]{},
                 pen stroke = lightblue,
                 string name = "Grating") {
-    Element e = linearElement(center, angle, diameter, Diffract(lines_per_mm, orders, reflective, efficiencies), stroke, name);
+    Element e =
+        linearElement(center, angle, diameter, Diffract(lines_per_mm, orders, reflective, efficiencies), stroke, name);
     e.custom_draw = drawGrating;
     return e;
 }
@@ -5257,7 +5291,10 @@ real aimAngle(pair A,
     if (isnan(fa) || isnan(fb) || fa * fb > 0) {
         real[] br = bracketMissAngle(A, B, sys, a, b, fa, fb, lambda);
         if (br[0] < 0.5) return br[5];
-        a = br[1]; fa = br[2]; b = br[3]; fb = br[4];
+        a = br[1];
+        fa = br[2];
+        b = br[3];
+        fb = br[4];
     }
 
     if (isnan(fa) || isnan(fb)) return 0.5 * (a + b);
@@ -5541,7 +5578,7 @@ ImageResult image(OpticalSystem sys,
 // ============================================================================
 // SECTION 09: RENDERING, INSETS & DIAGRAM ANNOTATIONS
 // ============================================================================
-// Segment rule shared by RayArrows and RayPolarization.
+// Per-segment overrides shared by ray arrows, polarization markers, and wavefronts.
 struct SegmentRule {
     int[] indices;
     // Common visibility override
@@ -5549,12 +5586,8 @@ struct SegmentRule {
     // false   = invisible
     // default = inherit global setting
     bool3 visible = default;
-    // RayArrows
-    // first/middle/last refer to the segment's position in the
-    // complete ray.
-    // RayPolarization
-    // first/last refer to the first/last polarization marker
-    // within this segment.
+    // For arrows and wavefronts, first/middle/last select ray segments.
+    // For polarization, they select markers within each segment.
     bool3 first = default;
     bool3 middle = default;
     bool3 last = default;
@@ -5592,8 +5625,8 @@ struct SegmentRule {
     }
 }
 
-private
-bool ruleMatchesSegment(SegmentRule rule, int i, int total_segments) {
+private bool
+ruleMatchesSegment(SegmentRule rule, int i, int total_segments) {
     for (int idx : rule.indices) {
         if (((idx < 0) ? idx + total_segments : idx) == i) return true;
     }
@@ -5612,8 +5645,15 @@ bool applyRuleVisibilityOverride(bool cur_vis, SegmentRule rule, int i, int tota
 }
 
 private
-bool initRuleVisibility(bool visible, bool3 first, bool3 middle, bool3 last,
-                        SegmentRule[] src_rules, bool[] out_fml, SegmentRule[] dest_rules) {
+// With global visibility off, explicit positional flags and segment rules
+// opt selected segments back in; unspecified positions remain hidden.
+bool initRuleVisibility(bool visible,
+                        bool3 first,
+                        bool3 middle,
+                        bool3 last,
+                        SegmentRule[] src_rules,
+                        bool[] out_fml,
+                        SegmentRule[] dest_rules) {
     if (visible) {
         out_fml[0] = (first != default) ? (bool)first : true;
         out_fml[1] = (middle != default) ? (bool)middle : true;
@@ -5667,7 +5707,9 @@ struct RayArrows {
         this.relative = relative;
         bool[] fml = new bool[3];
         this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
-        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+        this.first = fml[0];
+        this.middle = fml[1];
+        this.last = fml[2];
     }
 
     RayArrows clone() {
@@ -5707,12 +5749,12 @@ struct RayArrows {
         // can force it off.
         for (SegmentRule rule : rules) {
             if (ruleMatchesSegment(rule, i, total_segments)) {
-                    out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
+                out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
 
-                    // Appearance.
-                    if (rule.head != null) out.head = rule.head;
-                    if (!isnan(rule.size)) out.size = rule.size;
-                    if (!isnan(rule.relative)) out.relative = rule.relative;
+                // Appearance.
+                if (rule.head != null) out.head = rule.head;
+                if (!isnan(rule.size)) out.size = rule.size;
+                if (!isnan(rule.relative)) out.relative = rule.relative;
             }
         }
         return out;
@@ -5784,7 +5826,9 @@ struct RayPolarization {
         this.min_separation = min_separation;
         bool[] fml = new bool[3];
         this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
-        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+        this.first = fml[0];
+        this.middle = fml[1];
+        this.last = fml[2];
     }
 
     RayPolarization clone() {
@@ -5828,21 +5872,21 @@ struct RayPolarization {
         // Apply rules only to this specific segment
         for (SegmentRule rule : rules) {
             if (ruleMatchesSegment(rule, i, total_segments)) {
-                    out.rules.push(rule);
-                    if (rule.visible != default) out.visible = (bool)rule.visible;
-                    if (rule.count >= 0) out.count = rule.count;
-                    if (!isnan(rule.spacing)) out.spacing = rule.spacing;
-                    if (!isnan(rule.before)) out.before = rule.before;
-                    if (!isnan(rule.after)) out.after = rule.after;
-                    if (rule.first != default) out.first = (bool)rule.first;
-                    if (rule.middle != default) out.middle = (bool)rule.middle;
-                    if (rule.last != default) out.last = (bool)rule.last;
-                    if (!isnan(rule.scale)) out.scale = rule.scale;
-                    if (rule.show_s != default) out.show_s = (bool)rule.show_s;
-                    if (rule.show_p != default) out.show_p = (bool)rule.show_p;
-                    if (rule.p != nullpen) out.p = rule.p;
-                    if (rule.head != null) out.head = rule.head;
-                    if (!isnan(rule.size)) out.size = rule.size;
+                out.rules.push(rule);
+                if (rule.visible != default) out.visible = (bool)rule.visible;
+                if (rule.count >= 0) out.count = rule.count;
+                if (!isnan(rule.spacing)) out.spacing = rule.spacing;
+                if (!isnan(rule.before)) out.before = rule.before;
+                if (!isnan(rule.after)) out.after = rule.after;
+                if (rule.first != default) out.first = (bool)rule.first;
+                if (rule.middle != default) out.middle = (bool)rule.middle;
+                if (rule.last != default) out.last = (bool)rule.last;
+                if (!isnan(rule.scale)) out.scale = rule.scale;
+                if (rule.show_s != default) out.show_s = (bool)rule.show_s;
+                if (rule.show_p != default) out.show_p = (bool)rule.show_p;
+                if (rule.p != nullpen) out.p = rule.p;
+                if (rule.head != null) out.head = rule.head;
+                if (!isnan(rule.size)) out.size = rule.size;
             }
         }
         return out;
@@ -5938,7 +5982,9 @@ struct RayWavefront {
         this.show_lines = show_lines;
         bool[] fml = new bool[3];
         this.visible = initRuleVisibility(visible, first, middle, last, rules, fml, this.rules);
-        this.first = fml[0]; this.middle = fml[1]; this.last = fml[2];
+        this.first = fml[0];
+        this.middle = fml[1];
+        this.last = fml[2];
     }
 
     RayWavefront clone() {
@@ -5984,16 +6030,16 @@ struct RayWavefront {
 
         for (SegmentRule rule : rules) {
             if (ruleMatchesSegment(rule, i, total_segments)) {
-                    out.rules.push(rule);
-                    // Segment positional policy
-                    out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
-                    // Appearance
-                    if (rule.count >= 0) out.count = rule.count;
-                    if (!isnan(rule.spacing)) out.spacing = rule.spacing;
-                    if (!isnan(rule.scale)) out.width = rule.scale * this.width;
-                    if (!isnan(rule.before)) out.before = rule.before;
-                    if (!isnan(rule.after)) out.after = rule.after;
-                    if (rule.p != nullpen) out.p = rule.p;
+                out.rules.push(rule);
+                // Segment positional policy
+                out.visible = applyRuleVisibilityOverride(out.visible, rule, i, total_segments);
+                // Appearance
+                if (rule.count >= 0) out.count = rule.count;
+                if (!isnan(rule.spacing)) out.spacing = rule.spacing;
+                if (!isnan(rule.scale)) out.width = rule.scale * this.width;
+                if (!isnan(rule.before)) out.before = rule.before;
+                if (!isnan(rule.after)) out.after = rule.after;
+                if (rule.p != nullpen) out.p = rule.p;
             }
         }
         return out;
@@ -6012,8 +6058,7 @@ struct TracePoint {
 }
 
 // Clean General-Purpose Inset Component
-private
-frame makeFramedBox(frame content, real margin, pen border, pen fill) {
+private frame makeFramedBox(frame content, real margin, pen border, pen fill) {
     frame box_frame;
     filltype ft = (fill != nullpen) ? FillDraw(fill, border) : Fill(border);
     box(box_frame, content, margin, margin, border, ft, above = false);
@@ -6085,18 +6130,9 @@ operator cast(ResolvedArrow a) {
 
 SegmentRule copy(SegmentRule src) { return (src != null) ? src.clone() : null; }
 
-// segment()
-// For RayArrows:
-//   visible
-//   first / middle / last
-//   head / size / relative
-// For RayPolarization:
-//   visible
-//   first / last
-//   count / spacing / before / after
-//   scale / show_s / show_p / p
-//   head / size
-// Unused fields are simply ignored by the corresponding resolver.
+// Configure overrides for one or more ray segments. Negative indices count
+// backward from the final segment. Each option is used by renderers that
+// support it; unrelated options are ignored.
 SegmentRule segment(bool3 visible = default,
                     explicit real size = nan,
                     explicit real relative = nan,
@@ -6135,13 +6171,9 @@ SegmentRule segment(bool3 visible = default,
     return out;
 }
 
-RayArrows copy(RayArrows src) {
-    return (src != null) ? src.clone() : null;
-}
+RayArrows copy(RayArrows src) { return (src != null) ? src.clone() : null; }
 
-RayPolarization copy(RayPolarization src) {
-    return (src != null) ? src.clone() : null;
-}
+RayPolarization copy(RayPolarization src) { return (src != null) ? src.clone() : null; }
 
 private
 path polarizationMarkerLine(pair pos, pair d, real Ap, RayPolarization pol, real scale = 1) {
@@ -6248,8 +6280,8 @@ real[] sampleSegmentPositions(real L,
         } else {
             real step = range / (eff_count - 1);
             for (int i = 0; i < eff_count; ++i) {
-                if ((i == 0 && !first) || (i == eff_count - 1 && !last) ||
-                    (i > 0 && i < eff_count - 1 && !middle)) continue;
+                if ((i == 0 && !first) || (i == eff_count - 1 && !last) || (i > 0 && i < eff_count - 1 && !middle))
+                    continue;
                 raw.push(s_start + i * step);
             }
         }
@@ -6261,8 +6293,7 @@ real[] sampleSegmentPositions(real L,
         } else {
             real actual_start = s_start + (range - n_int * sp) / 2.0;
             for (int i = 0; i <= n_int; ++i) {
-                if ((i == 0 && !first) || (i == n_int && !last) ||
-                    (i > 0 && i < n_int && !middle)) continue;
+                if ((i == 0 && !first) || (i == n_int && !last) || (i > 0 && i < n_int && !middle)) continue;
                 raw.push(actual_start + i * sp);
             }
         }
@@ -6304,8 +6335,15 @@ void drawPolarization(picture pic = currentpicture,
     real min_sep =
         !isnan(eff_pol.min_separation) ? eff_pol.min_separation : config.rendering.min_polarization_marker_separation;
     if (min_sep <= 0) min_sep = 0.1;
-    real[] positions = sampleSegmentPositions(L, eff_pol.before, eff_pol.after, eff_pol.count, eff_pol.spacing,
-                                             min_sep, eff_pol.first, eff_pol.middle, eff_pol.last);
+    real[] positions = sampleSegmentPositions(L,
+                                              eff_pol.before,
+                                              eff_pol.after,
+                                              eff_pol.count,
+                                              eff_pol.spacing,
+                                              min_sep,
+                                              eff_pol.first,
+                                              eff_pol.middle,
+                                              eff_pol.last);
 
     if (positions.length == 0) return;
 
@@ -6332,9 +6370,7 @@ void drawPolarization(picture pic = currentpicture,
     }
 }
 
-RayWavefront copy(RayWavefront src) {
-    return (src != null) ? src.clone() : null;
-}
+RayWavefront copy(RayWavefront src) { return (src != null) ? src.clone() : null; }
 
 // Standalone Wavefront Marker / Huygens Wavelet Renderer
 void drawWavefrontMarker(picture pic = currentpicture,
@@ -6423,12 +6459,20 @@ void drawWavefront(picture pic = currentpicture,
 
     // Calculate expanding radii / distance steps:
     real physical_lambda = (r.lambda > 0) ? r.lambda : config.physics.lambda;
-    real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0)
-                  ? (eff_wf.spacing / local_n)
-                  : resolveEffectiveLambda(nan, physical_lambda) / local_n;
+    real sp = (!isnan(eff_wf.spacing) && eff_wf.spacing > 0) ? (eff_wf.spacing / local_n)
+                                                             : resolveEffectiveLambda(nan, physical_lambda) / local_n;
     if (sp <= config.math.eps) sp = 12.0;
-    real[] radii = sampleSegmentPositions(L, 0, 0, eff_wf.count, sp, 0, true, true, true,
-                                          true, config.rendering.wavefront_max_markers);
+    real[] radii = sampleSegmentPositions(L,
+                                          0,
+                                          0,
+                                          eff_wf.count,
+                                          sp,
+                                          0,
+                                          true,
+                                          true,
+                                          true,
+                                          true,
+                                          config.rendering.wavefront_max_markers);
 
     // Draw source dot once if wavelets are enabled
     if (eff_wf.wavelets && eff_wf.show_source) dot(pic, P0, pen_draw + 2.0pt);
@@ -6448,7 +6492,6 @@ void drawWavefront(picture pic = currentpicture,
     }
 }
 
-// Add a private helper right above pointAtOPL (Chunk 3):
 private
 real segmentTotalOPL(Segment s) {
     if (s == null || length(s.traj) == 0) return 0.0;
@@ -6469,7 +6512,6 @@ real segmentTotalOPL(Segment s) {
     return geometryToUm(arclength(s.traj)) * rayIndex(s.before);
 }
 
-// Replace pointAtOPL (Chunk 3):
 private
 TracePoint pointAtOPL(Segment[] segs, real target_o_p_l) {
     TracePoint tp;
@@ -6608,12 +6650,12 @@ struct BundleOPLRange {
     real max = -infinity;
 }
 
-private
-BundleOPLRange computeBundleOPLRange(Trace[] traces,
-                                     Segment[][] segs_of,
-                                     pair reference_origin,
-                                     pair incoming_direction,
-                                     real ambient_index) {
+private BundleOPLRange
+computeBundleOPLRange(Trace[] traces,
+                      Segment[][] segs_of,
+                      pair reference_origin,
+                      pair incoming_direction,
+                      real ambient_index) {
     BundleOPLRange range;
     range.launch_offsets = new real[traces.length];
     for (int k = 0; k < traces.length; ++k) {
@@ -6623,7 +6665,8 @@ BundleOPLRange computeBundleOPLRange(Trace[] traces,
 
         real k0 = vacuumWaveNumber(first.lambda);
         real phase_opl_offset = (k0 > config.math.eps) ? -first.phase / k0 : 0.0;
-        real offset = geometryToUm(dot(first.p - reference_origin, incoming_direction) * ambient_index) + phase_opl_offset;
+        real offset =
+            geometryToUm(dot(first.p - reference_origin, incoming_direction) * ambient_index) + phase_opl_offset;
         range.launch_offsets[k] = offset;
 
         real trace_total_opl = 0.0;
@@ -7239,19 +7282,22 @@ void draw(picture pic = currentpicture,
     } else if (length == -infinity) {
         drawClippedRay(pic, z, r.d, margin, pen_eff, arrow, true, false);
     } else if (length >= 0) {
-        drawStyledSegment(pic, L, r, z -- (z + length * r.d), 0, 1, pen_eff, arrow, polarization, wavefronts, 1, false);
+        drawStyledSegment(pic,
+                          L,
+                          r,
+                          z -- (z + length * r.d), 0, 1, pen_eff, arrow, polarization, wavefronts, 1, false);
     } else {
         drawStyledSegment(pic,
-                       L,
-                       r,
-                       (z + length * r.d) -- z,
-                       0,
-                       1,
-                       pen_eff,
-                       arrow,
-                       polarization,
-                       wavefronts,
-                       false);
+                          L,
+                          r,
+                          (z + length * r.d) -- z,
+                          0,
+                          1,
+                          pen_eff,
+                          arrow,
+                          polarization,
+                          wavefronts,
+                          false);
     }
 }
 
