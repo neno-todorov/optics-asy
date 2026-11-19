@@ -965,9 +965,8 @@ VolumeProperty Absorption(real alpha) {
 }
 
 VolumeProperty Gain(real g) {
-    VolumeProperty vp = new VolumeProperty;
+    VolumeProperty vp = Absorption(-g);
     vp.name = "Gain";
-    vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) { return -g; };
     return vp;
 }
 
@@ -1220,6 +1219,35 @@ Medium complexMedium(string name, real n, real kappa, real alpha = 0.0) {
 // ============================================================================
 // SECTION 04: RAY & ISOTROPIC FRESNEL KERNELS
 // ============================================================================
+// FresnelAmplitudes: unified complex Fresnel kernel (M2)
+// Stores the four complex Fresnel field amplitudes for one planar interface.
+// Produces physically correct results for dielectric transmission, TIR, and
+// transmission into an absorbing medium through the same equations.
+struct FresnelAmplitudes {
+    complex rs; // s-polarization reflection amplitude
+    complex rp; // p-polarization reflection amplitude
+    complex ts; // s-polarization transmission amplitude
+    complex tp; // p-polarization transmission amplitude
+
+    // Power reflectances (always real and in [0,1] for lossless incident media)
+    real Rs;
+    real Rp;
+
+    // Power transmittances for a real (lossless) incident medium.
+    // Uses the correct normal energy-flux ratio; NOT simply |t|^2.
+    // For an absorbing transmitted medium this represents the power entering
+    // the second medium at the interface (not accounting for bulk attenuation).
+    real Ts;
+    real Tp;
+
+    // q2 = sqrt(n_tilde2^2 - n1^2*sin^2(theta_i)).
+    // Im(q2) >= 0 selects the outgoing (decaying or propagating) solution.
+    complex q2;
+
+    // True when the field in medium 2 is evanescent (Im(q2) > 0).
+    bool evanescent;
+}
+
 // private
 struct FresnelResult {
     // -------------------------------------------------------------------------
@@ -1272,6 +1300,21 @@ struct FresnelResult {
     Medium medium_e;
 
     // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+    void applyAmplitudes(FresnelAmplitudes fa) {
+        this.rs = fa.rs;
+        this.rp = fa.rp;
+        this.ts = fa.ts;
+        this.tp = fa.tp;
+        this.Rs = fa.Rs;
+        this.Rp = fa.Rp;
+        this.Ts = fa.Ts;
+        this.Tp = fa.Tp;
+        this.tir = fa.evanescent;
+    }
+
+    // -------------------------------------------------------------------------
     // Synchronizer: Call at the end of solver to guarantee all aliases match
     // -------------------------------------------------------------------------
     void sync() {
@@ -1300,35 +1343,6 @@ struct FresnelResult {
             // set by the solver).  Summing To + Te would exceed unity.
         }
     }
-}
-
-// FresnelAmplitudes: unified complex Fresnel kernel (M2)
-// Stores the four complex Fresnel field amplitudes for one planar interface.
-// Produces physically correct results for dielectric transmission, TIR, and
-// transmission into an absorbing medium through the same equations.
-struct FresnelAmplitudes {
-    complex rs; // s-polarization reflection amplitude
-    complex rp; // p-polarization reflection amplitude
-    complex ts; // s-polarization transmission amplitude
-    complex tp; // p-polarization transmission amplitude
-
-    // Power reflectances (always real and in [0,1] for lossless incident media)
-    real Rs;
-    real Rp;
-
-    // Power transmittances for a real (lossless) incident medium.
-    // Uses the correct normal energy-flux ratio; NOT simply |t|^2.
-    // For an absorbing transmitted medium this represents the power entering
-    // the second medium at the interface (not accounting for bulk attenuation).
-    real Ts;
-    real Tp;
-
-    // q2 = sqrt(n_tilde2^2 - n1^2*sin^2(theta_i)).
-    // Im(q2) >= 0 selects the outgoing (decaying or propagating) solution.
-    complex q2;
-
-    // True when the field in medium 2 is evanescent (Im(q2) > 0).
-    bool evanescent;
 }
 
 // Collision Packet
@@ -1460,15 +1474,7 @@ FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wav
     // Compute complex amplitudes via the symmetrized kernel
     FresnelAmplitudes fa = fresnelAmplitudesKernel(n1, n2, cosi);
 
-    res.rs = fa.rs;
-    res.rp = fa.rp;
-    res.ts = fa.ts;
-    res.tp = fa.tp;
-    res.Rs = fa.Rs;
-    res.Rp = fa.Rp;
-    res.Ts = fa.Ts;
-    res.Tp = fa.Tp;
-    res.tir = fa.evanescent;
+    res.applyAmplitudes(fa);
 
     if (res.tir) {
         res.cost = 0.0;
@@ -3967,15 +3973,7 @@ Property ThinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
         FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
 
         FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
-        res.rs = fa.rs;
-        res.rp = fa.rp;
-        res.ts = fa.ts;
-        res.tp = fa.tp;
-        res.Rs = fa.Rs;
-        res.Rp = fa.Rp;
-        res.Ts = fa.Ts;
-        res.Tp = fa.Tp;
-        res.tir = fa.evanescent;
+        res.applyAmplitudes(fa);
         res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
         res.T = 1.0 - res.R;
 
@@ -4255,9 +4253,8 @@ Property PhaseFocus(real f) {
         real y = dot(h.p - h.center, T);
         real n_med = (r.medium != null) ? r.medium.n(h.p, r.d, r.lambda, r.pol) : 1.0;
         real k0 = vacuumWaveNumber(r.lambda);
-        real phase_delay = (abs(f) > config.math.eps)
-                               ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f)))
-                               : 0.0;
+        real phase_delay =
+            (abs(f) > config.math.eps) ? (sgn(f) * k0 * n_med * geometryToUm(sqrt(f * f + y * y) - abs(f))) : 0.0;
         return new Ray[]{spawnRay(r, h, v_out, r.intensity(), r.medium, phase_delay, v_out)};
     };
     return p;
@@ -8439,14 +8436,15 @@ struct InterferenceProfile {
     real max_intensity = 0.0;
 }
 
-InterferenceProfile screenInterference(Ray[] sources,
-                                       pair screen_center = (0, 0),
-                                       pair screen_axis = (0, 1),
-                                       real span = nan,
-                                       real vis_lambda = nan,
-                                       int periods = 5,
-                                       int samples = 400,
-                                       bool collimated = false) {
+InterferenceProfile
+screenInterference(Ray[] sources,
+                   pair screen_center = (0, 0),
+                   pair screen_axis = (0, 1),
+                   real span = nan,
+                   real vis_lambda = nan,
+                   int periods = 5,
+                   int samples = 400,
+                   bool collimated = false) {
     if (samples < 1) abort("screenInterference: samples must be positive.");
     if (periods < 1) abort("screenInterference: periods must be positive.");
     if (sources.length < 2) abort("screenInterference: at least two sources are required.");
@@ -8586,8 +8584,8 @@ Inset InterferenceInset(Ray[] sources,
     // 1. Physical Wave Interference Sampling via screenInterference
     // ========================================================================
     pair probe_center = (!isnan(target.x) && !isnan(target.y)) ? target : screen_center;
-    InterferenceProfile prof = screenInterference(
-        sources, probe_center, screen_axis, span, vis_lambda, periods, samples, collimated);
+    InterferenceProfile prof =
+        screenInterference(sources, probe_center, screen_axis, span, vis_lambda, periods, samples, collimated);
     real max_i = prof.max_intensity;
     real[] intensities = prof.intensities;
 
