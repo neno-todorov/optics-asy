@@ -3503,52 +3503,6 @@ OpticalSystem operator*(transform t, OpticalSystem sys) {
     return out;
 }
 
-// SYSTEM ALGEBRA & DECLARATIVE DSL OPERATORS
-// 1. Ray Tracing via Multiplication Operator (*)
-// Usage: Trace t = sys * r;  or  Trace t = sys * rays;
-Trace operator*(OpticalSystem sys, Ray r) { return sys.trace(r); }
-Trace operator*(OpticalSystem sys, Ray[] rays) { return sys.trace(rays); }
-
-// 2. System Assembly via Addition Operator (+)
-// OpticalSystem + OpticalSystem -> Combines elements of both systems
-OpticalSystem operator+(OpticalSystem sys1, OpticalSystem sys2) {
-    OpticalSystem out = copy(sys1);
-    out.add(sys2.elements);
-    return out;
-}
-
-// OpticalSystem + Element -> Appends a single element
-OpticalSystem operator+(OpticalSystem sys, Element e) {
-    OpticalSystem out = copy(sys);
-    out.add(e);
-    return out;
-}
-
-// OpticalSystem + Element[] -> Appends an array of elements
-OpticalSystem operator+(OpticalSystem sys, Element[] es) {
-    OpticalSystem out = copy(sys);
-    out.add(es);
-    return out;
-}
-
-// Element + Element -> Creates a new system from two elements
-OpticalSystem operator+(Element e1, Element e2) {
-    OpticalSystem out = system(e1);
-    out.add(e2);
-    return out;
-}
-
-// Element + OpticalSystem -> Prepends an element to a system
-OpticalSystem operator+(Element e, OpticalSystem sys) {
-    OpticalSystem out = system(e, sys.ambient);
-    out.add(sys.elements);
-    return out;
-}
-
-// Medium + Element / Element[] -> Initializes system with specific ambient medium
-OpticalSystem operator+(Medium ambient, Element e) { return system(e, ambient); }
-OpticalSystem operator+(Medium ambient, Element[] es) { return system(es, ambient); }
-
 // ============================================================================
 // SECTION 06: INTERFACE & SURFACE PROPERTIES
 // ============================================================================
@@ -8057,7 +8011,7 @@ struct InsetPanel {
                    real absolute = nan,
                    pair pos = (nan, nan),
                    real size = 20.0,
-                   real ref_amplitude = 1.0,
+                   real ref_amplitude = nan,
                    string tag = "",
                    string title = "",
                    pen p = currentpen,
@@ -8065,18 +8019,18 @@ struct InsetPanel {
                    pen fill = white,
                    pen badge_text = white) {
         Inset ins = PolarizationInset(tr,
-                                      segment_index,
-                                      relative,
-                                      absolute,
-                                      pos,
-                                      size,
-                                      ref_amplitude,
-                                      title,
-                                      tag,
-                                      p,
-                                      border,
-                                      fill,
-                                      badge_text);
+                                      segment_index = segment_index,
+                                      relative = relative,
+                                      absolute = absolute,
+                                      pos = pos,
+                                      size = size,
+                                      ref_amplitude = ref_amplitude,
+                                      title = title,
+                                      tag = tag,
+                                      p = p,
+                                      border = border,
+                                      fill = fill,
+                                      badge_text = badge_text);
         return this.add(ins, tag = tag);
     }
 

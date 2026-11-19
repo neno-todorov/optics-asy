@@ -1645,7 +1645,7 @@ real w = 2.0 * tan(radians(theta));
 real h = 2.0;
 path rhomb_path = (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle;
 Element rhomb = Interface(rhomb_path, glass_rhomb);
-OpticalSystem rhomb_sys = Materials.VACUUM + rhomb;
+OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 // Launch linear 45-deg ray: S = (1, 0, 1, 0)
 Ray r_in = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.linear(45.0, 1.0));
 Trace t_rhomb = rhomb_sys.trace(r_in);
@@ -1671,7 +1671,7 @@ real theta = aSin(sqrt((B_c + sqrt(B_c * B_c - 4.0 * A_c * C_c)) / (2.0 * A_c)))
 real L = 50.0, w = 2.0 * tan(radians(theta)), h = 2.0;
 Element rhomb = Interface(
     (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle, glass_rhomb_unpol);
-OpticalSystem rhomb_sys = Materials.VACUUM + rhomb;
+OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 Ray r_unpol_rhomb = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.unpolarized(1.0));
 Trace t_unpol_rhomb = rhomb_sys.trace(r_unpol_rhomb);
 Ray r_exit_unpol = t_unpol_rhomb.last(); // after both TIR bounces and the exit face
@@ -2122,8 +2122,8 @@ Trace rg_tq = system(Polarizer.QWP((10, 0), 0.0, 20.0)).trace(Ray((0, 5), (1, 0)
 assert_near("QWP(fast 0) is hit by an off-axis horizontal ray", rg_tq.length(), 1.0);
 assert_near("QWP: linear 45 -> circular (|S3| = 1)", abs(rg_tq.last().pol.S3), 1.0, 1e-9);
 assert_near_pair("QWP leaves the ray direction unchanged", rg_tq.last().d, (1, 0), 1e-12);
-Trace rg_tq2 = (Polarizer.QWP((10, 0), 0.0, 20.0) + Polarizer.QWP((20, 0), 0.0, 20.0))
-                   .trace(Ray((0, 5), (1, 0), pol = Polarization.linear(45.0)));
+    Trace rg_tq2 = system(Polarizer.QWP((10, 0), 0.0, 20.0), Polarizer.QWP((20, 0), 0.0, 20.0))
+                       .trace(Ray((0, 5), (1, 0), pol = Polarization.linear(45.0)));
 assert_near("Two QWPs = HWP: linear 45 -> linear -45 (S2 = -1)", rg_tq2.last().pol.S2, -1.0, 1e-9);
 Ray rg_hwp =
     system(Polarizer.HWP((10, 0), 22.5, 20.0)).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(0.0))).last();
@@ -3380,7 +3380,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                      (3, 8) .. (6, 0) .. controls(3, -8) and (-3, -8) .. cycle;
     Element outer_2node = Interface(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
     Element inner_box = Interface(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
-    OpticalSystem nested_sys = outer_2node + inner_box;
+    OpticalSystem nested_sys = system(outer_2node, inner_box);
     // Ray starting inside SmallBox must resolve Inner17 (1.7), not Outer14 (1.4)
     Trace t_nest = nested_sys.trace(Ray((0, 0), (1, 0), lambda = 633.0));
     assert_near("Inner polygon beats enclosing 2-node curved lens", t_nest.first().medium.n(), 1.7, 1e-5);
@@ -3475,7 +3475,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Element m2 = Mirror.flat((5, 0), 0.0, 10.0, name = "");
     m1.center = (0, 0);
     m2.center = (0, 0);
-    Trace t_mm = (m1 + m2).trace(Ray((2, 0), (1, 0)));
+    Trace t_mm = system(m1, m2).trace(Ray((2, 0), (1, 0)));
     Trace t_follow_m2 = t_mm.follow(m2);
     assert_near("Unnamed element follow distinguishes m2 from m1",
                 (t_follow_m2 != null && length(t_follow_m2.hit(0) - (5, 0)) < 1e-6) ? 1.0 : 0.0,
@@ -3583,7 +3583,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Element m2_c = Mirror.flat((0, 60), -45, 25);
     Element bs2_c = BeamSplitter.cube((60, 60), 0, 20, R = 0.5, glass = Materials.BK7, ambient = Materials.AIR);
     Element det_c = Absorber((45, 90) -- (75, 90), name = "Det");
-    OpticalSystem mzi = Materials.AIR + bs_c + m1_c + m2_c + bs2_c + det_c;
+    OpticalSystem mzi = system(Materials.AIR, bs_c, m1_c, m2_c, bs2_c, det_c);
     Trace tm = mzi.trace(Ray((-30, 0), (1, 0), coherence_id = 1));
     Ray[] arr = tm.arrivals(det_c);
     assert_near("Trace.arrivals collects both MZI arms at detector", arr.length, 2, 1e-9);
