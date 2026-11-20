@@ -3454,56 +3454,56 @@ struct OpticalSystem {
     }
 }
 
-OpticalSystem
-system(Element[] elements, Medium ambient = null) {
+private OpticalSystem
+makeSystem(Element[] elements, Medium ambient = null) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
     s.add(elements);
     return s;
 }
 
-OpticalSystem system(Surface[] surfaces, Medium ambient = null) {
+private OpticalSystem
+makeSystem(Surface[] surfaces, Medium ambient = null) {
     OpticalSystem result = new OpticalSystem;
     result.ambient = ambient;
     for (Surface s : surfaces) result.add(s);
     return result;
 }
 
+OpticalSystem system(Element[] elements, Medium ambient = null) {
+    return makeSystem(elements, ambient);
+}
+
+OpticalSystem system(Surface[] surfaces, Medium ambient = null) {
+    return makeSystem(surfaces, ambient);
+}
+
 OpticalSystem system(Element element, Medium ambient) {
-    OpticalSystem s = new OpticalSystem;
-    s.ambient = ambient;
-    s.add(element);
-    return s;
+    return makeSystem(new Element[]{element}, ambient);
 }
 
 OpticalSystem system(Medium ambient, Element first ... Element[] rest) {
-    OpticalSystem s = new OpticalSystem;
-    s.ambient = ambient;
-    s.add(first);
-    s.add(rest);
-    return s;
+    Element[] elements = {first};
+    elements.append(rest);
+    return makeSystem(elements, ambient);
 }
 
 OpticalSystem system(Element first ... Element[] rest) {
-    OpticalSystem s = new OpticalSystem;
-    s.add(first);
-    s.add(rest);
-    return s;
+    Element[] elements = {first};
+    elements.append(rest);
+    return makeSystem(elements);
 }
 
 OpticalSystem system(Medium ambient, Surface first ... Surface[] rest) {
-    OpticalSystem result = new OpticalSystem;
-    result.ambient = ambient;
-    result.add(first);
-    for (Surface s : rest) result.add(s);
-    return result;
+    Surface[] surfaces = {first};
+    surfaces.append(rest);
+    return makeSystem(surfaces, ambient);
 }
 
 OpticalSystem system(Surface first ... Surface[] rest) {
-    OpticalSystem result = new OpticalSystem;
-    result.add(first);
-    for (Surface s : rest) result.add(s);
-    return result;
+    Surface[] surfaces = {first};
+    surfaces.append(rest);
+    return makeSystem(surfaces);
 }
 
 OpticalSystem copy(OpticalSystem src) {
