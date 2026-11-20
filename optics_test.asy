@@ -3846,6 +3846,14 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_true("Named face lookup finds cube coating",
                 named_cube.interfaceNamed("Coating").name == "Cube Beam Splitter Coating");
 
+    Element inset_test_element = refractiveElement((0, -5) -- (0, 5), side_glass, Materials.AIR);
+    Inset[] inset_positive = interfaceInfoInset(inset_test_element, 20);
+    Inset[] inset_negative = interfaceInfoInset(inset_test_element, -20);
+    assert_near_pair("Positive inset offset follows interface normal",
+                     inset_positive[0].pos - inset_positive[0].target,
+                     -(inset_negative[0].pos - inset_negative[0].target), 1e-12);
+    assert_near("Inset offset magnitude sets frame clearance", inset_negative[0].target_gap, 20.0, 1e-12);
+
     Interface mutable_interface = Interface(Surface.planar((0, 0), (1, 0), 10),
                                              m_pos = side_glass,
                                              m_neg = side_glass,

@@ -259,8 +259,7 @@ real vacuumWaveNumber(real lambda_nm) {
 private
 complex csqrt_outgoing(complex z) {
     complex s = sqrt(z);
-    if (s.x < -config.math.eps ||
-        (abs(s.x) <= config.math.eps && s.y > config.math.eps)) s = -s;
+    if (s.x < -config.math.eps || (abs(s.x) <= config.math.eps && s.y > config.math.eps)) s = -s;
     return s;
 }
 
@@ -1367,8 +1366,7 @@ struct Hit {
 // This is the interface phase-matching convention used by this ray model, not
 // a general identification of ray direction with phase or energy-flow
 // direction in an absorbing medium. Subsequent ray kinematics remain real.
-private
-real fluxSignTolerance(complex admittance) {
+private real fluxSignTolerance(complex admittance) {
     // q/k0 and n are dimensionless, so use a relative tolerance. The floor
     // only protects the scale calculation when the admittance is near zero.
     return config.math.eps * max(abs(admittance), config.math.solver_denominator_eps);
@@ -1397,8 +1395,7 @@ complex isotropicOutgoingNormal(complex n, complex k_parallel) {
     real flux_p = Y_p.x;
     real tol_s = fluxSignTolerance(Y_s);
     real tol_p = fluxSignTolerance(Y_p);
-    bool carries_outward_flux = flux_s >= -tol_s && flux_p >= -tol_p &&
-                                (flux_s > tol_s || flux_p > tol_p);
+    bool carries_outward_flux = flux_s >= -tol_s && flux_p >= -tol_p && (flux_s > tol_s || flux_p > tol_p);
 
     if (!carries_outward_flux) {
         q = -q;
@@ -1415,8 +1412,7 @@ complex isotropicOutgoingNormal(complex n, complex k_parallel) {
 
     // At an evanescent boundary both normal fluxes vanish. Select the branch
     // that decays into +z under exp(+i*omega*t - i*k.r).
-    if (abs(flux_s) <= tol_s && abs(flux_p) <= tol_p && q.y > fluxSignTolerance(q))
-        q = -q;
+    if (abs(flux_s) <= tol_s && abs(flux_p) <= tol_p && q.y > fluxSignTolerance(q)) q = -q;
     return q;
 }
 
@@ -1509,7 +1505,8 @@ FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cos
     real incident_flux_tolerance_s = fluxSignTolerance(q1);
     real incident_flux_tolerance_p = fluxSignTolerance(Y1p);
     if (q1.x <= incident_flux_tolerance_s || Y1p.x <= incident_flux_tolerance_p)
-        abort("Incident wave must carry positive normal flux in both polarizations under the Fresnel direction convention.");
+        abort("Incident wave must carry positive normal flux in both polarizations under the Fresnel direction "
+              "convention.");
     fa.Ts = max(0.0, fa.q2.x) / q1.x * abs2(fa.ts);
     fa.Tp = max(0.0, Y2p.x) / Y1p.x * abs2(fa.tp);
     fa.netFluxS = netSourceFlux(n1, q1, fa.rs, false);
@@ -1887,9 +1884,7 @@ real weightedPower(Polarization pol, real s_power, real p_power) {
 }
 
 private
-real weightedReflectance(Polarization pol, real Rs, real Rp) {
-    return weightedPower(pol, Rs, Rp);
-}
+real weightedReflectance(Polarization pol, real Rs, real Rp) { return weightedPower(pol, Rs, Rp); }
 
 // ============================================================================
 // SECTION 05: GRIN INTEGRATOR, SCENE GRAPH & TRACER
@@ -3257,9 +3252,8 @@ struct Trace {
         ix.incident.p = r.hit.p;
         if (length(r.trajectory) > 0) ix.incident.d = dir(r.trajectory, length(r.trajectory));
         if (ix.incident.medium != null)
-            ix.incident.wave_normal = ix.incident.medium.waveNormalFromGroup(ix.incident.d,
-                                                                             ix.incident.p,
-                                                                             ix.incident.lambda);
+            ix.incident.wave_normal =
+                ix.incident.medium.waveNormalFromGroup(ix.incident.d, ix.incident.p, ix.incident.lambda);
         // Interaction power is measured after absorption/gain along the incoming segment.
         ix.incident.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
         real parent_i = ix.incident.intensity();
@@ -5202,15 +5196,21 @@ void drawThinLens(picture pic, Element e) {
          a -- b,
          e.stroke,
          Arrows(LensHead(concave = (f_val < 0)), size = head_size, filltype = FillDraw));
-    // Optional focal points F1, F2
-    if (e.show_info) {
-        pair F1 = center - f_val * axis;
-        pair F2 = center + f_val * axis;
-        dot(pic, F1, e.stroke);
-        dot(pic, F2, e.stroke);
-        label(pic, "$F_1$", F1, -q, e.stroke);
-        label(pic, "$F_2$", F2, -q, e.stroke);
-    }
+}
+
+private
+void drawThinLensInfo(picture pic, Element e) {
+    if (e.interfaces.length == 0 || isnan(e.focal_length)) return;
+    Surface lens_surface = e.front().surface;
+    pair center = e.T * lens_surface.center;
+    pair axis = transformedDirection(e.T, lens_surface.center, lens_surface.axis);
+    pair q = (-axis.y, axis.x);
+    pair F1 = center - e.focal_length * axis;
+    pair F2 = center + e.focal_length * axis;
+    dot(pic, F1, e.stroke);
+    dot(pic, F2, e.stroke);
+    label(pic, "$F_1$", F1, -q, e.stroke);
+    label(pic, "$F_2$", F2, -q, e.stroke);
 }
 
 struct Lens {
@@ -6486,6 +6486,7 @@ struct Inset {
     picture pic;              // Content canvas
     pair pos = (nan, nan);    // Local badge/inset position on diagram
     pair target = (nan, nan); // Physical target point on ray
+    real gap = nan;           // Optional fixed clearance from target to inset frame
     string title = "";        // Optional title
     string tag = "";          // Badge tag (e.g. "A", "1")
     real size = 20.0;         // Content scale/radius
@@ -6509,13 +6510,26 @@ struct Inset {
         pair draw_pos = (!isnan(position.x)) ? position : this.pos;
         dest.add(new void(frame f, transform t) {
             pair pos_pt = t * draw_pos;
-            frame box_frame = shift(pos_pt) * makeFramedBox(this.pic.fit(), this.box_margin, this.border, this.fill);
+            frame box_content = makeFramedBox(this.pic.fit(), this.box_margin, this.border, this.fill);
+            pair box_min = min(box_content);
+            pair box_max = max(box_content);
+            pair box_center = 0.5 * (box_min + box_max);
+            pair anchor_pt = pos_pt + box_center;
+            frame box_frame = shift(pos_pt) * box_content;
             // Draw connector line and dot at target point
             if (!isnan(this.target.x) && !isnan(this.target.y)) {
                 pair target_pt = t * this.target;
+                if (!isnan(this.gap)) {
+                    pair direction = unitOr(anchor_pt - target_pt);
+                    real support =
+                        0.5 * (abs(direction.x) * (box_max.x - box_min.x) + abs(direction.y) * (box_max.y - box_min.y));
+                    anchor_pt = target_pt + (max(0.0, this.gap) + support) * direction;
+                    pos_pt = anchor_pt - box_center;
+                    box_frame = shift(pos_pt) * box_content;
+                }
                 pen pen_line = (p != nullpen) ? p : this.getConnectorPen();
                 pen pen_dot = (this.border != nullpen) ? this.border : pen_line;
-                drawTargetConnector(f, target_pt, pos_pt, box_frame, pen_line, pen_dot);
+                drawTargetConnector(f, target_pt, anchor_pt, box_frame, pen_line, pen_dot);
             }
 
             // Stamp boxed inset on canvas
@@ -6529,33 +6543,54 @@ private string
 debugMediumText(Medium med, pair p, string sign) {
     if (med == null) return "dynamic";
     string name = (med.name != "") ? texify(med.name) + ": " : "";
-    return name + " $n_{" + sign + "} = " + format("%#.3f$", sign, med.n(p));
+    return name + "$n_{" + sign + "} = " + format("%#.3f", med.n(p)) + "$";
 }
 
-private
-void drawInterfaceDebug(picture pic, Element e, Medium ambient) {
-    for (int i = 0; i < e.interfaces.length; ++i) {
-        Interface inf = e.interfaces[i];
-        path surface = e.T * inf.surface.T * inf.surface.p;
-        if (length(surface) == 0) continue;
+Inset interfaceInfoInsetAt(Element e, int index, real offset = 20.0, pen border = nullpen, pen fill = white) {
+    if (e == null) abort("interfaceInfoInset: element must not be null.");
+    int count = e.interfaces.length;
+    int i = (index < 0) ? index + count : index;
+    if (i < 0 || i >= count) abort("interfaceInfoInset: interface index is out of range.");
 
-        real s = 0.5 * length(surface);
-        pair target = point(surface, s);
-        Medium pos_medium = (inf.m_pos != null) ? inf.m_pos : ambient;
-        Medium neg_medium = (inf.m_neg != null) ? inf.m_neg : e.medium;
-        string interface_name = (inf.name != "") ? texify(inf.name) : format("Interface %d", i + 1);
+    Interface inf = e.interfaces[i];
+    path surface = e.T * inf.surface.T * inf.surface.p;
+    real surface_length = arclength(surface);
+    if (length(surface) == 0 || surface_length <= config.geometry.eps)
+        abort("interfaceInfoInset: interface has no drawable geometry.");
 
-        Inset badge;
-        badge.title = interface_name;
-        badge.tag = format("%d: ", i + 1);
-        badge.target = target;
-        badge.pos = target + (shift(target) * unit(67));
-        badge.border = (inf.stroke != nullpen) ? inf.stroke : rgb(0.15, 0.25, 0.55);
-        label(badge.pic, Label("\tiny " + badge.tag + badge.title, badge.border), (0, 7), W);
-        label(badge.pic, Label("\tiny " + debugMediumText(pos_medium, target, "-"), black), (0, -1), W);
-        label(badge.pic, Label("\tiny " + debugMediumText(neg_medium, target, "+"), black), (0, -8), W);
-        badge.draw(pic);
+    real s = arctime(surface, 0.5 * surface_length);
+    pair target = point(surface, s);
+    pair tangent = unitOr(dir(surface, s));
+    pair normal = (tangent.y, -tangent.x); // +normal matches Interface.m_pos.
+    if (cyclic(e.boundary)) {
+        pair element_center = e.T * boundaryCenter(e.boundary);
+        if (dot(normal, target - element_center) < 0.0) normal = -normal;
     }
+    string interface_name = (inf.name != "") ? texify(inf.name) : format("Interface %d", i + 1);
+
+    Inset info;
+    info.title = interface_name;
+    info.tag = format("%d", i + 1);
+    info.target = target;
+    // The sign selects the side of the surface; the magnitude controls the
+    // visible clearance from the target to the inset frame.
+    info.pos = target + offset * normal;
+    info.gap = abs(offset);
+    info.border = (border != nullpen) ? border : ((inf.stroke != nullpen) ? inf.stroke : rgb(0.15, 0.25, 0.55));
+    info.connector = info.border + dashed;
+    info.fill = fill;
+    info.box_margin = 2.0;
+    label(info.pic, Label("\tiny " + info.tag + ": " + interface_name, info.border), (0, 7), W);
+    label(info.pic, Label("\tiny " + debugMediumText(inf.m_pos, target, "+"), black), (0, -1), W);
+    label(info.pic, Label("\tiny " + debugMediumText(inf.m_neg, target, "-"), black), (0, -8), W);
+    return info;
+}
+
+Inset[] interfaceInfoInset(Element e, real offset = 20.0, pen border = nullpen, pen fill = white) {
+    if (e == null) abort("interfaceInfoInset: element must not be null.");
+    Inset[] info;
+    for (int i = 0; i < e.interfaces.length; ++i) info.push(interfaceInfoInsetAt(e, i, offset, border, fill));
+    return info;
 }
 
 arrowbar operator cast(ResolvedArrow a) {
@@ -7671,13 +7706,16 @@ struct Renderer {
             fill(pic, e.T * e.boundary, e.fill);
         }
 
+        bool show_element_info = this.show_info || e.show_info;
         if (e.custom_draw != null) {
             e.custom_draw(pic, e);
         } else {
             drawInterfaces(pic, e);
         }
 
-        if (this.show_info || e.show_info) drawInterfaceDebug(pic, e, this.ambient);
+        if (show_element_info) {
+            if (!isnan(e.focal_length)) drawThinLensInfo(pic, e);
+        }
 
         for (Element child : e.children) {
             drawElement(pic, e.T * child);
@@ -7811,6 +7849,16 @@ void draw(picture pic = currentpicture, Element e, bool show_info = false, Mediu
     r.show_info = show_info;
     r.ambient = ambient;
     r.drawElement(pic, e);
+}
+
+void draw(picture pic = currentpicture, Element e, Inset info, bool show_info = false, Medium ambient = null) {
+    draw(pic, e, show_info, ambient);
+    info.draw(pic);
+}
+
+void draw(picture pic = currentpicture, Element e, Inset[] infos, bool show_info = false, Medium ambient = null) {
+    draw(pic, e, show_info, ambient);
+    for (Inset info : infos) info.draw(pic);
 }
 
 void draw(picture pic = currentpicture, Element[] elements, bool show_info = false, Medium ambient = null) {
