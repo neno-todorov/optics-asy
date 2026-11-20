@@ -25,14 +25,37 @@
 // Polarization and Fresnel conventions:
 //   * The Stokes basis is global: s is z/TE (out of the drawing plane), and p
 //     is in-plane/TM. S1 = Is - Ip; S2 and S3 encode the s/p coherence and phase.
-//   * For isotropic media, rs = (n1 cos(theta_i) - n2 cos(theta_t)) /
-//     (n1 cos(theta_i) + n2 cos(theta_t)); rp uses the corresponding p formula.
-//     Ideal mirrors use the perfect-conductor limit.
+//   * Fresnel calculations use exp(+i*omega*t - i*k.r) and n_tilde = n - i*kappa,
+//     with passive kappa >= 0. The incident real ray direction supplies the
+//     direction cosines used to define the incident complex wavevector:
+//     k_parallel/k0 = n_tilde*sin(theta_i), q1/k0 = n_tilde*cos(theta_i).
+//     Reflection and transmission use the same complex tangential component;
+//     only the normal component changes sign or branch. This is a boundary
+//     phase-matching convention, not a general equivalence between ray
+//     direction and phase or energy-flow direction in an absorbing medium.
+//     Subsequent ray kinematics remain real and are an approximation separate
+//     from the complex interface wavevectors.
+//   * rs/rp and ts/tp are electric-field amplitudes at the interface plane.
+//     Rs/Rp are reflected-component |r|^2 ratios. Ts/Tp are the independent
+//     transmitted-component normal Poynting flux at that plane, divided by the
+//     incident-only normal flux at the same plane. In an absorbing source
+//     medium these component ratios need not add to one. netFlux instead is
+//     the total source-side normal Poynting flux at that plane, including the
+//     incident/reflected interference term, divided by the incident-only flux.
+//     It is a local interface quantity, not bulk absorption or a complete
+//     energy balance for the ray-tracing system. Ray branching is incoherent:
+//     separate reflected and transmitted rays do not reproduce the coherent
+//     field overlap represented by netFlux. Bulk attenuation is applied during
+//     ray propagation.
+//   * Ideal mirrors use the perfect-conductor limit.
 //   * In anisotropic media, d is the energy/group direction and wave_normal is
 //     the phase-propagation direction.
 //   * Passive media use n_tilde = n - i*kappa, with kappa >= 0. For propagation
-//     into medium 2 (+z), the outgoing Fresnel branch has Re(q2) >= 0 and
-//     Im(q2) <= 0, so evanescent fields decay away from the interface.
+//     into medium 2 (+z), the branch has positive normal flux; for real
+//     tangential wavevector in passive media it also has Im(q2) <= 0, so
+//     evanescent fields decay away from the interface. With complex tangential
+//     phase from absorbing incidence, the local outgoing-flux branch is used;
+//     its spatial amplitude can vary along the interface as well as normally.
 //
 // Complex number convention:
 //   * `typedef pair complex` is a readability alias; both names are `pair` to
@@ -230,21 +253,16 @@ real vacuumWaveNumber(real lambda_nm) {
 
 // Branch-safe complex square root for outgoing transmitted waves.
 //
-// Given  q2 = sqrt(n_tilde^2 - n1^2 * sin^2(theta_i)),  the two square-root
-// branches correspond to exponential growth and decay into the second medium.
-// For passive media (kappa >= 0) we select the branch with Im(q2) <= 0
-// so that the transmitted field decays (or at worst propagates) away from the
-// interface under the module's n - i*kappa convention. For a purely real
-// negative argument (evanescent TIR), the principal square root has positive
-// imaginary part, so this helper selects its negative.
+// Under exp(+i*omega*t - i*k.r) and n - i*kappa, choose the root carrying
+// normal energy toward +z (Re(q) >= 0 for an isotropic propagating solution). When the
+// normal flux vanishes, choose Im(q) <= 0 so an evanescent field decays into
+// medium 2. For passive transmitted media and real k_parallel these criteria
+// also select the decaying branch (including roots with Re(q)>0, Im(q)<0).
 private
 complex csqrt_outgoing(complex z) {
-    if (abs(z.y) < config.math.eps && z.x < 0) {
-        return (0.0, -sqrt(-z.x));
-    }
-
     complex s = sqrt(z);
-    if (z.y <= 0 && s.y > 0) s = -s;
+    if (s.x < -config.math.eps ||
+        (abs(s.x) <= config.math.eps && s.y > config.math.eps)) s = -s;
     return s;
 }
 
@@ -706,6 +724,8 @@ struct VolumeProperty {
     // Lower values run first; equal priorities retain add() order.
     int priority = 0;
     bool spatial_index = false;
+    // Set when attenuation/extinction depends on position or direction.
+    bool spatial_absorption = false;
     volumeIndexFunc phase_index = null;       // Set for base models
     volumeModifierFunc phase_modifier = null; // Set for modifiers/perturbations
     volumeGradientFunc phase_gradient = null;
@@ -919,6 +939,26 @@ VolumeProperty absorption(real alpha) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Absorption";
     vp.attenuation = new real(pair p, pair d, real lambda, Polarization pol) { return alpha; };
+    return vp;
+}
+
+// Position/direction-dependent attenuation is integrated during propagation.
+VolumeProperty absorption(volumeAbsorptionFunc alpha) {
+    VolumeProperty vp = new VolumeProperty;
+    vp.name = "Absorption";
+    vp.attenuation = alpha;
+    vp.spatial_absorption = true;
+    return vp;
+}
+
+// Position/direction-dependent extinction contributes to kappa and bulk loss.
+// Direct custom assignments to VolumeProperty.extinction should also set
+// spatial_absorption when their result varies along a ray.
+VolumeProperty extinction(volumeAbsorptionFunc kappa) {
+    VolumeProperty vp = new VolumeProperty;
+    vp.name = "Extinction";
+    vp.extinction = kappa;
+    vp.spatial_absorption = true;
     return vp;
 }
 
@@ -1185,24 +1225,44 @@ Medium complexMedium(string name, real n, real kappa, real alpha = 0.0) {
 // Stores the four complex Fresnel field amplitudes for one planar interface.
 // Produces physically correct results for dielectric transmission, TIR, and
 // transmission into an absorbing medium through the same equations.
+// The solver uses n - i*kappa and the exp(+i*omega*t - i*k.r) convention.
+struct ComplexWavevector {
+    complex k_parallel; // Normalized by k0.
+    complex k_normal;   // Normalized by k0; branch selected for its half-space.
+    bool evanescent = false;
+}
+
 struct FresnelAmplitudes {
     complex rs; // s-polarization reflection amplitude
     complex rp; // p-polarization reflection amplitude
     complex ts; // s-polarization transmission amplitude
     complex tp; // p-polarization transmission amplitude
 
-    // Power reflectances (always real and in [0,1] for lossless incident media)
+    // Reflected component power coefficients, normalized by incident-wave flux.
     real Rs;
     real Rp;
 
-    // Power transmittances for a real (lossless) incident medium.
-    // Uses the correct normal energy-flux ratio; NOT simply |t|^2.
-    // For an absorbing transmitted medium this represents the power entering
-    // the second medium at the interface (not accounting for bulk attenuation).
+    // Transmitted component flux coefficients at the interface plane, using
+    // the independent transmitted field's normal Poynting flux divided by the
+    // incident field's normal Poynting flux. They exclude the reflected field.
+    // For absorbing incidence, R+T need not equal one.
     real Ts;
     real Tp;
 
-    // q2 = sqrt(n_tilde2^2 - n1^2*sin^2(theta_i)); outgoing waves use Im(q2) <= 0.
+    // Total normal Poynting flux on the incident side at the interface plane,
+    // normalized by the incident-only normal flux. Includes incident/reflected
+    // interference. This local plane value is not a system-wide ray energy
+    // balance because the ray model propagates reflected/transmitted branches
+    // incoherently.
+    real netFluxS;
+    real netFluxP;
+
+    ComplexWavevector incident_wavevector;
+    ComplexWavevector reflected_wavevector;
+    ComplexWavevector transmitted_wavevector;
+
+    // q2 = sqrt(n_tilde2^2 - k_parallel^2); branch selected by positive
+    // normal flux, or decay into medium 2 when normal flux vanishes.
     complex q2;
 
     // True when the field in medium 2 is evanescent (Im(q2) < 0).
@@ -1216,6 +1276,10 @@ struct FresnelResult {
     Medium medium;
     real T = 1.0;
     real R = 0.0;
+    real netFlux = 1.0;
+    // Defined only by models with an explicit finite control volume. Left NaN
+    // for a single interface, where net flux difference is not bulk absorption.
+    real absorbedPower = nan;
     bool tir = false;
 
     // Boundary Context
@@ -1237,6 +1301,8 @@ struct FresnelResult {
     real Rp = 0.0;
     real Ts = 0.0;
     real Tp = 0.0;
+    real netFluxS = 0.0;
+    real netFluxP = 0.0;
 
     bool is_birefringent = false;
     // Extraordinary channel for birefringent splitting.
@@ -1257,6 +1323,8 @@ struct FresnelResult {
         this.Rp = fa.Rp;
         this.Ts = fa.Ts;
         this.Tp = fa.Tp;
+        this.netFluxS = fa.netFluxS;
+        this.netFluxP = fa.netFluxP;
         this.tir = fa.evanescent;
     }
 
@@ -1280,10 +1348,8 @@ struct Hit {
 // Compute Fresnel amplitudes for a planar isotropic interface.
 //
 // Parameters
-//   n1    : real refractive index of the incident (lossless) medium.
-//   n2    : complex refractive index of the transmitted medium.
-//           Pass (n, 0) for a lossless dielectric, (n, kappa) for a metal or
-//           absorbing medium with kappa >= 0.
+//   n1, n2: complex refractive indices. Use (n, 0) for a lossless medium and
+//           (n, kappa) for a metal or absorbing medium with kappa >= 0.
 //   cosi  : cosine of the angle of incidence in medium 1.  Must satisfy
 //           0 <= cosi <= 1.
 //
@@ -1292,7 +1358,40 @@ struct Hit {
 //   rp = (n2^2*cos_i - n1*q2) / (n2^2*cos_i + n1*q2)   [using n2^2 not n2*cos_t]
 //   ts = 2*n1*cos_i / (n1*cos_i + q2)
 //   tp = 2*n1*n2*cos_i / (n2^2*cos_i + n1*q2)
-// Symmetrized Complex Fresnel Kernel
+// Boundary convention: the real incident ray direction supplies the chosen
+// direction cosines cos_i and sin_i. The incident complex wavevector is
+// defined by k_parallel/k0 = n1*sin_i and q1/k0 = n1*cos_i. Reflection keeps
+// the same tangential component and reverses q1; transmission keeps that same
+// complex tangential component and chooses the passive outgoing q2 branch.
+// This is the interface phase-matching convention used by this ray model, not
+// a general identification of ray direction with phase or energy-flow
+// direction in an absorbing medium. Subsequent ray kinematics remain real.
+private
+ComplexWavevector isotropicWavevector(complex n, complex k_parallel, bool toward_positive_normal = true) {
+    ComplexWavevector wave;
+    wave.k_parallel = k_parallel;
+    complex q = csqrt_outgoing(n * n - k_parallel * k_parallel);
+    wave.k_normal = toward_positive_normal ? q : -q;
+    wave.evanescent = abs(q.x) < config.math.eps && q.y < -config.math.eps;
+    return wave;
+}
+
+private
+real netSourceFlux(complex n, complex q, complex reflection, bool p_polarized) {
+    complex admittance = q;
+    complex field_product;
+    if (p_polarized) {
+        if (abs2(n) <= config.math.solver_denominator_eps) return 0.0;
+        admittance = q * conj(n) / n;
+        field_product = (1.0 - reflection) * conj(1.0 + reflection);
+    } else {
+        field_product = (1.0 + reflection) * conj(1.0 - reflection);
+    }
+    if (admittance.x <= config.math.eps) return 0.0;
+    return (admittance * field_product).x / admittance.x;
+}
+
+// Symmetrized complex Fresnel amplitude and power-flux kernel.
 FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cosi) {
     FresnelAmplitudes fa;
 
@@ -1300,24 +1399,23 @@ FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cos
     complex n1 = (n1_in.x, -abs(n1_in.y));
     complex n2 = (n2_in.x, -abs(n2_in.y));
 
-    // Conserved tangential wavevector: determined by the real phase velocity of incident wave
-    real kt2 = (n1.x * n1.x) * (1.0 - cosi * cosi);
+    // The tangential wavevector is complex when the incident medium absorbs.
+    real sini = sqrt(max(0.0, 1.0 - cosi * cosi));
+    complex kt = n1 * sini;
+    complex q1 = n1 * cosi;
+    // Incident, reflected, and transmitted waves share the same boundary
+    // phase along the interface. Only the normal component changes sign or
+    // branch; ray directions used after this interface remain real.
+    fa.incident_wavevector = isotropicWavevector(n1, kt, true);
+    fa.incident_wavevector.k_normal = q1;
+    fa.reflected_wavevector = isotropicWavevector(n1, kt, false);
+    fa.reflected_wavevector.k_normal = -q1;
+    fa.transmitted_wavevector = isotropicWavevector(n2, kt, true);
+    fa.q2 = fa.transmitted_wavevector.k_normal;
+    fa.evanescent = fa.transmitted_wavevector.evanescent;
 
-    // Normal wavevector squared in medium 1: q1^2 = n1^2 - kt^2
-    complex n1sq = (n1.x * n1.x - n1.y * n1.y, 2.0 * n1.x * n1.y);
-    complex q1sq = n1sq - (kt2, 0.0);
-    complex q1 = csqrt_outgoing(q1sq);
-
-    // If medium 1 is a lossless dielectric, enforce pure real q1 = n1 * cosi
-    if (abs(n1.y) < config.math.eps) {
-        q1 = (n1.x * cosi, 0.0);
-    }
-
-    // Normal wavevector squared in medium 2: q2^2 = n2^2 - kt^2
-    complex n2sq = (n2.x * n2.x - n2.y * n2.y, 2.0 * n2.x * n2.y);
-    complex q2sq = n2sq - (kt2, 0.0);
-    fa.q2 = csqrt_outgoing(q2sq);
-    fa.evanescent = (abs(fa.q2.x) < config.math.eps && fa.q2.y < -config.math.eps);
+    complex n1sq = n1 * n1;
+    complex n2sq = n2 * n2;
 
     // --- s-polarization (TE) ---
     complex denom_s = q1 + fa.q2;
@@ -1340,22 +1438,22 @@ FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cos
         fa.tp = (0.0, 0.0);
     }
 
-    // --- Power Reflectances ---
+    // --- Component power coefficients and interface-plane net flux ---
     fa.Rs = abs2(fa.rs);
     fa.Rp = abs2(fa.rp);
 
-    // --- Power Transmittances ---
-    real re_q1 = max(config.math.eps, q1.x);
-    real re_q2 = max(0.0, fa.q2.x);
-    fa.Ts = (re_q2 / re_q1) * abs2(fa.ts);
-
-    real n1_abs2 = max(config.math.solver_denominator_eps, abs2(n1));
-    real n2_abs2 = abs2(n2);
-    complex q1_over_n1sq = (n1_abs2 > config.math.solver_denominator_eps) ? (q1 / n1sq) : (0.0, 0.0);
-    complex q2_over_n2sq = (n2_abs2 > config.math.solver_denominator_eps) ? (fa.q2 / n2sq) : (0.0, 0.0);
-    real re_p1 = max(config.math.eps, q1_over_n1sq.x);
-    real re_p2 = max(0.0, q2_over_n2sq.x);
-    fa.Tp = (re_p2 / re_p1) * (n2_abs2 / n1_abs2) * abs2(fa.tp);
+    // Component power fluxes, normalized by the incident component flux.
+    // The independent reflected and transmitted components need not sum to
+    // one when the incident medium absorbs: its incident/reflected fields
+    // interfere at the reference plane.
+    complex Y1p = (abs2(n1) > config.math.solver_denominator_eps) ? q1 * conj(n1) / n1 : (0.0, 0.0);
+    complex Y2p = (abs2(n2) > config.math.solver_denominator_eps)
+                      ? fa.q2 * conj(n2) / n2
+                      : (0.0, 0.0);
+    fa.Ts = (q1.x > config.math.eps) ? max(0.0, fa.q2.x) / q1.x * abs2(fa.ts) : 0.0;
+    fa.Tp = (Y1p.x > config.math.eps) ? max(0.0, Y2p.x) / Y1p.x * abs2(fa.tp) : 0.0;
+    fa.netFluxS = netSourceFlux(n1, q1, fa.rs, false);
+    fa.netFluxP = netSourceFlux(n1, q1, fa.rp, true);
 
     return fa;
 }
@@ -1378,7 +1476,7 @@ FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wav
     real cosi = clamp(dot(u, N_into2), 0.0, 1.0);
     real sini = dot(u, T_surf);
 
-    // Conserved tangential wavevector from incident real phase propagation
+    // Ray directions remain real; the complex index sets phase accumulation.
     real kt = n1.x * sini;
     res.cosi = cosi;
     res.n1 = n1.x;
@@ -1409,8 +1507,10 @@ FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wav
 
         real R_unpol = 0.5 * (res.Rs + res.Rp);
         res.R = R_unpol;
-        res.T = 1.0 - R_unpol;
+        res.T = 0.5 * (res.Ts + res.Tp);
     }
+    res.netFlux = 0.5 * (res.netFluxS + res.netFluxP);
+    res.absorbedPower = nan;
     return res;
 }
 
@@ -1720,10 +1820,15 @@ real interfere( ... Ray[] rays) { return interfere(rays); }
 
 // Incident-power-weighted reflectance for the global s/p basis.
 private
-real weightedReflectance(Polarization pol, real Rs, real Rp) {
+real weightedPower(Polarization pol, real s_power, real p_power) {
     real I = (pol != null) ? pol.intensity() : 0.0;
-    if (I > config.math.eps) return (Rs * pol.sPower() + Rp * pol.pPower()) / I;
-    return 0.5 * (Rs + Rp);
+    if (I > config.math.eps) return (s_power * pol.sPower() + p_power * pol.pPower()) / I;
+    return 0.5 * (s_power + p_power);
+}
+
+private
+real weightedReflectance(Polarization pol, real Rs, real Rp) {
+    return weightedPower(pol, Rs, Rp);
 }
 
 // ============================================================================
@@ -2687,20 +2792,22 @@ FresnelResult fresnelIsotropic(Medium m1, Medium m2, Ray r, Hit h, mediumResolve
     pair N_into2 = (dot(inc_wave_normal, f.normal) < 0) ? -f.normal : f.normal;
     pair T_surf = perp(N_into2);
 
-    real n1 = f.source_medium.n(h.p, inc_wave_normal, r.lambda, r.pol);
+    complex n1_cx = f.source_medium.getN(h.p, inc_wave_normal, r.lambda, r.pol);
 
     complex n2_cx =
         (f.target_medium != null) ? f.target_medium.getN(h.p, inc_wave_normal, r.lambda, r.pol) : (1.0, 0.0);
     if (n2_cx.x < config.physics.min_refractive_index) n2_cx = (config.physics.min_refractive_index, n2_cx.y);
 
-    FresnelResult res = solveIsotropicInterface(n1, n2_cx, inc_wave_normal, N_into2, T_surf);
+    FresnelResult res = solveIsotropicInterface(n1_cx, n2_cx, inc_wave_normal, N_into2, T_surf);
 
     res.normal = f.normal;
     res.source_medium = f.source_medium;
     res.medium = res.tir ? f.source_medium : f.target_medium;
 
     res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
-    res.T = 1.0 - res.R;
+    res.T = res.tir ? 0.0 : weightedPower(r.pol, res.Ts, res.Tp);
+    res.netFlux = weightedPower(r.pol, res.netFluxS, res.netFluxP);
+    res.absorbedPower = nan;
 
     return res;
 }
@@ -2710,6 +2817,10 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     res.is_birefringent = true;
 
     InterfaceFrame f = interfaceFrame(med_iso, med_o, r, h, resolve);
+    if (abs(f.source_medium.getN(h.p, r.wave_normal, r.lambda, r.pol).y) > config.math.eps ||
+        abs(med_o.getN(h.p, r.wave_normal, r.lambda, r.pol).y) > config.math.eps ||
+        abs(med_e.getN(h.p, r.wave_normal, r.lambda, r.pol).y) > config.math.eps)
+        abort("fresnelUniaxial currently requires lossless source and transmitted media.");
     pair N = f.normal;
     pair T = (-N.y, N.x);
 
@@ -2774,7 +2885,9 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
     res.Tp = res.tir_e ? 0.0 : max(0.0, 1.0 - res.Rp);
 
     res.R = weightedReflectance(r.pol, res.Rs, res.Rp);
-    res.T = 1.0 - res.R;
+    res.T = weightedPower(r.pol, res.Ts, res.Tp);
+    res.netFlux = res.T;
+    res.absorbedPower = 0.0;
 
     return res;
 }
@@ -2866,7 +2979,7 @@ private
 bool requiresNumericalIntegration(Medium m) {
     if (m == null) return false;
     for (VolumeProperty vp : m.props) {
-        if (vp.spatial_index || vp.phase_gradient != null) return true;
+        if (vp.spatial_index || vp.phase_gradient != null || vp.spatial_absorption) return true;
     }
 
     return false;
@@ -2883,6 +2996,7 @@ PropagationResult propagateAnalytic(Medium medium, Ray r, FlatInterfaceRecord[] 
         next_ray.opl += geometryToUm(far) * current_n;
         next_ray.p = r.p + far * r.d;
         applyAbsorption(next_ray, far);
+        if (next_ray.intensity() <= config.physics.min_intensity) next_ray.alive = false;
         return propagationResult(next_ray, false, null, r.p -- next_ray.p);
     } else {
         next_ray.opl += geometryToUm(h.t) * current_n;
@@ -3082,6 +3196,10 @@ struct Trace {
         ix.incident = copy(r);
         ix.incident.p = r.hit.p;
         if (length(r.trajectory) > 0) ix.incident.d = dir(r.trajectory, length(r.trajectory));
+        if (ix.incident.medium != null)
+            ix.incident.wave_normal = ix.incident.medium.waveNormalFromGroup(ix.incident.d,
+                                                                             ix.incident.p,
+                                                                             ix.incident.lambda);
         // Interaction power is measured after absorption/gain along the incoming segment.
         ix.incident.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
         real parent_i = ix.incident.intensity();
@@ -3187,6 +3305,7 @@ struct Trace {
         if (r.hit != null && r.hit.valid) {
             out.p = r.hit.p;
             if (length(r.trajectory) > 0) out.d = dir(r.trajectory, length(r.trajectory));
+            if (out.medium != null) out.wave_normal = out.medium.waveNormalFromGroup(out.d, out.p, out.lambda);
             out.pol = (r.end_pol != null) ? copy(r.end_pol) : resolvePolarizationAt(r, travelledLength(r));
         } else if (length(r.trajectory) > 0) {
             real end_t = length(r.trajectory);
@@ -3505,6 +3624,7 @@ struct Tracer {
                 r.trajectory = prop_res.trajectory;
                 r.opl = prop_res.ray.opl;
                 r.end_pol = copy(prop_res.ray.pol);
+                r.alive = prop_res.ray.alive;
 
                 // 2. Handle interface interaction
                 if (prop_res.hit_surface) {
@@ -3849,7 +3969,7 @@ Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
     return rays;
 }
 
-// Interface Property: Refract (Updated with Complex Fresnel Phase Retardance)
+// Interface Property: Refract (complex Fresnel phase and flux transmission)
 Property refract(Medium inside, Medium ambient = null) {
     return property(
         "Refract",
@@ -3899,7 +4019,7 @@ Property beamSplitterCoating(string name,
 }
 
 // Ideal lossless, non-polarizing coating between equal-index media.
-// R is power reflectance; T = 1 - R.
+// R is power reflectance; T = 1 - R for this explicitly lossless coating model.
 // Reflection and transmission phases are configurable in radians.
 Property coating(Medium inside,
                  Medium ambient = null,
@@ -3945,9 +4065,9 @@ complex[] matMul22(complex[] A, complex[] B) {
 }
 
 private
-complex[] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, real kt, int pol) {
+complex[] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, complex kt, int pol) {
     complex n2 = n_j * n_j;
-    complex q_j = csqrt_outgoing(n2 - (kt * kt, 0.0));
+    complex q_j = csqrt_outgoing(n2 - kt * kt);
     complex eta_j = (pol == 0) ? q_j : ((abs2(q_j) > config.math.solver_denominator_eps) ? (n2 / q_j) : (n2.x, 0.0));
 
     complex delta = q_j * ((2.0 * pi / lambda_nm) * d_nm, 0.0);
@@ -3963,9 +4083,9 @@ complex[] thinFilmLayerMatrix(complex n_j, real d_nm, real lambda_nm, real kt, i
 }
 
 private
-complex thinFilmAdmittance(complex n, real kt, int pol) {
+complex thinFilmAdmittance(complex n, complex kt, int pol) {
     complex n2 = n * n;
-    complex q = csqrt_outgoing(n2 - (kt * kt, 0.0));
+    complex q = csqrt_outgoing(n2 - kt * kt);
     if (pol == 0) return q;
     return (abs2(q) > config.math.solver_denominator_eps) ? (n2 / q) : n;
 }
@@ -3979,8 +4099,10 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
     complex n1 = (n1_in.x, -abs(n1_in.y));
     complex ns = (ns_in.x, -abs(ns_in.y));
 
-    real kt = n1.x * sqrt(max(0.0, 1.0 - cosi * cosi));
-    complex qs = csqrt_outgoing(ns * ns - (kt * kt, 0.0));
+    real sini = sqrt(max(0.0, 1.0 - cosi * cosi));
+    complex kt = n1 * sini;
+    complex q1 = n1 * cosi;
+    complex qs = csqrt_outgoing(ns * ns - kt * kt);
 
     for (int pol = 0; pol <= 1; ++pol) {
         complex eta1 = thinFilmAdmittance(n1, kt, pol);
@@ -4040,6 +4162,14 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
 
     fa.q2 = qs;
     fa.evanescent = (abs(qs.x) < config.math.eps && qs.y < -config.math.eps);
+    fa.incident_wavevector = isotropicWavevector(n1, kt, true);
+    fa.incident_wavevector.k_normal = q1;
+    fa.reflected_wavevector = isotropicWavevector(n1, kt, false);
+    fa.reflected_wavevector.k_normal = -q1;
+    fa.transmitted_wavevector = isotropicWavevector(ns, kt, true);
+    fa.transmitted_wavevector.k_normal = qs;
+    fa.netFluxS = netSourceFlux(n1, q1, fa.rs, false);
+    fa.netFluxP = netSourceFlux(n1, q1, fa.rp, true);
     return fa;
 }
 
@@ -4052,7 +4182,9 @@ Property thinFilmStack(ThinFilmLayer[] layers, Medium inside, Medium ambient = n
             FresnelAmplitudes fa = thinFilmAmplitudes(layers, res.source_medium, res.medium, res.cosi, r.lambda, h.p);
             res.applyAmplitudes(fa);
             res.R = weightedReflectance(r.pol, fa.Rs, fa.Rp);
-            res.T = 1.0 - res.R;
+            res.T = weightedPower(r.pol, fa.Ts, fa.Tp);
+            res.netFlux = weightedPower(r.pol, fa.netFluxS, fa.netFluxP);
+            res.absorbedPower = nan;
 
             return emitFresnelPair(r, h, res);
         });
@@ -4156,6 +4288,9 @@ Ray[] doubleRefractionExit(Ray r,
         }
 
         Medium target_med = (f.target_medium != null) ? f.target_medium : Materials.VACUUM;
+        if (abs(src_med.getN(h.p, inc_wn, r.lambda, r.pol).y) > config.math.eps ||
+            abs(target_med.getN(h.p, inc_wn, r.lambda, r.pol).y) > config.math.eps)
+            abort("DoubleRefraction currently requires lossless source and transmitted media.");
         PhaseMatch trans_match = solvePhaseMatch(target_med, N, T, kt, -N, h.p, r.lambda);
 
         complex Zi = refl_match.tm_impedance;
@@ -4179,7 +4314,9 @@ Ray[] doubleRefractionExit(Ray r,
             res.wave_normal = res.reflected_wave_normal;
         }
         res.R = res.tir ? 1.0 : weightedReflectance(r.pol, res.Rs, res.Rp);
-        res.T = 1.0 - res.R;
+        res.T = res.tir ? 0.0 : weightedPower(r.pol, res.Ts, res.Tp);
+        res.netFlux = res.T;
+        res.absorbedPower = 0.0;
     }
 
     return emitFresnelPair(r, h, res);

@@ -1949,7 +1949,10 @@ Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.
 real rg_slab_distance = 10.0;
 real rg_k_slab = rg_alpha * (633.0 * nm_to_um) / (4.0 * pi);
 real rg_R_entry = (rg_k_slab ^ 2) / (4.0 + rg_k_slab ^ 2);
-real rg_slab_transmission = (1.0 - rg_R_entry) * exp(-rg_alpha * geometryToUm(rg_slab_distance));
+complex rg_n_abs = rg_absMed.getN((20, 0), (1, 0), 633.0);
+real rg_T_exit = 4.0 * abs2(rg_n_abs) / (rg_n_abs.x * abs2(rg_n_abs + (1.0, 0.0)));
+real rg_slab_transmission = (1.0 - rg_R_entry) * rg_T_exit *
+                            exp(-rg_alpha * geometryToUm(rg_slab_distance));
 assert_near("Traced absorbed ray intensity", rg_absEnd.intensity(), rg_slab_transmission, 1e-9);
 assert_near("Traced absorbed ray DoP", rg_absEnd.pol.dop(), 1.0, 1e-9);
 assert_near("Traced absorbed ray azimuth (30 deg)", degrees(rg_absEnd.pol.psi()), 30.0, 1e-6);
@@ -2037,10 +2040,13 @@ write("Test Case 70: Interface energy balance after bulk absorption");
 Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 2.0 / geometryToUm(10.0));
 Trace rg_tAbs = system(refractiveElement(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
 Interaction rg_exitIx = rg_tAbs.interaction(1);
-assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
-assert_near("Exit-face R matches normal-incidence Fresnel", rg_exitIx.R, (0.5 / 2.5) ^ 2, 1e-9);
 real rg_alpha_val = 2.0 / geometryToUm(10.0);
 real rg_k_glass = rg_alpha_val * (633.0 * nm_to_um) / (4.0 * pi);
+real rg_exit_R = ((1.5 - 1.0) ^ 2 + rg_k_glass ^ 2) / ((1.5 + 1.0) ^ 2 + rg_k_glass ^ 2);
+complex rg_n_exit = (1.5, -rg_k_glass);
+real rg_exit_T = 4.0 * abs2(rg_n_exit) / (rg_n_exit.x * abs2(rg_n_exit + (1.0, 0.0)));
+assert_near("Exit-face R matches complex-index Fresnel", rg_exitIx.R, rg_exit_R, 1e-9);
+assert_near("Exit-face T matches transmitted Poynting flux", rg_exitIx.T, rg_exit_T, 1e-9);
 real rg_R_glass_entry = ((1.5 - 1.0) ^ 2 + rg_k_glass ^ 2) / ((1.5 + 1.0) ^ 2 + rg_k_glass ^ 2);
 assert_near("Arriving intensity reported at the exit face",
             rg_exitIx.incident.intensity(),
@@ -2068,7 +2074,29 @@ assert_near("Trace.last() before the boundary agrees with arrival intensity",
             rg_tg.last().intensity() / rg_gix.T,
             rg_gix.incident.intensity(),
             1e-6);
-assert_near("GRIN exit-face R + T = 1", rg_gix.R + rg_gix.T, 1.0, 1e-6);
+Ray rg_gIncident = rg_gix.incident;
+complex rg_gN1 = rg_gIncident.medium.getN(rg_gIncident.p, rg_gIncident.wave_normal,
+                                          rg_gIncident.lambda, rg_gIncident.pol);
+real rg_gCosi = abs(dot(unit(rg_gIncident.wave_normal), unit(rg_gix.normal())));
+real rg_gSini = sqrt(max(0.0, 1.0 - rg_gCosi ^ 2));
+complex rg_gQ1 = rg_gN1 * rg_gCosi;
+complex rg_gKpar = rg_gN1 * rg_gSini;
+complex rg_gQ2 = sqrt((1.0, 0.0) - rg_gKpar * rg_gKpar);
+if (rg_gQ2.x < 0.0 || (abs(rg_gQ2.x) < 1e-12 && rg_gQ2.y > 0.0)) rg_gQ2 = -rg_gQ2;
+complex rg_gRs = (rg_gQ1 - rg_gQ2) / (rg_gQ1 + rg_gQ2);
+complex rg_gTs = 2.0 * rg_gQ1 / (rg_gQ1 + rg_gQ2);
+complex rg_gRp = (rg_gQ1 - rg_gN1 * rg_gN1 * rg_gQ2) /
+                 (rg_gQ1 + rg_gN1 * rg_gN1 * rg_gQ2);
+complex rg_gTp = 2.0 * rg_gN1 * rg_gQ1 /
+                 (rg_gQ1 + rg_gN1 * rg_gN1 * rg_gQ2);
+complex rg_gY1p = rg_gQ1 * conj(rg_gN1) / rg_gN1;
+real rg_gExpectedR = (abs2(rg_gRs) * rg_gIncident.pol.sPower() +
+                      abs2(rg_gRp) * rg_gIncident.pol.pPower()) / rg_gIncident.intensity();
+real rg_gExpectedT = ((max(0.0, rg_gQ2.x) / rg_gQ1.x * abs2(rg_gTs)) * rg_gIncident.pol.sPower() +
+                      (max(0.0, rg_gQ2.x) / rg_gY1p.x * abs2(rg_gTp)) * rg_gIncident.pol.pPower()) /
+                     rg_gIncident.intensity();
+assert_near("GRIN exit-face R matches complex Fresnel flux", rg_gix.R, rg_gExpectedR, 1e-7);
+assert_near("GRIN exit-face T matches transmitted Poynting flux", rg_gix.T, rg_gExpectedT, 1e-7);
 write("");
 
 // ============================================================================
@@ -3000,6 +3028,15 @@ assert_near("Normal incidence air->glass Rs == 0.04", fa_norm_1_15.Rs, 0.04, 1e-
 assert_near("Normal incidence air->glass Ts == 0.96", fa_norm_1_15.Ts, 0.96, 1e-12);
 assert_near("Normal incidence air->glass Rs + Ts == 1", fa_norm_1_15.Rs + fa_norm_1_15.Ts, 1.0, 1e-12);
 assert_near("Normal incidence air->glass Rp + Tp == 1", fa_norm_1_15.Rp + fa_norm_1_15.Tp, 1.0, 1e-12);
+assert_near("Lossless interface conserves tangential wavevector",
+            length(fa_norm_1_15.incident_wavevector.k_parallel -
+                   fa_norm_1_15.transmitted_wavevector.k_parallel), 0.0, 1e-12);
+assert_near("Lossless interface reflected wave keeps tangential phase",
+            length(fa_norm_1_15.incident_wavevector.k_parallel -
+                   fa_norm_1_15.reflected_wavevector.k_parallel), 0.0, 1e-12);
+assert_near("Reflected normal wavevector reverses incident normal component",
+            abs(fa_norm_1_15.incident_wavevector.k_normal +
+                fa_norm_1_15.reflected_wavevector.k_normal), 0.0, 1e-12);
 
 FresnelAmplitudes fa_norm_15_1 = fresnelAmplitudesKernel(1.5, (1.0, 0.0), 1.0);
 assert_near("Normal incidence glass->air rs == +0.2", fa_norm_15_1.rs.x, 0.2, 1e-12);
@@ -3029,6 +3066,10 @@ assert_near("TIR Rs == 1", fa_tir.Rs, 1.0, 1e-12);
 assert_near("TIR Rp == 1", fa_tir.Rp, 1.0, 1e-12);
 assert_near("TIR Ts == 0", fa_tir.Ts, 0.0, 1e-12);
 assert_near("TIR Tp == 0", fa_tir.Tp, 0.0, 1e-12);
+assert_true("TIR outgoing field decays into +normal half-space",
+            fa_tir.transmitted_wavevector.k_normal.y < 0.0);
+assert_true("TIR incident wavevector points into +normal half-space",
+            fa_tir.incident_wavevector.k_normal.x > 0.0);
 write("");
 
 // ============================================================================
@@ -3060,6 +3101,76 @@ assert_near("Aluminum normal reflectance matches analytic formula (~91.3%)", fa_
 Medium med_abs = complexMedium("absorber", 2.0, 1.0);
 FresnelAmplitudes fa_abs = fresnelAmplitudesKernel(1.0, complexN(med_abs), 1.0);
 assert_near("Custom absorber normal Rs == 0.2", fa_abs.Rs, 0.2, 1e-12);
+// Absorbing incidence: independent-wave component fluxes do not generally
+// balance to one because the incident and reflected fields interfere in the
+// absorbing source medium. Check their Poynting-flux definitions directly.
+complex n_abs_inc = (1.5, -0.1);
+FresnelAmplitudes fa_abs_inc = fresnelAmplitudesKernel(n_abs_inc, (1.0, 0.0), 1.0);
+complex q_abs_inc = n_abs_inc;
+complex q_abs_out = (1.0, 0.0);
+complex y_abs_inc_p = q_abs_inc * conj(n_abs_inc) / n_abs_inc;
+complex r_abs_s = (q_abs_inc - q_abs_out) / (q_abs_inc + q_abs_out);
+complex t_abs_s = 2.0 * q_abs_inc / (q_abs_inc + q_abs_out);
+complex r_abs_p = (q_abs_inc - n_abs_inc * n_abs_inc * q_abs_out) /
+                  (q_abs_inc + n_abs_inc * n_abs_inc * q_abs_out);
+complex t_abs_p = 2.0 * n_abs_inc * q_abs_inc /
+                  (q_abs_inc + n_abs_inc * n_abs_inc * q_abs_out);
+real t_abs_s_ref = q_abs_out.x / q_abs_inc.x * abs2(t_abs_s);
+real t_abs_p_ref = q_abs_out.x / y_abs_inc_p.x * abs2(t_abs_p);
+real net_abs_s_ref = ((q_abs_inc * (1.0 + r_abs_s) * conj(1.0 - r_abs_s)).x) / q_abs_inc.x;
+real net_abs_p_ref = ((y_abs_inc_p * (1.0 - r_abs_p) * conj(1.0 + r_abs_p)).x) / y_abs_inc_p.x;
+assert_near("Absorbing incidence s reflectance is |rs|^2", fa_abs_inc.Rs, abs2(r_abs_s), 1e-12);
+assert_near("Absorbing incidence p reflectance is |rp|^2", fa_abs_inc.Rp, abs2(r_abs_p), 1e-12);
+assert_near("Absorbing incidence s transmission uses flux ratio", fa_abs_inc.Ts, t_abs_s_ref, 1e-12);
+assert_near("Absorbing incidence p transmission uses flux ratio", fa_abs_inc.Tp, t_abs_p_ref, 1e-12);
+assert_near("Absorbing incidence s net interface flux includes interference", fa_abs_inc.netFluxS, net_abs_s_ref, 1e-12);
+assert_near("Absorbing incidence p net interface flux includes interference", fa_abs_inc.netFluxP, net_abs_p_ref, 1e-12);
+assert_true("Absorbing incidence is not forced to R + T = 1",
+            abs((fa_abs_inc.Rs + fa_abs_inc.Ts) - 1.0) > 1e-6);
+
+// Oblique absorbing incidence, both polarizations. Independently reconstruct
+// the boundary fields from tangential E/H continuity and compare component
+// Poynting flux and the source-side interference flux.
+real oblique_cosi = Cos(37.0);
+FresnelAmplitudes fa_abs_oblique = fresnelAmplitudesKernel((1.5, -0.1), (1.0, 0.0), oblique_cosi);
+complex oblique_n1 = (1.5, -0.1);
+complex oblique_kt = oblique_n1 * Sin(37.0);
+complex oblique_q1 = oblique_n1 * oblique_cosi;
+complex oblique_q2 = sqrt((1.0, 0.0) - oblique_kt * oblique_kt);
+if (oblique_q2.x < 0.0 || (abs(oblique_q2.x) <= 1e-12 && oblique_q2.y > 0.0)) oblique_q2 = -oblique_q2;
+complex oblique_rs = (oblique_q1 - oblique_q2) / (oblique_q1 + oblique_q2);
+complex oblique_ts = 2.0 * oblique_q1 / (oblique_q1 + oblique_q2);
+complex oblique_rp = (oblique_q1 - oblique_n1 * oblique_n1 * oblique_q2) /
+                     (oblique_q1 + oblique_n1 * oblique_n1 * oblique_q2);
+complex oblique_tp = 2.0 * oblique_n1 * oblique_q1 /
+                     (oblique_q1 + oblique_n1 * oblique_n1 * oblique_q2);
+complex oblique_y1p = oblique_q1 * conj(oblique_n1) / oblique_n1;
+complex oblique_y2p = oblique_q2;
+assert_near("Oblique absorbing s boundary E continuity", abs(1.0 + oblique_rs - oblique_ts), 0.0, 1e-12);
+assert_near("Oblique absorbing s boundary H continuity",
+            abs(oblique_q1 * (1.0 - oblique_rs) - oblique_q2 * oblique_ts), 0.0, 1e-12);
+complex oblique_cost = oblique_q2 / (1.0, 0.0);
+complex oblique_cosi = oblique_q1 / oblique_n1;
+assert_near("Oblique absorbing p tangential E continuity",
+            abs(oblique_cosi * (1.0 - oblique_rp) - oblique_cost * oblique_tp), 0.0, 1e-12);
+assert_near("Oblique absorbing p tangential H continuity",
+            abs(oblique_n1 * (1.0 + oblique_rp) - oblique_tp), 0.0, 1e-12);
+assert_near("Oblique absorbing s flux agrees with independent Poynting ratio",
+            fa_abs_oblique.Ts, max(0.0, oblique_q2.x) / oblique_q1.x * abs2(oblique_ts), 1e-12);
+assert_near("Oblique absorbing p flux agrees with independent Poynting ratio",
+            fa_abs_oblique.Tp, max(0.0, oblique_y2p.x) / oblique_y1p.x * abs2(oblique_tp), 1e-12);
+assert_true("Strong absorber outgoing field decays in +normal direction",
+            fresnelAmplitudesKernel((1.0, 0.0), (0.2, 8.0), Cos(65.0)).q2.y < 0.0);
+FresnelAmplitudes fa_complex_branch = fresnelAmplitudesKernel((1.0, 0.0), (0.2, 8.0), Cos(65.0));
+assert_true("Strong absorber outgoing branch has positive normal flux",
+            fa_complex_branch.transmitted_wavevector.k_normal.x > 0.0);
+assert_true("Strong absorber normal wavevector has mixed-sign components",
+            fa_complex_branch.transmitted_wavevector.k_normal.x > 0.0 &&
+            fa_complex_branch.transmitted_wavevector.k_normal.y < 0.0);
+FresnelAmplitudes fa_weak_abs = fresnelAmplitudesKernel((1.5, -1e-8), (1.0, 0.0), Cos(23.0));
+FresnelAmplitudes fa_weak_lossless = fresnelAmplitudesKernel(1.5, (1.0, 0.0), Cos(23.0));
+assert_near("Weakly absorbing incident Rs approaches lossless Rs", fa_weak_abs.Rs, fa_weak_lossless.Rs, 1e-7);
+assert_near("Weakly absorbing incident Ts approaches lossless Ts", fa_weak_abs.Ts, fa_weak_lossless.Ts, 1e-7);
 write("");
 
 // ============================================================================
