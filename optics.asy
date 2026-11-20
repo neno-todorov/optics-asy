@@ -6572,8 +6572,6 @@ Inset interfaceInfoInsetAt(Element e, int index, real offset = 20.0, pen border 
     info.title = interface_name;
     info.tag = format("%d", i + 1);
     info.target = target;
-    // The sign selects the side of the surface; the magnitude controls the
-    // visible clearance from the target to the inset frame.
     info.pos = target + offset * normal;
     info.gap = abs(offset);
     info.border = (border != nullpen) ? border : ((inf.stroke != nullpen) ? inf.stroke : rgb(0.15, 0.25, 0.55));
