@@ -1,0 +1,103 @@
+diff --git a/optics.asy b/optics.asy
+index 13112a1..2a145ad 100644
+--- a/optics.asy
++++ b/optics.asy
+@@ -51,11 +51,11 @@
+ //   * In anisotropic media, d is the energy/group direction and wave_normal is
+ //     the phase-propagation direction.
+ //   * Passive media use n_tilde = n - i*kappa, with kappa >= 0. For propagation
+-//     into medium 2 (+z), the branch has positive normal flux; for real
+-//     tangential wavevector in passive media it also has Im(q2) <= 0, so
+-//     evanescent fields decay away from the interface. With complex tangential
+-//     phase from absorbing incidence, the local outgoing-flux branch is used;
+-//     its spatial amplitude can vary along the interface as well as normally.
++//     into medium 2 (+z), the isotropic branch is chosen to give nonnegative
++//     s and p normal Poynting flux; if both vanish, Im(q2) <= 0 selects decay.
++//     With complex tangential phase from absorbing incidence, the local
++//     outgoing-flux branch is used; its spatial amplitude can vary along the
++//     interface as well as normally.
+ //
+ // Complex number convention:
+ //   * `typedef pair complex` is a readability alias; both names are `pair` to
+@@ -251,13 +251,8 @@ real vacuumWaveNumber(real lambda_nm) {
+     return (lambda > config.math.eps) ? 2.0 * pi / lambda : 0.0;
+ }
+ 
+-// Branch-safe complex square root for outgoing transmitted waves.
+-//
+-// Under exp(+i*omega*t - i*k.r) and n - i*kappa, choose the root carrying
+-// normal energy toward +z (Re(q) >= 0 for an isotropic propagating solution). When the
+-// normal flux vanishes, choose Im(q) <= 0 so an evanescent field decays into
+-// medium 2. For passive transmitted media and real k_parallel these criteria
+-// also select the decaying branch (including roots with Re(q)>0, Im(q)<0).
++// Branch-safe complex square root used by anisotropic and thin-film solvers.
++// The isotropic interface branch is selected below from its s/p admittances.
+ private
+ complex csqrt_outgoing(complex z) {
+     complex s = sqrt(z);
+@@ -1358,6 +1353,9 @@ struct Hit {
+ //   rp = (n2^2*cos_i - n1*q2) / (n2^2*cos_i + n1*q2)   [using n2^2 not n2*cos_t]
+ //   ts = 2*n1*cos_i / (n1*cos_i + q2)
+ //   tp = 2*n1*n2*cos_i / (n2^2*cos_i + n1*q2)
++// Branch selection evaluates Re(q) for s and Re(q*conj(n)/n) for p; the
++// selected root gives nonnegative normal flux in both polarizations. At zero
++// normal flux it chooses Im(q) <= 0 for decay into the transmitted half-space.
+ // Boundary convention: the real incident ray direction supplies the chosen
+ // direction cosines cos_i and sin_i. The incident complex wavevector is
+ // defined by k_parallel/k0 = n1*sin_i and q1/k0 = n1*cos_i. Reflection keeps
+@@ -1366,11 +1364,41 @@ struct Hit {
+ // This is the interface phase-matching convention used by this ray model, not
+ // a general identification of ray direction with phase or energy-flow
+ // direction in an absorbing medium. Subsequent ray kinematics remain real.
++private
++complex isotropicOutgoingNormal(complex n, complex k_parallel) {
++    complex q = sqrt(n * n - k_parallel * k_parallel);
++    complex Y_s = q;
++    complex Y_p = (abs2(n) > config.math.solver_denominator_eps)
++                      ? q * conj(n) / n
++                      : (0.0, 0.0);
++    real flux_s = Y_s.x;
++    real flux_p = Y_p.x;
++    bool carries_outward_flux = flux_s >= -config.math.eps && flux_p >= -config.math.eps &&
++                                (flux_s > config.math.eps || flux_p > config.math.eps);
++
++    if (!carries_outward_flux) {
++        q = -q;
++        Y_s = -Y_s;
++        Y_p = -Y_p;
++        flux_s = Y_s.x;
++        flux_p = Y_p.x;
++    }
++
++    if (flux_s < -config.math.eps || flux_p < -config.math.eps)
++        abort("No isotropic transmitted wavevector branch has nonnegative normal flux for both polarizations.");
++
++    // At an evanescent boundary both normal fluxes vanish. Select the branch
++    // that decays into +z under exp(+i*omega*t - i*k.r).
++    if (abs(flux_s) <= config.math.eps && abs(flux_p) <= config.math.eps && q.y > config.math.eps)
++        q = -q;
++    return q;
++}
++
+ private
+ ComplexWavevector isotropicWavevector(complex n, complex k_parallel, bool toward_positive_normal = true) {
+     ComplexWavevector wave;
+     wave.k_parallel = k_parallel;
+-    complex q = csqrt_outgoing(n * n - k_parallel * k_parallel);
++    complex q = isotropicOutgoingNormal(n, k_parallel);
+     wave.k_normal = toward_positive_normal ? q : -q;
+     wave.evanescent = abs(q.x) < config.math.eps && q.y < -config.math.eps;
+     return wave;
+@@ -1383,8 +1411,12 @@ real netSourceFlux(complex n, complex q, complex reflection, bool p_polarized) {
+     if (p_polarized) {
+         if (abs2(n) <= config.math.solver_denominator_eps) return 0.0;
+         admittance = q * conj(n) / n;
++        // With the module's p-amplitude convention, tangential E and H at the
++        // boundary are proportional to (1-r) and n*(1+r), respectively.
+         field_product = (1.0 - reflection) * conj(1.0 + reflection);
+     } else {
++        // For s polarization, tangential E and H are proportional to (1+r)
++        // and q*(1-r), respectively.
+         field_product = (1.0 + reflection) * conj(1.0 - reflection);
+     }
+     if (admittance.x <= config.math.eps) return 0.0;

@@ -3191,6 +3191,8 @@ assert_true("Strong absorber outgoing branch has positive p normal flux", fa_com
 assert_true("Strong absorber normal wavevector has mixed-sign components",
             fa_complex_branch.transmitted_wavevector.k_normal.x > 0.0 &&
             fa_complex_branch.transmitted_wavevector.k_normal.y < 0.0);
+assert_false("Attenuating propagating wave is not classified as evanescent",
+             fa_complex_branch.transmitted_wavevector.evanescent);
 FresnelAmplitudes fa_abs_transmit = fresnelAmplitudesKernel(1.0, (0.2, 8.0), 1.0);
 complex n_abs_transmit = (0.2, -8.0);
 real abs_transmit_Ts_ref = fa_abs_transmit.q2.x * abs2(fa_abs_transmit.ts);
@@ -3204,6 +3206,8 @@ FresnelAmplitudes fa_weak_abs = fresnelAmplitudesKernel((1.5, -1e-8), (1.0, 0.0)
 FresnelAmplitudes fa_weak_lossless = fresnelAmplitudesKernel(1.5, (1.0, 0.0), Cos(23.0));
 assert_near("Weakly absorbing incident Rs approaches lossless Rs", fa_weak_abs.Rs, fa_weak_lossless.Rs, 1e-7);
 assert_near("Weakly absorbing incident Ts approaches lossless Ts", fa_weak_abs.Ts, fa_weak_lossless.Ts, 1e-7);
+FresnelAmplitudes fa_small_incident = fresnelAmplitudesKernel((1e-6, 0.0), (1.5, 0.0), 1.0);
+assert_true("Small positive incident admittance remains normalizable", fa_small_incident.Ts > 0.0);
 write("");
 
 // ============================================================================

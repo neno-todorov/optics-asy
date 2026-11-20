@@ -53,6 +53,9 @@
 //   * Passive media use n_tilde = n - i*kappa, with kappa >= 0. For propagation
 //     into medium 2 (+z), the isotropic branch is chosen to give nonnegative
 //     s and p normal Poynting flux; if both vanish, Im(q2) <= 0 selects decay.
+//     Sign tests use a relative tolerance scaled to each polarization's
+//     admittance. Some complex tangential wavevectors admit no common branch;
+//     those cases are reported as unsupported by this interface convention.
 //     With complex tangential phase from absorbing incidence, the local
 //     outgoing-flux branch is used; its spatial amplitude can vary along the
 //     interface as well as normally.
@@ -1365,16 +1368,37 @@ struct Hit {
 // a general identification of ray direction with phase or energy-flow
 // direction in an absorbing medium. Subsequent ray kinematics remain real.
 private
+real fluxSignTolerance(complex admittance) {
+    // q/k0 and n are dimensionless, so use a relative tolerance. The floor
+    // only protects the scale calculation when the admittance is near zero.
+    return config.math.eps * max(abs(admittance), config.math.solver_denominator_eps);
+}
+
+private
+complex pNormalAdmittance(complex n, complex q) {
+    // Refractive index is dimensionless; avoid the generic denominator
+    // threshold here because it is intended for squared solver denominators.
+    if (abs(n) <= config.math.eps) return (0.0, 0.0);
+    return q * conj(n) / n;
+}
+
+private
+bool isEvanescentNormal(complex q) {
+    real tolerance = config.math.eps * max(abs(q), config.math.solver_denominator_eps);
+    return abs(q.x) <= tolerance && q.y < -tolerance;
+}
+
+private
 complex isotropicOutgoingNormal(complex n, complex k_parallel) {
     complex q = sqrt(n * n - k_parallel * k_parallel);
     complex Y_s = q;
-    complex Y_p = (abs2(n) > config.math.solver_denominator_eps)
-                      ? q * conj(n) / n
-                      : (0.0, 0.0);
+    complex Y_p = pNormalAdmittance(n, q);
     real flux_s = Y_s.x;
     real flux_p = Y_p.x;
-    bool carries_outward_flux = flux_s >= -config.math.eps && flux_p >= -config.math.eps &&
-                                (flux_s > config.math.eps || flux_p > config.math.eps);
+    real tol_s = fluxSignTolerance(Y_s);
+    real tol_p = fluxSignTolerance(Y_p);
+    bool carries_outward_flux = flux_s >= -tol_s && flux_p >= -tol_p &&
+                                (flux_s > tol_s || flux_p > tol_p);
 
     if (!carries_outward_flux) {
         q = -q;
@@ -1382,14 +1406,16 @@ complex isotropicOutgoingNormal(complex n, complex k_parallel) {
         Y_p = -Y_p;
         flux_s = Y_s.x;
         flux_p = Y_p.x;
+        tol_s = fluxSignTolerance(Y_s);
+        tol_p = fluxSignTolerance(Y_p);
     }
 
-    if (flux_s < -config.math.eps || flux_p < -config.math.eps)
+    if (flux_s < -tol_s || flux_p < -tol_p)
         abort("No isotropic transmitted wavevector branch has nonnegative normal flux for both polarizations.");
 
     // At an evanescent boundary both normal fluxes vanish. Select the branch
     // that decays into +z under exp(+i*omega*t - i*k.r).
-    if (abs(flux_s) <= config.math.eps && abs(flux_p) <= config.math.eps && q.y > config.math.eps)
+    if (abs(flux_s) <= tol_s && abs(flux_p) <= tol_p && q.y > fluxSignTolerance(q))
         q = -q;
     return q;
 }
@@ -1400,7 +1426,7 @@ ComplexWavevector isotropicWavevector(complex n, complex k_parallel, bool toward
     wave.k_parallel = k_parallel;
     complex q = isotropicOutgoingNormal(n, k_parallel);
     wave.k_normal = toward_positive_normal ? q : -q;
-    wave.evanescent = abs(q.x) < config.math.eps && q.y < -config.math.eps;
+    wave.evanescent = isEvanescentNormal(q);
     return wave;
 }
 
@@ -1409,8 +1435,7 @@ real netSourceFlux(complex n, complex q, complex reflection, bool p_polarized) {
     complex admittance = q;
     complex field_product;
     if (p_polarized) {
-        if (abs2(n) <= config.math.solver_denominator_eps) return 0.0;
-        admittance = q * conj(n) / n;
+        admittance = pNormalAdmittance(n, q);
         // With the module's p-amplitude convention, tangential E and H at the
         // boundary are proportional to (1-r) and n*(1+r), respectively.
         field_product = (1.0 - reflection) * conj(1.0 + reflection);
@@ -1419,7 +1444,8 @@ real netSourceFlux(complex n, complex q, complex reflection, bool p_polarized) {
         // and q*(1-r), respectively.
         field_product = (1.0 + reflection) * conj(1.0 - reflection);
     }
-    if (admittance.x <= config.math.eps) return 0.0;
+    if (admittance.x <= fluxSignTolerance(admittance))
+        abort("Incident-side normal admittance must be positive to normalize interface flux.");
     return (admittance * field_product).x / admittance.x;
 }
 
@@ -1478,12 +1504,14 @@ FresnelAmplitudes fresnelAmplitudesKernel(complex n1_in, complex n2_in, real cos
     // The independent reflected and transmitted components need not sum to
     // one when the incident medium absorbs: its incident/reflected fields
     // interfere at the reference plane.
-    complex Y1p = (abs2(n1) > config.math.solver_denominator_eps) ? q1 * conj(n1) / n1 : (0.0, 0.0);
-    complex Y2p = (abs2(n2) > config.math.solver_denominator_eps)
-                      ? fa.q2 * conj(n2) / n2
-                      : (0.0, 0.0);
-    fa.Ts = (q1.x > config.math.eps) ? max(0.0, fa.q2.x) / q1.x * abs2(fa.ts) : 0.0;
-    fa.Tp = (Y1p.x > config.math.eps) ? max(0.0, Y2p.x) / Y1p.x * abs2(fa.tp) : 0.0;
+    complex Y1p = pNormalAdmittance(n1, q1);
+    complex Y2p = pNormalAdmittance(n2, fa.q2);
+    real incident_flux_tolerance_s = fluxSignTolerance(q1);
+    real incident_flux_tolerance_p = fluxSignTolerance(Y1p);
+    if (q1.x <= incident_flux_tolerance_s || Y1p.x <= incident_flux_tolerance_p)
+        abort("Incident wave must carry positive normal flux in both polarizations under the Fresnel direction convention.");
+    fa.Ts = max(0.0, fa.q2.x) / q1.x * abs2(fa.ts);
+    fa.Tp = max(0.0, Y2p.x) / Y1p.x * abs2(fa.tp);
     fa.netFluxS = netSourceFlux(n1, q1, fa.rs, false);
     fa.netFluxP = netSourceFlux(n1, q1, fa.rp, true);
 
@@ -4193,7 +4221,7 @@ thinFilmAmplitudes(ThinFilmLayer[] layers, Medium med_in, Medium med_out, real c
     }
 
     fa.q2 = qs;
-    fa.evanescent = (abs(qs.x) < config.math.eps && qs.y < -config.math.eps);
+    fa.evanescent = isEvanescentNormal(qs);
     fa.incident_wavevector = isotropicWavevector(n1, kt, true);
     fa.incident_wavevector.k_normal = q1;
     fa.reflected_wavevector = isotropicWavevector(n1, kt, false);
