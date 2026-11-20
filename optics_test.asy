@@ -3146,6 +3146,19 @@ complex oblique_tp = 2.0 * oblique_n1 * oblique_q1 /
                      (oblique_q1 + oblique_n1 * oblique_n1 * oblique_q2);
 complex oblique_y1p = oblique_q1 * conj(oblique_n1) / oblique_n1;
 complex oblique_y2p = oblique_q2;
+assert_near("Oblique absorbing solver s reflection matches boundary solution",
+            abs(fa_abs_oblique.rs - oblique_rs), 0.0, 1e-12);
+assert_near("Oblique absorbing solver s transmission matches boundary solution",
+            abs(fa_abs_oblique.ts - oblique_ts), 0.0, 1e-12);
+assert_near("Oblique absorbing solver p reflection matches boundary solution",
+            abs(fa_abs_oblique.rp - oblique_rp), 0.0, 1e-12);
+assert_near("Oblique absorbing solver p transmission matches boundary solution",
+            abs(fa_abs_oblique.tp - oblique_tp), 0.0, 1e-12);
+assert_near("Incident/reflected/transmitted tangential phase agrees",
+            abs(fa_abs_oblique.incident_wavevector.k_parallel -
+                fa_abs_oblique.reflected_wavevector.k_parallel) +
+            abs(fa_abs_oblique.incident_wavevector.k_parallel -
+                fa_abs_oblique.transmitted_wavevector.k_parallel), 0.0, 1e-12);
 assert_near("Oblique absorbing s boundary E continuity", abs(1.0 + oblique_rs - oblique_ts), 0.0, 1e-12);
 assert_near("Oblique absorbing s boundary H continuity",
             abs(oblique_q1 * (1.0 - oblique_rs) - oblique_q2 * oblique_ts), 0.0, 1e-12);
@@ -3159,14 +3172,34 @@ assert_near("Oblique absorbing s flux agrees with independent Poynting ratio",
             fa_abs_oblique.Ts, max(0.0, oblique_q2.x) / oblique_q1.x * abs2(oblique_ts), 1e-12);
 assert_near("Oblique absorbing p flux agrees with independent Poynting ratio",
             fa_abs_oblique.Tp, max(0.0, oblique_y2p.x) / oblique_y1p.x * abs2(oblique_tp), 1e-12);
+real oblique_net_s_ref =
+    (oblique_q1 * (1.0 + oblique_rs) * conj(1.0 - oblique_rs)).x / oblique_q1.x;
+real oblique_net_p_ref =
+    (oblique_y1p * (1.0 - oblique_rp) * conj(1.0 + oblique_rp)).x / oblique_y1p.x;
+assert_near("Oblique source-side s flux includes field interference",
+            fa_abs_oblique.netFluxS, oblique_net_s_ref, 1e-12);
+assert_near("Oblique source-side p flux includes field interference",
+            fa_abs_oblique.netFluxP, oblique_net_p_ref, 1e-12);
 assert_true("Strong absorber outgoing field decays in +normal direction",
             fresnelAmplitudesKernel((1.0, 0.0), (0.2, 8.0), Cos(65.0)).q2.y < 0.0);
 FresnelAmplitudes fa_complex_branch = fresnelAmplitudesKernel((1.0, 0.0), (0.2, 8.0), Cos(65.0));
 assert_true("Strong absorber outgoing branch has positive normal flux",
             fa_complex_branch.transmitted_wavevector.k_normal.x > 0.0);
+complex fa_complex_branch_Yp = fa_complex_branch.transmitted_wavevector.k_normal *
+                               conj((0.2, -8.0)) / (0.2, -8.0);
+assert_true("Strong absorber outgoing branch has positive p normal flux", fa_complex_branch_Yp.x > 0.0);
 assert_true("Strong absorber normal wavevector has mixed-sign components",
             fa_complex_branch.transmitted_wavevector.k_normal.x > 0.0 &&
             fa_complex_branch.transmitted_wavevector.k_normal.y < 0.0);
+FresnelAmplitudes fa_abs_transmit = fresnelAmplitudesKernel(1.0, (0.2, 8.0), 1.0);
+complex n_abs_transmit = (0.2, -8.0);
+real abs_transmit_Ts_ref = fa_abs_transmit.q2.x * abs2(fa_abs_transmit.ts);
+complex abs_transmit_Yp = fa_abs_transmit.q2 * conj(n_abs_transmit) / n_abs_transmit;
+real abs_transmit_Tp_ref = abs_transmit_Yp.x * abs2(fa_abs_transmit.tp);
+assert_near("Strongly absorbing transmitted s flux uses its Poynting admittance",
+            fa_abs_transmit.Ts, abs_transmit_Ts_ref, 1e-12);
+assert_near("Strongly absorbing transmitted p flux uses its Poynting admittance",
+            fa_abs_transmit.Tp, abs_transmit_Tp_ref, 1e-12);
 FresnelAmplitudes fa_weak_abs = fresnelAmplitudesKernel((1.5, -1e-8), (1.0, 0.0), Cos(23.0));
 FresnelAmplitudes fa_weak_lossless = fresnelAmplitudesKernel(1.5, (1.0, 0.0), Cos(23.0));
 assert_near("Weakly absorbing incident Rs approaches lossless Rs", fa_weak_abs.Rs, fa_weak_lossless.Rs, 1e-7);
