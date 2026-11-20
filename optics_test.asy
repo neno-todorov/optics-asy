@@ -3625,6 +3625,19 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                 Materials.WATER.n(),
                 1e-9);
 
+    Surface direct_surface = new Surface;
+    direct_surface.name = "Direct surface";
+    direct_surface.p = (0, -5) -- (0, 5);
+    direct_surface.axis = (1, 0);
+    direct_surface.add(reflect());
+    OpticalSystem direct_surface_system = system(direct_surface);
+    assert_true("system(Surface) wraps the surface",
+                direct_surface_system.elements.length == 1 && direct_surface_system.elements[0].surfaces.length == 1);
+    assert_true("OpticalSystem.add(Surface) traces the surface",
+                direct_surface_system.trace(Ray((-5, 0), (1, 0)), far = 10).segments().length == 2);
+    assert_true("Element.surface supports negative indices",
+                direct_surface_system.elements[0].surface(-1).name == "Direct surface");
+
     real old_asz = config.rendering.arrow_size;
     config.rendering.arrow_size = 9pt;
     assert_near("effectivePolArrowSize tracks arrow_size dynamically", effectivePolArrowSize(), 3pt, 1e-6);

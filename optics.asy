@@ -2248,6 +2248,12 @@ struct Element {
     void custom_draw(picture pic, Element e) = null;
     void add(Surface s) { surfaces.push(s); }
 
+    Surface surface(int i = 0) {
+        int index = (i < 0) ? i + surfaces.length : i;
+        if (index < 0 || index >= surfaces.length) abort("Element.surface: index out of range.");
+        return surfaces[index];
+    }
+
     void add(Element e) { children.push(e); }
 
     Element add(Property p) {
@@ -3364,6 +3370,18 @@ struct OpticalSystem {
         this.elements.push(e);
         this.invalidateCache();
     }
+    void add(Surface s) {
+        if (s == null) return;
+        Element e = new Element;
+        e.name = s.name;
+        e.center = s.center;
+        e.axis = s.axis;
+        e.boundary = s.p;
+        e.stroke = s.stroke;
+        e.fill = s.fill;
+        e.add(s);
+        this.add(e);
+    }
     void add(Element[] e_list) {
         this.elements.append(e_list);
         this.invalidateCache();
@@ -3444,6 +3462,13 @@ system(Element[] elements, Medium ambient = null) {
     return s;
 }
 
+OpticalSystem system(Surface[] surfaces, Medium ambient = null) {
+    OpticalSystem result = new OpticalSystem;
+    result.ambient = ambient;
+    for (Surface s : surfaces) result.add(s);
+    return result;
+}
+
 OpticalSystem system(Element element, Medium ambient) {
     OpticalSystem s = new OpticalSystem;
     s.ambient = ambient;
@@ -3464,6 +3489,21 @@ OpticalSystem system(Element first ... Element[] rest) {
     s.add(first);
     s.add(rest);
     return s;
+}
+
+OpticalSystem system(Medium ambient, Surface first ... Surface[] rest) {
+    OpticalSystem result = new OpticalSystem;
+    result.ambient = ambient;
+    result.add(first);
+    for (Surface s : rest) result.add(s);
+    return result;
+}
+
+OpticalSystem system(Surface first ... Surface[] rest) {
+    OpticalSystem result = new OpticalSystem;
+    result.add(first);
+    for (Surface s : rest) result.add(s);
+    return result;
 }
 
 OpticalSystem copy(OpticalSystem src) {
@@ -7016,7 +7056,14 @@ struct Renderer {
     }
 
     void drawElement(picture pic = currentpicture, Element e) {
-        if (e.fill != nullpen && cyclic(e.boundary)) {
+        bool has_surface_fill = false;
+        for (Surface s : e.surfaces) {
+            if (s.fill != nullpen && cyclic(s.p)) {
+                has_surface_fill = true;
+                break;
+            }
+        }
+        if (e.fill != nullpen && cyclic(e.boundary) && (e.custom_draw != null || !has_surface_fill)) {
             fill(pic, e.T * e.boundary, e.fill);
         }
 
