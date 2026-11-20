@@ -47,7 +47,6 @@
 import geometry;
 import graph;
 import math;
-import version;
 
 usepackage("fontenc", "T2A");
 usepackage("amsmath");
@@ -202,30 +201,6 @@ pen DarkBlue(real x = 1.0) { return interp(white, dark_blue, x); }
 pen DarkGreen(real x = 1.0) { return interp(white, dark_green, x); }
 pen DarkYellow(real x = 1.0) { return interp(white, dark_yellow, x); }
 pen DarkBrown(real x = 1.0) { return interp(white, dark_brown, x); }
-
-// Compare version components numerically; lexical string comparison makes
-// versions such as 3.9 sort after 3.11.
-int compareVersion(string v1, string v2) {
-    int i1 = 0, i2 = 0;
-    while (i1 < length(v1) || i2 < length(v2)) {
-        int n1 = 0, n2 = 0;
-        while (i1 < length(v1) && v1[i1] != '.') {
-            n1 = 10 * n1 + (int)v1[i1] - (int)'0';
-            ++i1;
-        }
-
-        while (i2 < length(v2) && v2[i2] != '.') {
-            n2 = 10 * n2 + (int)v2[i2] - (int)'0';
-            ++i2;
-        }
-
-        if (n1 < n2) return -1;
-        if (n1 > n2) return 1;
-        if (i1 < length(v1)) ++i1;
-        if (i2 < length(v2)) ++i2;
-    }
-    return 0;
-}
 
 // Wavelengths are expressed in nm at the public API; geometric lengths use um.
 // Unit-conversion ratios: multiply to convert between nm and um.
@@ -751,6 +726,9 @@ struct VolumeProperty {
 struct Medium {
     string name = "";
     VolumeProperty[] props;
+    // Optional diagram styling. These pens are only used by draw(sys).
+    pen fill = nullpen;
+    pen fill_end = nullpen;
 
     Medium add(VolumeProperty prop) {
         if (prop == null) return this;
@@ -1107,9 +1085,13 @@ Medium medium(string name = "",
               real B = 0,
               real alpha = 0.0,
               indexProfile n_profile = null,
-              gradientProfile grad_profile = null) {
+              gradientProfile grad_profile = null,
+              pen fill = nullpen,
+              pen fill_end = nullpen) {
     Medium m = new Medium;
     m.name = name;
+    m.fill = fill;
+    m.fill_end = fill_end;
     if (A != 1.0 || B != 0.0 || n_profile != null) m.add(refractiveIndex(A, B, n_profile, grad_profile));
     if (alpha != 0) m.add(absorption(alpha));
     return m;
@@ -2083,8 +2065,8 @@ Property ordered(Property src, int stage = PropertyStage.Interact, int priority 
 
 Property[] properties( ... Property[] props) { return props; }
 
-private Property[]
-sortProperties(Property[] props) {
+private
+Property[] sortProperties(Property[] props) {
     Property[] sorted;
     for (Property prop : props) {
         if (prop == null) continue;
@@ -2092,8 +2074,7 @@ sortProperties(Property[] props) {
         int j = sorted.length - 2;
         while (j >= 0 && (sorted[j].stage > prop.stage ||
                           (sorted[j].stage == prop.stage && sorted[j].priority > prop.priority))) {
-            sorted[j + 1] = sorted[j];
-            --j;
+            sorted[j + 1] = sorted[j]; -- j;
         }
         sorted[j + 1] = prop;
     }
@@ -2117,8 +2098,8 @@ pair boundaryAxis(path boundary) {
 
 // Surface geometry and optical interface are separate so geometry can be
 // reused with different media, properties, and rendering styles.
-private path
-sphericalArc(pair vertex, pair N, real R, real diameter) {
+private
+path sphericalArc(pair vertex, pair N, real R, real diameter) {
     if (abs(R) <= config.math.eps || abs(R) == infinity) {
         pair tangent = (-N.y, N.x);
         return vertex - 0.5 * diameter * tangent -- vertex + 0.5 * diameter * tangent;
@@ -2127,6 +2108,49 @@ sphericalArc(pair vertex, pair N, real R, real diameter) {
     real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
     real theta = degrees(vertex - C);
     return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
+}
+
+// Construct the circular arc through vertex whose endpoints lie at y_min and
+// y_max relative to the circle center. Select the circle branch containing
+// vertex so the visible arc remains well-defined for either sign of R.
+private
+path sphericalArc(pair vertex, pair N, real R, real y_min, real y_max) {
+    if (abs(R) <= config.math.eps || abs(R) == infinity)
+        abort("sphericalArc(y_min, y_max) requires a finite, nonzero radius.");
+    if (y_min >= y_max) abort("sphericalArc requires y_min < y_max.");
+
+    pair C = vertex + R * unitOr(N);
+    real radius = abs(R);
+    real y_vertex = vertex.y - C.y;
+    real eps = config.geometry.eps;
+    if (y_min < -radius - eps || y_max > radius + eps || y_vertex < y_min - eps || y_vertex > y_max + eps)
+        abort("sphericalArc y bounds must lie within the radius and contain the vertex height.");
+
+    real branch = sgn(vertex.x - C.x);
+    if (branch == 0) branch = sgn(-N.y);
+    if (branch == 0) branch = 1;
+    pair q_min = (C.x + branch * sqrt(max(0, radius * radius - y_min * y_min)), C.y + y_min);
+    pair q_max = (C.x + branch * sqrt(max(0, radius * radius - y_max * y_max)), C.y + y_max);
+    real a_min = degrees(q_min - C), a_max = degrees(q_max - C), a_vertex = degrees(vertex - C);
+    if (a_min < 0) a_min += 360;
+    if (a_max < 0) a_max += 360;
+    if (a_vertex < 0) a_vertex += 360;
+
+    real end = a_max;
+    while (end < a_min) end += 360;
+    real vertex_angle = a_vertex;
+    while (vertex_angle < a_min) vertex_angle += 360;
+    if (vertex_angle <= end + eps) {
+        return Arc(C, radius, a_min, end, config.geometry.arc_subdivisions);
+    }
+
+    real start = a_max;
+    real finish = a_min;
+    while (finish < start) finish += 360;
+    vertex_angle = a_vertex;
+    while (vertex_angle < start) vertex_angle += 360;
+    if (vertex_angle > finish + eps) abort("sphericalArc could not select an arc containing the vertex.");
+    return Arc(C, radius, start, finish, config.geometry.arc_subdivisions);
 }
 
 struct Surface {
@@ -2157,7 +2181,8 @@ struct Surface {
         pair normal = unitOr(axis);
         pair tangent = (-normal.y, normal.x);
         return Surface(center - 0.5 * diameter * tangent -- center + 0.5 * diameter * tangent,
-                       center = center, axis = normal);
+                       center = center,
+                       axis = normal);
     }
 
     static Surface spherical(pair vertex, pair axis, real R, real diameter) {
@@ -2201,10 +2226,12 @@ struct Surface {
             pair global_pt = this.T * pt;
             pair global_q = global_pt - r.p;
             real d = length(global_q);
-            if (ignore_origin && d <= config.geometry.self_intersection_factor * config.geometry.eps_intersection) continue;
+            if (ignore_origin && d <= config.geometry.self_intersection_factor * config.geometry.eps_intersection)
+                continue;
             if (d <= max_distance + config.geometry.eps_intersection && d < best_distance &&
                 ((d <= config.geometry.near_intersection_factor * config.geometry.eps_intersection &&
-                  dot(global_q, r.d) >= -config.geometry.eps_intersection) || dot(global_q, r.d) > config.geometry.eps)) {
+                  dot(global_q, r.d) >= -config.geometry.eps_intersection) ||
+                 dot(global_q, r.d) > config.geometry.eps)) {
                 best_distance = d;
                 best_time = u;
             }
@@ -2437,9 +2464,9 @@ struct Element {
         int count = interfaceCount();
         for (int i = 0; i < count; ++i) {
             Interface inf = interface(i);
-            if (inf.name == name ||
-                (length(name) > 0 && length(inf.name) >= length(name) &&
-                 substr(inf.name, length(inf.name) - length(name), length(name)) == name)) return inf;
+            if (inf.name == name || (length(name) > 0 && length(inf.name) >= length(name) &&
+                                     substr(inf.name, length(inf.name) - length(name), length(name)) == name))
+                return inf;
         }
         abort("Element.interfaceNamed: no interface named '" + name + "'.");
         return new Interface;
@@ -2521,8 +2548,8 @@ Element element(path boundary,
                 Medium medium = null,
                 Medium med_e = null) {
     Surface geometry = Surface(ensureCCW(boundary), center, unitOr(axis));
-    Interface inf = Interface(geometry, m_pos = null, m_neg = medium, props = props,
-                              stroke = stroke, fill = fill, name = name);
+    Interface inf =
+        Interface(geometry, m_pos = null, m_neg = medium, props = props, stroke = stroke, fill = fill, name = name);
     Element e = new Element;
     e.name = name;
     e.stroke = stroke;
@@ -3374,12 +3401,10 @@ struct Trace {
         return view(root_ids[idx], route, new int[]);
     }
 
-    if (compareVersion(VERSION, "3.11") < 0) {
-        Trace get(int i) { return subtrace(i); }
-    } else {
-        // Native Subscript Operator: t[i] returns Trace view for i-th ray in a beam!
-        Trace operator[](int i) { return subtrace(i); }
-    }
+    // Native Subscript Operator: t[i] returns Trace view for i-th ray in a beam!
+    Trace operator[](int i) { return subtrace(i); }
+    Trace get(int i) { return subtrace(i); }
+
     Trace[] subtraces() {
         Trace[] out;
         if (root_ids.length > 0) {
@@ -3616,7 +3641,8 @@ struct OpticalSystem {
             int[] interface_cursor = {0};
             for (int i = 0; i < this.elements.length; ++i) {
                 Element e = this.elements[i];
-                if (e == null || e.T != this.cached_transforms[i] || e.interfaces.length != this.cached_interface_counts[i] ||
+                if (e == null || e.T != this.cached_transforms[i] ||
+                    e.interfaces.length != this.cached_interface_counts[i] ||
                     e.children.length != this.cached_child_counts[i] ||
                     elementPropCount(e) != this.cached_prop_counts[i] ||
                     elementInterfaceRevision(e) != this.cached_interface_revisions[i] ||
@@ -3679,29 +3705,21 @@ makeSystem(Element[] elements, Medium ambient = null) {
     return s;
 }
 
-private OpticalSystem
-makeSystem(Interface[] interfaces, Medium ambient = null) {
+private
+OpticalSystem makeSystem(Interface[] interfaces, Medium ambient = null) {
     OpticalSystem result = new OpticalSystem;
     result.ambient = ambient;
     for (Interface inf : interfaces) result.add(inf);
     return result;
 }
 
-OpticalSystem system(Element[] elements, Medium ambient = null) {
-    return makeSystem(elements, ambient);
-}
+OpticalSystem system(Element[] elements, Medium ambient = null) { return makeSystem(elements, ambient); }
 
-OpticalSystem system(Interface[] interfaces, Medium ambient = null) {
-    return makeSystem(interfaces, ambient);
-}
+OpticalSystem system(Interface[] interfaces, Medium ambient = null) { return makeSystem(interfaces, ambient); }
 
-OpticalSystem system(Interface inf, Medium ambient) {
-    return makeSystem(new Interface[]{inf}, ambient);
-}
+OpticalSystem system(Interface inf, Medium ambient) { return makeSystem(new Interface[]{inf}, ambient); }
 
-OpticalSystem system(Element element, Medium ambient) {
-    return makeSystem(new Element[]{element}, ambient);
-}
+OpticalSystem system(Element element, Medium ambient) { return makeSystem(new Element[]{element}, ambient); }
 
 OpticalSystem system(Medium ambient, Element first ... Element[] rest) {
     Element[] elements = {first};
@@ -4699,13 +4717,21 @@ struct BeamSplitter {
         e.medium = glass;
 
         Surface outer_geometry = Surface(box_p, center, ax);
-        e.add(Interface(outer_geometry, m_pos = ambient, m_neg = glass,
-                        props = properties(refract(glass, ambient)), stroke = stroke, fill = fill,
+        e.add(Interface(outer_geometry,
+                        m_pos = ambient,
+                        m_neg = glass,
+                        props = properties(refract(glass, ambient)),
+                        stroke = stroke,
+                        fill = fill,
                         name = name + " Outer"));
 
         Surface diagonal_geometry = Surface(T * ((-h, -h) -- (h, h)), center, ax);
-        e.add(Interface(diagonal_geometry, m_pos = glass, m_neg = glass,
-                        props = properties(diag_prop), stroke = stroke, name = name + " Coating"));
+        e.add(Interface(diagonal_geometry,
+                        m_pos = glass,
+                        m_neg = glass,
+                        props = properties(diag_prop),
+                        stroke = stroke,
+                        name = name + " Coating"));
         return e;
     }
 
@@ -4772,14 +4798,7 @@ Element refractiveElement(path boundary,
                           pen fill = nullpen,
                           string name = "Interface") {
     Property[] props = {refract(inside, ambient)};
-    Element e = element(boundary,
-                        props,
-                        stroke,
-                        fill,
-                        name,
-                        boundaryCenter(boundary),
-                        boundaryAxis(boundary),
-                        inside);
+    Element e = element(boundary, props, stroke, fill, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
     e.front().m_pos = ambient;
     return e;
 }
@@ -4826,8 +4845,8 @@ struct Polarizer {
     }
 }
 
-private
-path sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
+private path
+sphericalMirrorArc(pair vertex, pair N, real f, real diameter) {
     return sphericalArc(vertex, N, 2.0 * f, diameter);
 }
 
@@ -4898,7 +4917,28 @@ Element sphericalInterface(pair vertex,
     pair N = dir(angle);
     Property[] props = {idealRefract(vertex, N, R, inside, ambient)};
     path boundary = sphericalArc(vertex, N, R, diameter);
-    Element e = element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
+    Element e =
+        element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
+    e.front().m_pos = ambient;
+    return e;
+}
+
+// As sphericalInterface(..., diameter, ...), but bound the visible arc by
+// vertical offsets y_min and y_max from the circle center.
+Element sphericalInterface(pair vertex,
+                           real angle,
+                           real R,
+                           real y_min,
+                           real y_max,
+                           Medium inside,
+                           Medium ambient = null,
+                           pen stroke = black,
+                           string name = "SphericalInterface") {
+    pair N = dir(angle);
+    Property[] props = {idealRefract(vertex, N, R, inside, ambient)};
+    path boundary = sphericalArc(vertex, N, R, y_min, y_max);
+    Element e =
+        element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
     e.front().m_pos = ambient;
     return e;
 }
@@ -5073,10 +5113,18 @@ struct Lens {
         e.fill = fill;
         Surface front_geometry = Surface(reverse(T * face_paths[0]), center, dir(angle));
         Surface back_geometry = Surface(reverse(T * face_paths[1]), center, dir(angle));
-        e.add(Interface(front_geometry, m_pos = ambient, m_neg = glass,
-                        props = properties(refract(glass, ambient)), stroke = stroke, name = name + " Front"));
-        e.add(Interface(back_geometry, m_pos = ambient, m_neg = glass,
-                        props = properties(refract(glass, ambient)), stroke = stroke, name = name + " Back"));
+        e.add(Interface(front_geometry,
+                        m_pos = ambient,
+                        m_neg = glass,
+                        props = properties(refract(glass, ambient)),
+                        stroke = stroke,
+                        name = name + " Front"));
+        e.add(Interface(back_geometry,
+                        m_pos = ambient,
+                        m_neg = glass,
+                        props = properties(refract(glass, ambient)),
+                        stroke = stroke,
+                        name = name + " Back"));
 
         // Keep the optical axis explicit for both component and interfaces.
         return e;
@@ -5533,7 +5581,6 @@ real aimAngle(pair A,
             fb = ftemp;
         }
     }
-
     return b;
 }
 
@@ -6254,12 +6301,10 @@ struct Inset {
     pen pen_badge = nullpen;         // Badge fill color (defaults to border)
     pen badge_text = white;          // Badge text label color
     void add(Label L) { label(this.pic, L); }
-
     void addGraphic(string filename) { label(this.pic, graphic(filename)); }
 
     // Helpers to resolve fallback pens
     pen getConnectorPen() { return (this.connector != nullpen) ? this.connector : (this.border + dashed); }
-
     pen getBadgePen() { return (this.pen_badge != nullpen) ? this.pen_badge : this.border; }
 
     // Standalone Drawing
@@ -6283,8 +6328,40 @@ struct Inset {
 
 }
 
-arrowbar
-operator cast(ResolvedArrow a) {
+private string
+debugMediumText(Medium med, pair p, string sign) {
+    if (med == null) return "dynamic";
+    string name = (med.name != "") ? texify(med.name) + ": " : "";
+    return name + " $n_{" + sign + "} = " + format("%#.3f$", sign, med.n(p));
+}
+
+private
+void drawInterfaceDebug(picture pic, Element e, Medium ambient) {
+    for (int i = 0; i < e.interfaces.length; ++i) {
+        Interface inf = e.interfaces[i];
+        path surface = e.T * inf.surface.T * inf.surface.p;
+        if (length(surface) == 0) continue;
+
+        real s = 0.5 * length(surface);
+        pair target = point(surface, s);
+        Medium pos_medium = (inf.m_pos != null) ? inf.m_pos : ambient;
+        Medium neg_medium = (inf.m_neg != null) ? inf.m_neg : e.medium;
+        string interface_name = (inf.name != "") ? texify(inf.name) : format("Interface %d", i + 1);
+
+        Inset badge;
+        badge.title = interface_name;
+        badge.tag = format("%d: ", i + 1);
+        badge.target = target;
+        badge.pos = target + (shift(target) * unit(67));
+        badge.border = (inf.stroke != nullpen) ? inf.stroke : rgb(0.15, 0.25, 0.55);
+        label(badge.pic, Label("\tiny " + badge.tag + badge.title, badge.border), (0, 7), W);
+        label(badge.pic, Label("\tiny " + debugMediumText(pos_medium, target, "-"), black), (0, -1), W);
+        label(badge.pic, Label("\tiny " + debugMediumText(neg_medium, target, "+"), black), (0, -8), W);
+        badge.draw(pic);
+    }
+}
+
+arrowbar operator cast(ResolvedArrow a) {
     if (!a.visible) return None;
     real pos = isnan(a.relative) ? 0.5 : a.relative;
     arrowhead h = (a.head != null) ? a.head : config.rendering.arrow_head;
@@ -7161,6 +7238,114 @@ void drawInterfaces(picture pic = currentpicture, Element e) {
     }
 }
 
+// Shade a spatially varying medium inside a closed path. This is visual only:
+// the sampled index never participates in ray tracing or medium resolution.
+private
+void drawMediumRegion(frame f, path region, Medium med, int grid_n = 24) {
+    if (med == null || med.fill == nullpen || length(region) == 0 || !cyclic(region)) return;
+    if (med.fill_end == nullpen || grid_n < 2) {
+        fill(f, region, med.fill);
+        return;
+    }
+
+    pair lo = min(region), hi = max(region);
+    real dx = hi.x - lo.x, dy = hi.y - lo.y;
+    if (dx <= config.geometry.eps || dy <= config.geometry.eps) {
+        fill(f, region, med.fill);
+        return;
+    }
+
+    real[][] indices = new real[grid_n][grid_n];
+    real nlo = infinity, nhi = -infinity;
+    for (int iy = 0; iy < grid_n; ++iy) {
+        real y = hi.y - iy * dy / (grid_n - 1);
+        for (int ix = 0; ix < grid_n; ++ix) {
+            real x = lo.x + ix * dx / (grid_n - 1);
+            real n = med.n((x, y));
+            indices[iy][ix] = n;
+            nlo = min(nlo, n);
+            nhi = max(nhi, n);
+        }
+    }
+    if (nhi - nlo <= config.math.eps) {
+        fill(f, region, med.fill);
+        return;
+    }
+
+    pen[][] colors = new pen[grid_n][grid_n];
+    pen c0 = rgb(med.fill), c1 = rgb(med.fill_end);
+    for (int iy = 0; iy < grid_n; ++iy) {
+        for (int ix = 0; ix < grid_n; ++ix) {
+            real u = clamp((indices[iy][ix] - nlo) / (nhi - nlo), 0, 1);
+            colors[iy][ix] = rgb(interp(c0, c1, u));
+        }
+    }
+    latticeshade(f, region, false, currentpen, colors);
+}
+
+private
+void drawMediumBackground(picture pic, OpticalSystem sys) {
+    Element[] elements = sys.elements;
+    pic.add(new void(frame f, transform t, transform T, pair m, pair M) {
+        pair p0 = inverse(t) * m, p1 = inverse(t) * M;
+        pair lo = (min(p0.x, p1.x), min(p0.y, p1.y));
+        pair hi = (max(p0.x, p1.x), max(p0.y, p1.y));
+        Medium[] media;
+        real[] xs;
+        // Supported automatic layout: parallel vertical dividers. The
+        // nearest divider determines the medium in each interval, with the
+        // explicit side labels resolving each side of a divider.
+        for (Element e : elements) {
+            for (Interface inf : e.interfaces) {
+                Surface s = inf.surface;
+                if (inf.m_pos == null || inf.m_neg == null || inf.m_pos == inf.m_neg || length(s.p) == 0 ||
+                    cyclic(s.p) || !straight(s.p, 0))
+                    continue;
+                path boundary = e.T * s.T * s.p;
+                pair a = point(boundary, 0), b = point(boundary, length(boundary));
+                pair d = unitOr(b - a);
+                if (abs(d.x) > 1e-6 || abs(d.y) < 1e-6) continue;
+                xs.push(0.5 * (a.x + b.x));
+                media.push(inf.m_pos); // right side
+                media.push(inf.m_neg); // left side
+            }
+        }
+        if (xs.length == 0) return;
+        // Sort dividers left to right while keeping each pair of side media.
+        for (int i = 1; i < xs.length; ++i) {
+            real x = xs[i];
+            Medium pos = media[2 * i], neg = media[2 * i + 1];
+            int j = i - 1;
+            while (j >= 0 && xs[j] > x) {
+                xs[j + 1] = xs[j];
+                media[2 * (j + 1)] = media[2 * j];
+                media[2 * (j + 1) + 1] = media[2 * j + 1]; -- j;
+            }
+            xs[j + 1] = x;
+            media[2 * (j + 1)] = pos;
+            media[2 * (j + 1) + 1] = neg;
+        }
+        real[] edges = new real[]{lo.x};
+        edges.append(xs);
+        edges.push(hi.x);
+        for (int k = 0; k + 1 < edges.length; ++k) {
+            real xmid = 0.5 * (edges[k] + edges[k + 1]);
+            Medium region_medium = (sys.ambient != null) ? sys.ambient : Materials.VACUUM;
+            real best = infinity;
+            for (int i = 0; i < xs.length; ++i) {
+                real dist = abs(xmid - xs[i]);
+                if (dist < best) {
+                    best = dist;
+                    region_medium = (xmid > xs[i]) ? media[2 * i] : media[2 * i + 1];
+                }
+            }
+            if (region_medium.fill != nullpen) {
+                fill(f, t * box((edges[k], lo.y), (edges[k + 1], hi.y)), region_medium.fill);
+            }
+        }
+    });
+}
+
 struct Renderer {
     pen p = currentpen;
     RayArrows arrows = RayArrows();
@@ -7174,6 +7359,8 @@ struct Renderer {
     real margin = 0;
     bool draw_reflections = config.rendering.draw_reflections;
     bool intensity_opacity = config.rendering.use_intensity_opacity;
+    bool show_info = false;
+    Medium ambient = null;
     void drawTrace(picture pic = currentpicture, Trace T) {
         Segment[] segs = T.segments();
         Trace[] brs = T.branches();
@@ -7292,6 +7479,8 @@ struct Renderer {
         } else {
             drawInterfaces(pic, e);
         }
+
+        if (this.show_info || e.show_info) drawInterfaceDebug(pic, e, this.ambient);
 
         for (Element child : e.children) {
             drawElement(pic, e.T * child);
@@ -7420,16 +7609,21 @@ void draw(picture pic = currentpicture,
                     intensity_opacity);
 }
 
-void draw(picture pic = currentpicture, Element e) {
+void draw(picture pic = currentpicture, Element e, bool show_info = false, Medium ambient = null) {
     Renderer r = new Renderer;
+    r.show_info = show_info;
+    r.ambient = ambient;
     r.drawElement(pic, e);
 }
 
-void draw(picture pic = currentpicture, Element[] elements) {
-    for (int i = 0; i < elements.length; ++i) draw(pic, elements[i]);
+void draw(picture pic = currentpicture, Element[] elements, bool show_info = false, Medium ambient = null) {
+    for (int i = 0; i < elements.length; ++i) draw(pic, elements[i], show_info, ambient);
 }
 
-void draw(picture pic = currentpicture, OpticalSystem sys) { draw(pic, sys.elements); }
+void draw(picture pic = currentpicture, OpticalSystem sys, bool show_info = false) {
+    drawMediumBackground(pic, sys);
+    draw(pic, sys.elements, show_info, sys.ambient);
+}
 void draw(picture pic = currentpicture, Segment s, pen p = currentpen) { draw(pic, s.a -- s.b, p); }
 void draw(picture pic = currentpicture, Segment[] segments, pen p = currentpen) {
     for (int i = 0; i < segments.length; ++i) draw(pic, segments[i], p);
