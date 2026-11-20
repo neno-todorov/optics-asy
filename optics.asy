@@ -3579,6 +3579,46 @@ Property refract(Medium inside, Medium ambient = null) {
         });
 }
 
+private
+Property beamSplitterCoating(string name,
+                             Medium inside,
+                             Medium ambient,
+                             real Rs,
+                             real Rp,
+                             real reflection_phase,
+                             real transmission_phase,
+                             bool abort_on_tir) {
+    return property(
+        name,
+        new Ray[](Ray r, Hit h, mediumResolver resolve) {
+            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
+            real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
+            if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
+                abort(name + " requires equal refractive indices on both sides.");
+            if (abort_on_tir && res.tir) abort(name + ": unexpected TIR for equal-index media.");
+
+            real Ts = 1.0 - Rs;
+            real Tp = 1.0 - Rp;
+            complex js_t = (sqrt(Ts) * cos(transmission_phase), sqrt(Ts) * sin(transmission_phase));
+            complex jp_t = (sqrt(Tp) * cos(transmission_phase), sqrt(Tp) * sin(transmission_phase));
+            complex js_r = (sqrt(Rs) * cos(reflection_phase), sqrt(Rs) * sin(reflection_phase));
+            complex jp_r = (sqrt(Rp) * cos(reflection_phase), sqrt(Rp) * sin(reflection_phase));
+
+            Ray[] rays;
+            if (!res.tir) emitFresnelChild(rays, r, h, res.d, res.wave_normal, res.medium, js_t, jp_t);
+            if (config.physics.trace_reflections || config.rendering.draw_reflections)
+                emitFresnelChild(rays,
+                                 r,
+                                 h,
+                                 res.reflected_direction,
+                                 res.reflected_wave_normal,
+                                 res.source_medium,
+                                 js_r,
+                                 jp_r);
+            return rays;
+        });
+}
+
 // Ideal lossless, non-polarizing coating between equal-index media.
 // R is power reflectance; T = 1 - R.
 // Reflection and transmission phases are configurable in radians.
@@ -3589,46 +3629,7 @@ Property coating(Medium inside,
                  real transmission_phase = 0.0) {
     if (R < 0.0 || R > 1.0) abort("Coating: R must be between 0 and 1.");
 
-    return property(
-        "Coating",
-        new Ray[](Ray r, Hit h, mediumResolver resolve) {
-            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
-
-            // This ideal coating model requires equal-index ports.
-            real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
-            if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
-                abort("Coating requires equal refractive indices on both sides.");
-
-            // Equal-index ports should not produce TIR.
-            if (res.tir) abort("Coating: unexpected TIR for equal-index media.");
-
-            Ray[] rays;
-            real T = 1.0 - R;
-
-            // Transmission: coating-defined power and phase.
-            real I_trans = r.intensity() * T;
-            if (I_trans > config.physics.min_intensity) {
-                Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
-                // An ideal non-polarizing coating preserves normalized Stokes
-                // polarization; spawnRay already scales it to I_trans.
-                rays.push(trans_ray);
-            }
-
-            // Reflection: coating-defined power and phase.
-            real I_refl = r.intensity() * R;
-            if (I_refl > config.physics.min_intensity &&
-                (config.physics.trace_reflections || config.rendering.draw_reflections)) {
-                Ray refl_ray = spawnRay(r,
-                                        h,
-                                        res.reflected_direction,
-                                        I_refl,
-                                        res.source_medium,
-                                        reflection_phase,
-                                        res.reflected_wave_normal);
-                rays.push(refl_ray);
-            }
-            return rays;
-        });
+    return beamSplitterCoating("Coating", inside, ambient, R, R, reflection_phase, transmission_phase, true);
 }
 
 // Ideal polarizing beam-splitting coating with independent s and p reflectances.
@@ -3641,53 +3642,14 @@ Property polarizingCoating(Medium inside,
                            real transmission_phase = 0.0) {
     if (Rs < 0.0 || Rs > 1.0 || Rp < 0.0 || Rp > 1.0) abort("PolarizingCoating: Rs and Rp must be between 0 and 1.");
 
-    return property(
-        "PolarizingCoating",
-        new Ray[](Ray r, Hit h, mediumResolver resolve) {
-            FresnelResult res = fresnelIsotropic(inside, ambient, r, h, resolve);
-
-            real n_scale = max(1.0, max(abs(res.n1), abs(res.n2)));
-            if (abs(res.n1 - res.n2) > 1e-6 * n_scale)
-                abort("PolarizingCoating requires equal refractive indices on both sides.");
-
-            Ray[] rays;
-            real Ts = 1.0 - Rs;
-            real Tp = 1.0 - Rp;
-
-            complex js_trans = (sqrt(Ts) * cos(transmission_phase), sqrt(Ts) * sin(transmission_phase));
-            complex jp_trans = (sqrt(Tp) * cos(transmission_phase), sqrt(Tp) * sin(transmission_phase));
-
-            complex js_refl = (sqrt(Rs) * cos(reflection_phase), sqrt(Rs) * sin(reflection_phase));
-            complex jp_refl = (sqrt(Rp) * cos(reflection_phase), sqrt(Rp) * sin(reflection_phase));
-
-            // Transmitted ray
-            real T_weighted =
-                (r.intensity() > 0) ? (Ts * r.pol.sPower() + Tp * r.pol.pPower()) / r.intensity() : 0.5 * (Ts + Tp);
-            real I_trans = r.intensity() * T_weighted;
-            if (I_trans > config.physics.min_intensity) {
-                Ray trans_ray = spawnRay(r, h, res.d, I_trans, res.medium, transmission_phase, res.wave_normal);
-                applyDiattenuation(trans_ray.pol, r.pol, js_trans, jp_trans);
-                rays.push(trans_ray);
-            }
-
-            // Reflected ray
-            real R_weighted =
-                (r.intensity() > 0) ? (Rs * r.pol.sPower() + Rp * r.pol.pPower()) / r.intensity() : 0.5 * (Rs + Rp);
-            real I_refl = r.intensity() * R_weighted;
-            if (I_refl > config.physics.min_intensity &&
-                (config.physics.trace_reflections || config.rendering.draw_reflections)) {
-                Ray refl_ray = spawnRay(r,
-                                        h,
-                                        res.reflected_direction,
-                                        I_refl,
-                                        res.source_medium,
-                                        reflection_phase,
-                                        res.reflected_wave_normal);
-                applyDiattenuation(refl_ray.pol, r.pol, js_refl, jp_refl);
-                rays.push(refl_ray);
-            }
-            return rays;
-        });
+    return beamSplitterCoating("PolarizingCoating",
+                               inside,
+                               ambient,
+                               Rs,
+                               Rp,
+                               reflection_phase,
+                               transmission_phase,
+                               false);
 }
 
 ThinFilmLayer thinFilmLayer(Medium medium, real thickness_nm) { return ThinFilmLayer(medium, thickness_nm); }
@@ -7459,6 +7421,42 @@ void drawAxis(picture pic = currentpicture,
 }
 
 // 4. Compact draw(sys, object) (shrunk from 110 lines to 45 lines)
+private
+struct ImageStage {
+    pair tip;
+    pair base;
+    bool is_real;
+    int segment_index;
+}
+
+private ImageStage[] findImageStages(OpticalSystem sys, Trace[] traces, Segment[] axis_segs) {
+    ImageStage[] stages;
+    if (traces.length < 2 || axis_segs.length == 0) return stages;
+
+    Segment[] first_segs = traces[0].segments();
+    Segment[] second_segs = traces[1].segments();
+    int num_segs = min(first_segs.length, second_segs.length);
+    for (int s = 1; s < num_segs; ++s) {
+        Segment seg0 = first_segs[s];
+        Segment seg1 = second_segs[s];
+        if (seg0.before.medium != sys.ambient && s < num_segs - 1) continue;
+
+        pair tip = lineIntersection(seg0.a, seg0.before.d, seg1.a, seg1.before.d);
+        if (abs(tip.x) == infinity || abs(tip.y) == infinity) continue;
+
+        int ax_idx = min(s, axis_segs.length - 1);
+        pair ax_p1 = axis_segs[ax_idx].a;
+        pair ax_d = unitOr(axis_segs[ax_idx].b - ax_p1, axis_segs[ax_idx].before.d);
+        ImageStage stage;
+        stage.tip = tip;
+        stage.base = ax_p1 + dot(tip - ax_p1, ax_d) * ax_d;
+        stage.is_real = dot(tip - seg0.a, seg0.before.d) > config.geometry.eps;
+        stage.segment_index = s;
+        stages.push(stage);
+    }
+    return stages;
+}
+
 void draw(picture pic = currentpicture,
           OpticalSystem sys,
           path object,
@@ -7491,31 +7489,7 @@ void draw(picture pic = currentpicture,
     Trace[] traces;
     for (Ray r : rays) traces.push(sys.trace(r, far = far));
 
-    // Resolve true optical stages (skipping internal glass propagation)
-    int num_segs = traces[0].segments().length;
-    pair[] stage_tips, stageBases;
-    bool[] stage_is_real;
-    int[] stage_seg_idx;
-
-    for (int s = 1; s < num_segs; ++s) {
-        Segment seg0 = traces[0].segments()[s];
-        Segment seg1 = traces[1].segments()[s];
-        if (seg0.before.medium != sys.ambient && s < num_segs - 1) continue; // Skip glass
-
-        pair tip = lineIntersection(seg0.a, seg0.before.d, seg1.a, seg1.before.d);
-        if (abs(tip.x) == infinity || abs(tip.y) == infinity) continue;
-
-        bool is_real = (dot(tip - seg0.a, seg0.before.d) > config.geometry.eps);
-        int ax_idx = min(s, axis_segs.length - 1);
-        pair ax_p1 = axis_segs[ax_idx].a;
-        pair ax_d = unitOr(axis_segs[ax_idx].b - ax_p1, axis_segs[ax_idx].before.d);
-        pair base = ax_p1 + dot(tip - ax_p1, ax_d) * ax_d;
-
-        stage_tips.push(tip);
-        stageBases.push(base);
-        stage_is_real.push(is_real);
-        stage_seg_idx.push(s);
-    }
+    ImageStage[] stages = findImageStages(sys, traces, axis_segs);
 
     // Render Axis, Rays, Extensions & Arrows
     // Render Folded Optical Axis (with clean start and end bounds)
@@ -7531,25 +7505,25 @@ void draw(picture pic = currentpicture,
              p = p_ray,
              arrows = RayArrows(first = true, middle = false, last = true));
 
-    for (int k = 0; k < stage_tips.length; ++k) {
-        if (!stage_is_real[k]) {
-            int s_idx = stage_seg_idx[k];
+    for (int k = 0; k < stages.length; ++k) {
+        if (!stages[k].is_real) {
+            int s_idx = stages[k].segment_index;
             for (Trace t : traces)
-                if (s_idx < t.segments().length) draw(pic, t.segments()[s_idx].a -- stage_tips[k], p_virtual);
+                if (s_idx < t.segments().length) draw(pic, t.segments()[s_idx].a -- stages[k].tip, p_virtual);
         }
     }
 
     draw(pic, obj_base -- obj_tip, p_object, EndArrow(DefaultHead, size = arrow_size, filltype = Draw));
 
-    for (int k = 0; k < stage_tips.length; ++k) {
-        if (!intermediate && k < stage_tips.length - 1) continue;
-        real h_img = length(stage_tips[k] - stageBases[k]);
+    for (int k = 0; k < stages.length; ++k) {
+        if (!intermediate && k < stages.length - 1) continue;
+        real h_img = length(stages[k].tip - stages[k].base);
         if (h_img < config.math.eps) continue;
         real eff_arrow = scale_arrows ? (h_img / h_obj) * arrow_size : arrow_size;
-        pen pen_arr = (k == stage_tips.length - 1) ? p_image : (0.7 * p_image + 0.3 * white);
-        if (!stage_is_real[k]) pen_arr = pen_arr + dashed;
+        pen pen_arr = (k == stages.length - 1) ? p_image : (0.7 * p_image + 0.3 * white);
+        if (!stages[k].is_real) pen_arr = pen_arr + dashed;
         draw(pic,
-             stageBases[k] -- stage_tips[k],
+             stages[k].base -- stages[k].tip,
              pen_arr,
              EndArrow(DefaultHead, size = eff_arrow, filltype = Draw));
     }
