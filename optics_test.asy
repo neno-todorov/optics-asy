@@ -192,7 +192,7 @@ real g_grin = 0.1;
 indexProfile grin_prof = new real(pair p, real lambda) { return n0_grin * (1.0 - 0.5 * g_grin ^ 2 * p.y ^ 2); };
 gradientProfile grin_grad = new pair(pair p, real lambda) { return (0.0, -n0_grin * g_grin ^ 2 * p.y); };
 Medium grin_medium = medium("Parabolic GRIN").add(grin(grin_prof, grin_grad));
-Element grin_box = interface(box((0.0, -20.0), (70.0, 20.0)), grin_medium, Materials.VACUUM);
+Element grin_box = refractiveElement(box((0.0, -20.0), (70.0, 20.0)), grin_medium, Materials.VACUUM);
 OpticalSystem sys_g_r_i_n = system(grin_box, Materials.VACUUM);
 
 real y0_grin = 1.0;
@@ -328,7 +328,7 @@ write("");
 // ============================================================================
 write("Test Case 10: Malus's Law via Dichroic Absorption");
 Element malus_polarizer =
-    interface(box((0.0, -10.0), (10.0, 10.0)), medium("Malus Pol").add(dichroic(0.0, 100.0)), Materials.VACUUM);
+    refractiveElement(box((0.0, -10.0), (10.0, 10.0)), medium("Malus Pol").add(dichroic(0.0, 100.0)), Materials.VACUUM);
 OpticalSystem malus_sys = system(malus_polarizer, Materials.VACUUM);
 
 real theta_pol_deg = 30.0;
@@ -372,7 +372,7 @@ real d1 = 10.0, d2 = 20.0, far_reach = 45.0;
 real n_glass_abs = 1.5;
 real alpha_glass = 0.1 / geometryToUm(d2);
 Medium absorbing_glass = medium("Absorbing Glass", n_glass_abs, alpha = alpha_glass);
-Element glass_block = interface(box((d1, -10.0), (d1 + d2, 10.0)), absorbing_glass, Materials.VACUUM);
+Element glass_block = refractiveElement(box((d1, -10.0), (d1 + d2, 10.0)), absorbing_glass, Materials.VACUUM);
 OpticalSystem multi_sys = system(glass_block, Materials.VACUUM);
 
 Ray ray_multi = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
@@ -524,7 +524,7 @@ real d_slab = 20.0;
 real far_exit = 40.0;
 
 Medium active_medium = medium("Amplifying Gas", 1.0).add(gain(g_amp));
-Element gain_slab = interface(box((d_entry, -10.0), (d_entry + d_slab, 10.0)), active_medium, Materials.VACUUM);
+Element gain_slab = refractiveElement(box((d_entry, -10.0), (d_entry + d_slab, 10.0)), active_medium, Materials.VACUUM);
 OpticalSystem amp_sys = system(gain_slab, Materials.VACUUM);
 
 Ray ray_amp = Ray(p = (0.0, 0.0), d = (1.0, 0.0), medium = Materials.VACUUM);
@@ -550,7 +550,7 @@ real theta_B_deg = degrees(atan(n_glass_br / n_air));
 real theta_B_rad = radians(theta_B_deg);
 
 Medium glass_brewster = medium("Brewster Glass", n_glass_br);
-Element brewster_window = interface(box((0.0, -20.0), (10.0, 20.0)), glass_brewster, Materials.VACUUM);
+Element brewster_window = refractiveElement(box((0.0, -20.0), (10.0, 20.0)), glass_brewster, Materials.VACUUM);
 OpticalSystem brewster_sys = system(brewster_window, Materials.VACUUM);
 
 Ray ray_p = Ray(p = (-10.0 * cos(theta_B_rad), -10.0 * sin(theta_B_rad)),
@@ -598,6 +598,10 @@ Element thick_lens = Lens.biconvex(center = (center_x, 0.0),
                                    diameter = 30.0,
                                    glass = bk7_thick,
                                    ambient = Materials.VACUUM);
+assert_bool("Thick lens exposes front and back interfaces",
+            thick_lens.interfaceCount() == 2 && thick_lens.front().name == "Biconvex Lens Front" &&
+                thick_lens.back().name == "Biconvex Lens Back",
+            true);
 OpticalSystem thick_sys = system(thick_lens, Materials.VACUUM);
 
 real y_paraxial = 1.0;
@@ -624,7 +628,7 @@ write("Test Case 21: Nested Spatial Containment (Glass Lens in Water Tank)");
 Medium water = medium("Water", 1.333333);
 Medium glass_in_water = medium("Glass", 1.50);
 
-Element water_tank = interface(box((0.0, -40.0), (200.0, 40.0)), water, Materials.VACUUM);
+Element water_tank = refractiveElement(box((0.0, -40.0), (200.0, 40.0)), water, Materials.VACUUM);
 Element lens_inside = Lens.biconvex(center = (100.0, 0.0),
                                     angle = 0.0,
                                     R1 = 50.0,
@@ -800,7 +804,7 @@ indexProfile gp = new real(pair p, real lambda) { return n0_g * (1.0 - 0.5 * g_g
 gradientProfile gg = new pair(pair p, real lambda) { return (0.0, -n0_g * g_g ^ 2 * p.y); };
 
 Medium grin_med = medium("Parabolic GRIN").add(grin(gp, gg));
-Element grin_slab = interface(box((0.0, -10.0), (50.0, 10.0)), grin_med, Materials.VACUUM);
+Element grin_slab = refractiveElement(box((0.0, -10.0), (50.0, 10.0)), grin_med, Materials.VACUUM);
 OpticalSystem sys_grin_compare = system(grin_slab, Materials.VACUUM);
 
 real y0_test = 0.2;
@@ -837,9 +841,9 @@ assert_bool("Parallel line intersection is infinite", abs(parallel_intersection.
 write("");
 
 // ============================================================================
-// Test Case 30: Ordered Custom Surface Properties
+// Test Case 30: Ordered Custom Interface Properties
 // ============================================================================
-write("Test Case 30: Ordered Custom Surface Properties");
+write("Test Case 30: Ordered Custom Interface Properties");
 Property half_power = property(
     "Half power coating",
     new Ray[](Ray r, Hit h, mediumResolver resolve) {
@@ -848,9 +852,9 @@ Property half_power = property(
     },
     PropertyStage.AfterBoundary);
 path test_boundary = linearBoundary((0, 0), (1, 0), 20);
-Element bare_interface = interface(test_boundary, medium("test glass", 1.5));
-Element coated_interface = interface(test_boundary, medium("test glass", 1.5));
-coated_interface.surfaces[0].add(half_power);
+Element bare_interface = refractiveElement(test_boundary, medium("test glass", 1.5));
+Element coated_interface = refractiveElement(test_boundary, medium("test glass", 1.5));
+coated_interface.front().add(half_power);
 Ray coating_probe = Ray.angle((-5, 0), 10, Materials.VACUUM);
 real bare_power = system(bare_interface).trace(coating_probe).transmitted(0).intensity();
 real coated_power = system(coated_interface).trace(coating_probe).transmitted(0).intensity();
@@ -1080,7 +1084,7 @@ pair b_right = (L / 2.0, H_base);
 path prism_path = b_left -- b_right -- apex -- cycle;
 
 Medium glass15 = medium("Glass 1.5", 1.50);
-Element prism = interface(prism_path, glass15, Materials.VACUUM);
+Element prism = refractiveElement(prism_path, glass15, Materials.VACUUM);
 OpticalSystem prism_sys = system(prism, Materials.VACUUM);
 
 real theta_i = degrees(asin(1.5 * sin(radians(30.0))));
@@ -1109,7 +1113,7 @@ write("");
 // ============================================================================
 write("Test Case 39: TIR Optical Waveguide / Light Pipe");
 path core_path = box((0, -5), (100, 5));
-Element guide = interface(core_path, medium("Core", 1.50), Materials.VACUUM);
+Element guide = refractiveElement(core_path, medium("Core", 1.50), Materials.VACUUM);
 OpticalSystem guide_sys = system(guide, Materials.VACUUM);
 
 Ray r_guide = Ray(p = (0.01, 0), d = (cos(radians(25.0)), sin(radians(25.0))), medium = medium("Core", 1.50));
@@ -1142,7 +1146,7 @@ Medium glass_br_41 = medium("Glass", 1.50);
 real theta_B_deg_41 = degrees(atan(1.50 / 1.0));
 
 path boundary_plane = (0, -50) -- (0, 50);
-Element iface = interface(boundary_plane, Materials.VACUUM, glass_br_41);
+Element iface = refractiveElement(boundary_plane, Materials.VACUUM, glass_br_41);
 OpticalSystem br_sys = system(iface, Materials.VACUUM);
 
 Ray r_unpol = Ray.toPoint(target = (0, 0),
@@ -1173,7 +1177,7 @@ write("");
 // ============================================================================
 write("Test Case 42: Porro Prism Double-TIR Retroreflector");
 path porro_path = (0, -20) -- (20, 0) -- (0, 20) -- cycle;
-Element porro = interface(porro_path, medium("Glass", 1.50), Materials.VACUUM);
+Element porro = refractiveElement(porro_path, medium("Glass", 1.50), Materials.VACUUM);
 OpticalSystem porro_sys = system(porro, Materials.VACUUM);
 
 Ray r_porro = Ray(p = (-10, 8.0), d = (1, 0), medium = Materials.VACUUM);
@@ -1644,7 +1648,7 @@ real L = 50.0;
 real w = 2.0 * tan(radians(theta));
 real h = 2.0;
 path rhomb_path = (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle;
-Element rhomb = interface(rhomb_path, glass_rhomb);
+Element rhomb = refractiveElement(rhomb_path, glass_rhomb);
 OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 // Launch linear 45-deg ray: S = (1, 0, 1, 0)
 Ray r_in = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.linear(45.0, 1.0));
@@ -1669,7 +1673,7 @@ real u = Tan(22.5);
 real A_c = 1.0 + u * u, B_c = 1.0 + 1.0 / (n_bk7 * n_bk7), C_c = 1.0 / (n_bk7 * n_bk7);
 real theta = aSin(sqrt((B_c + sqrt(B_c * B_c - 4.0 * A_c * C_c)) / (2.0 * A_c)));
 real L = 50.0, w = 2.0 * tan(radians(theta)), h = 2.0;
-Element rhomb = interface(
+Element rhomb = refractiveElement(
     (0, 0) -- (w * L, h * L) -- (w * L, h * L + L) -- (0, L) -- cycle, glass_rhomb_unpol);
 OpticalSystem rhomb_sys = system(rhomb, Materials.VACUUM);
 Ray r_unpol_rhomb = Ray(p = (-20, L / 1.2), d = (1, 0), pol = Polarization.unpolarized(1.0));
@@ -1779,7 +1783,7 @@ Medium m_air = medium("Air", n_air);
 Medium m_glass = medium("BK7", n_glass);
 
 path boundary_plane = (0, -50) -- (0, 50);
-Element iface = interface(boundary_plane, m_air, m_glass);
+Element iface = refractiveElement(boundary_plane, m_air, m_glass);
 OpticalSystem sys = system(iface, Materials.VACUUM);
 
 real theta_B_deg = degrees(atan(n_glass / n_air)); // ~56.6 deg
@@ -1940,7 +1944,7 @@ assert_near("Absorbed elliptical state keeps DoP = 1",
 assert_near("Absorbed elliptical state keeps azimuth", rg_ellOut.psi(), rg_ell.psi(), 1e-9);
 
 // Through the tracer: linearly polarized ray across an absorbing, index-matched slab
-Element rg_absSlab = interface(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
+Element rg_absSlab = refractiveElement(box((10, -10), (20, 10)), rg_absMed, Materials.VACUUM);
 Ray rg_absEnd = system(rg_absSlab).trace(Ray((0, 0), (1, 0), pol = Polarization.linear(30.0, 1.0)), far = 20).last();
 real rg_slab_distance = 10.0;
 real rg_k_slab = rg_alpha * (633.0 * nm_to_um) / (4.0 * pi);
@@ -2031,7 +2035,7 @@ write("");
 // ============================================================================
 write("Test Case 70: Interface energy balance after bulk absorption");
 Medium rg_absGlass = medium("rg abs glass", 1.5, alpha = 2.0 / geometryToUm(10.0));
-Trace rg_tAbs = system(interface(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
+Trace rg_tAbs = system(refractiveElement(box((0, -10), (10, 10)), rg_absGlass, Materials.VACUUM)).trace(Ray((-5, 0), (1, 0)));
 Interaction rg_exitIx = rg_tAbs.interaction(1);
 assert_near("Exit-face R + T = 1", rg_exitIx.R + rg_exitIx.T, 1.0, 1e-9);
 assert_near("Exit-face R matches normal-incidence Fresnel", rg_exitIx.R, (0.5 / 2.5) ^ 2, 1e-9);
@@ -2052,7 +2056,7 @@ indexProfile rg_gp = new real(pair p, real lambda) { return 1.5 * (1 - 0.5 * 0.0
 gradientProfile rg_gg = new pair(pair p, real lambda) { return (0, -1.5 * 0.01 * p.y); };
 Medium rg_gm = medium("rg absorbing GRIN").add(grin(rg_gp, rg_gg)).add(absorption(0.05 * 9.5 / geometryToUm(9.5)));
 Trace rg_tg =
-    system(interface(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
+    system(refractiveElement(box((0, -20), (10, 20)), rg_gm, Materials.VACUUM)).trace(Ray((0.5, 1), (1, 0), rg_gm), far = 30);
 real rg_arc = arclength(rg_tg.segments()[0].traj);
 Interaction rg_gix = rg_tg.interaction(0);
 assert_true("GRIN trajectory is curved (arc length > 9.5)", rg_arc > 9.5);
@@ -2073,7 +2077,7 @@ write("");
 // ============================================================================
 write("Test Case 72: Mirror polarization handedness");
 Trace rg_tm = system(Mirror.flat((10, 0), 180, 10)).trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
-Trace rg_tdi = system(interface((10, -10) -- (10, 10), Materials.VACUUM, medium("g", 1.5)))
+Trace rg_tdi = system(refractiveElement((10, -10) -- (10, 10), Materials.VACUUM, medium("g", 1.5)))
                           .trace(Ray((0, 0), (1, 0), pol = Polarization.circular()));
 assert_near("Mirror: RCP -> LCP (S3 = -1)", rg_tm.reflected(0).pol.S3, -1.0, 1e-9);
 assert_near("Mirror agrees with dielectric normal-incidence handedness flip",
@@ -2197,7 +2201,7 @@ write("");
 // stays fully polarized and Stokes power is conserved across the interface
 // ============================================================================
 write("Test Case 77: Fresnel Mueller transmission/reflection invariants");
-Element rg_iface = interface((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
+Element rg_iface = refractiveElement((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
 real[] rg_incs = {0.0, 20.0, 50.0, 70.0, 85.0};
 for (real th : rg_incs) {
     Polarization rg_pin = Polarization.fromAngles(30.0, 12.0, 1.0);
@@ -2244,7 +2248,7 @@ write("Test Case 79: GRIN boundary detection with tiny fixed steps");
 indexProfile rg_lin = new real(pair p, real lambda) { return 1.5 + 0.01 * p.y; };
 gradientProfile rg_linG = new pair(pair p, real lambda) { return (0, 0.01); };
 Medium rg_gl = medium("rg linear GRIN").add(grin(rg_lin, rg_linG));
-OpticalSystem rg_thinGrin = system(interface(box((0, -1), (0.02, 1)), rg_gl, Materials.VACUUM));
+OpticalSystem rg_thinGrin = system(refractiveElement(box((0, -1), (0.02, 1)), rg_gl, Materials.VACUUM));
 config.physics.grin_solver = GRINSolverType.RK4;
 Trace rg_tTiny = rg_thinGrin.trace(Ray((0.01, 0), (1, 0), rg_gl), ds = 5e-5, far = 1.0);
 config.physics.grin_solver = GRINSolverType.RK45;
@@ -2262,7 +2266,7 @@ Medium rg_axial = medium("rg axial")
                       .add(grin(
                           new real(pair p, real lambda) { return 1.0 + p.x; },
                           new pair(pair p, real lambda) { return (1.0, 0.0); }));
-Trace rg_tAx = system(interface(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
+Trace rg_tAx = system(refractiveElement(box((-1, -1), (0.73, 1)), rg_axial, Materials.VACUUM))
                    .trace(Ray((0, 0), (1, 0), rg_axial), ds = 0.05);
 assert_near("OPL = integral_0^0.73 (1 + x) dx",
             rg_tAx.interaction(0).incident.opl,
@@ -2301,7 +2305,7 @@ Medium rg_bk7 = medium("rg BK7").add(
     sellmeier(new real[]{1.03961212, 0.231792344, 1.01046945}, new real[]{0.00600069867, 0.0200179144, 103.560653}));
 assert_near("Sellmeier BK7 n_d (587.56 nm)", rg_bk7.n(lambda = 587.5618), 1.51680, 1e-4);
 assert_true("Normal dispersion: n_F(486.1) > n_C(656.3)", rg_bk7.n(lambda = 486.1) > rg_bk7.n(lambda = 656.3));
-Trace rg_tS = system(interface(box((0, -10), (10, 10)), rg_bk7, Materials.VACUUM)).trace(Ray((-5, 0), dir(10)));
+Trace rg_tS = system(refractiveElement(box((0, -10), (10, 10)), rg_bk7, Materials.VACUUM)).trace(Ray((-5, 0), dir(10)));
 assert_near("Ray in homogeneous Sellmeier glass is a single straight segment", length(rg_tS.segments()[1].traj), 1.0);
 write("");
 
@@ -2326,9 +2330,9 @@ write("");
 // Test Case 84 (Regression): Hit.entering reports entry into closed elements
 // ============================================================================
 write("Test Case 84: Hit.entering orientation");
-Element rg_box = interface(box((0, -5), (10, 5)), medium("g", 1.5));
-Hit rg_hIn = rg_box.surfaces[0].intersect(Ray((-5, 0), (1, 0)));
-Hit rg_hOut = rg_box.surfaces[0].intersect(Ray((5, 0), (1, 0)));
+Element rg_box = refractiveElement(box((0, -5), (10, 5)), medium("g", 1.5));
+Hit rg_hIn = rg_box.front().intersect(Ray((-5, 0), (1, 0)));
+Hit rg_hOut = rg_box.front().intersect(Ray((5, 0), (1, 0)));
 assert_bool("Ray from outside is entering", rg_hIn.entering, true);
 assert_bool("Ray from inside is exiting", rg_hOut.entering, false);
 write("");
@@ -2337,8 +2341,8 @@ write("");
 // Test Case 85 (Regression): copy(Surface) keeps the precomputed inverse
 // ============================================================================
 write("Test Case 85: Surface copy keeps inverse transform");
-Element rg_shifted = shift(30, 7) * rotate(25) * interface(box((0, -5), (10, 5)), medium("g", 1.5));
-Surface rg_flat = rg_shifted.flatten()[0];
+Element rg_shifted = shift(30, 7) * rotate(25) * refractiveElement(box((0, -5), (10, 5)), medium("g", 1.5));
+Surface rg_flat = rg_shifted.flatten()[0].surface;
 Surface rg_flatCopy = copy(rg_flat);
 Ray rg_probe = Ray((0, 7), (1, 0));
 assert_near_pair("Copied surface gives the same hit point",
@@ -2352,7 +2356,7 @@ write("");
 // Test Case 86 (Regression): beam factories inherit the medium at the source
 // ============================================================================
 write("Test Case 86: Beam rays resolve their starting medium");
-OpticalSystem rg_inGlass = system(interface(box((-10, -10), (10, 10)), medium("g", 1.5)));
+OpticalSystem rg_inGlass = system(refractiveElement(box((-10, -10), (10, 10)), medium("g", 1.5)));
 Ray[] rg_beam = Beam.parallel((0, -2), (0, 2), 3, (1, 0));
 Trace rg_tb = rg_inGlass.trace(rg_beam[1]);
 assert_near("Beam ray launched inside glass starts in glass", rg_tb.first().medium.n(), 1.5, 1e-12);
@@ -2383,7 +2387,7 @@ mediumResolver rg_resE = new Medium(pair p, Ray r, Medium m1, Medium m2, bool fr
 FresnelResult rg_graze = fresnelIsotropic(Materials.VACUUM, medium("g", 1.5), Ray((-1, 0), dir(89.99)), rg_h, rg_resE);
 assert_true("Grazing incidence: R finite and close to 1", rg_graze.R > 0.99 && rg_graze.R <= 1.0);
 assert_near("Grazing incidence: R + T = 1", rg_graze.R + rg_graze.T, 1.0, 1e-12);
-Trace rg_dark = system(interface(box((0, -5), (10, 5)), medium("g", 1.5)))
+Trace rg_dark = system(refractiveElement(box((0, -5), (10, 5)), medium("g", 1.5)))
                     .trace(Ray((-5, 0), (1, 0), pol = Polarization.unpolarized(0.0)));
 assert_near("Zero-intensity ray spawns no children", rg_dark.length(), 0.0);
 OpticalSystem rg_cavity = system(new Element[]{Mirror.flat((0, 0), 0, 10), Mirror.flat((10, 0), 180, 10)});
@@ -2724,7 +2728,7 @@ Polarization p_polarized = Polarization.stokes(1.0, -1.0, 0.0, 0.0);
 pair launch_dir = dir(th_B_deg);
 pair launch_pt = -5.0 * launch_dir;
 Ray r_brewster = Ray(p = launch_pt, d = launch_dir, medium = Materials.VACUUM, pol = p_polarized);
-Element brewster_surface = interface(linearBoundary((0, 0), (0, 1), 20), glass_brewster, Materials.VACUUM);
+Element brewster_surface = refractiveElement(linearBoundary((0, 0), (0, 1), 20), glass_brewster, Materials.VACUUM);
 Trace t_brewster = system(brewster_surface).trace(r_brewster);
 // Transmitted ray must carry 100% of incident power (zero reflection)
 Ray trans_B = t_brewster.transmitted(0);
@@ -3127,9 +3131,9 @@ assert_bool("String cast AU symbol", cast_au_sym.name == "gold", true);
 Element l_pcx = Lens.planoConvex((0, 0), 0.0, 50.0, 5.0, 30.0, Materials.BK7);
 Element l_pcc = Lens.planoConcave((0, 0), 0.0, 50.0, 5.0, 30.0, Materials.BK7);
 Element l_men = Lens.meniscus((0, 0), 0.0, 60.0, 100.0, 5.0, 30.0, Materials.BK7);
-assert_bool("Plano-convex lens has surfaces", l_pcx.surfaces.length > 0, true);
-assert_bool("Plano-concave lens has surfaces", l_pcc.surfaces.length > 0, true);
-assert_bool("Meniscus lens has surfaces", l_men.surfaces.length > 0, true);
+assert_bool("Plano-convex lens has interfaces", l_pcx.interfaceCount() > 0, true);
+assert_bool("Plano-concave lens has interfaces", l_pcc.interfaceCount() > 0, true);
+assert_bool("Meniscus lens has interfaces", l_men.interfaceCount() > 0, true);
 
 // 3. Parabolic mirror: exact geometric focus without spherical aberration
 Element pm = Mirror.parabolic((50, 0), 180.0, 50.0, 40.0);
@@ -3219,7 +3223,7 @@ assert_near("m_bk7 bulk absorption is zero", m_bk7.absorption(lambda = 633.0), 0
 // 4. Skin-depth attenuation inside metal via trace
 // Light entering gold at normal incidence: Rs ~ 0.9282, T ~ 0.07176
 // Inside gold, it decays with skin depth delta = 1/alpha = lambda / (4*pi*kappa) ~ 0.0163 um
-Element gold_block = interface(box((10, -10), (10.05, 10)), m_gold, Materials.VACUUM);
+Element gold_block = refractiveElement(box((10, -10), (10.05, 10)), m_gold, Materials.VACUUM);
 Trace tr_gold = system(gold_block).trace(Ray((0, 0), (1, 0), lambda = 633.0), far = 20);
 // The ray inside gold penetrates 0.05 um (~3 skin depths) to the back interface
 Ray r_inside_gold = tr_gold.ray_tree[1];
@@ -3283,7 +3287,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 
     Medium glass15 = medium("TestGlass15", 1.5);
     // Open line (0,-5)--(0,5) has normal (+1,0): left = VACUUM, right = glass15
-    OpticalSystem sys_if = system(interface((0, -5) -- (0, 5), Materials.VACUUM, glass15), Materials.VACUUM);
+    OpticalSystem sys_if = system(refractiveElement((0, -5) -- (0, 5), Materials.VACUUM, glass15), Materials.VACUUM);
 
     Ray r_s = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(0.0));
     Ray r_p = Ray((-1, 0), (1, 0), Materials.VACUUM, pol = Polarization.linear(90.0));
@@ -3297,7 +3301,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     assert_near("Normal reflection pure-p phase = 0", ref_p.phase, 0.0, 1e-6);
 
     // Pure-p TIR phase differs from pure-s TIR phase (left = glass15, right = VACUUM)
-    OpticalSystem sys_tir = system(interface((0, -10) -- (0, 10), glass15, Materials.VACUUM), glass15);
+    OpticalSystem sys_tir = system(refractiveElement((0, -10) -- (0, 10), glass15, Materials.VACUUM), glass15);
     Ray tir_s = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(0.0))).reflected(0);
     Ray tir_p = sys_tir.trace(Ray.angle((-1, 0), 45.0, glass15, pol = Polarization.linear(90.0))).reflected(0);
     assert_near("TIR s reflection alive", (tir_s != null) ? 1.0 : 0.0, 1.0, 1e-9);
@@ -3323,7 +3327,7 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     config.physics.min_intensity = 1e-3;
 
     // 4a. 0-layer ThinFilmStack matches bare Interface at 35 deg (AIR -> BK7)
-    Element bare_if = interface((0, -10) -- (0, 10), Materials.AIR, Materials.BK7);
+    Element bare_if = refractiveElement((0, -10) -- (0, 10), Materials.AIR, Materials.BK7);
     Element tf0_if =
         element((0, -10) -- (0, 10),
                                      properties(thinFilmStack(new ThinFilmLayer[]{}, Materials.AIR, Materials.BK7)),
@@ -3378,8 +3382,8 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 {
     path big_2node = (-6, 0) .. controls(-3, 8) and
                      (3, 8) .. (6, 0) .. controls(3, -8) and (-3, -8) .. cycle;
-    Element outer_2node = interface(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
-    Element inner_box = interface(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
+    Element outer_2node = refractiveElement(big_2node, medium("Outer14", 1.4), Materials.AIR, name = "Big2Node");
+    Element inner_box = refractiveElement(box((-1, -1), (1, 1)), medium("Inner17", 1.7), outer_2node.medium, name = "SmallBox");
     OpticalSystem nested_sys = system(outer_2node, inner_box);
     // Ray starting inside SmallBox must resolve Inner17 (1.7), not Outer14 (1.4)
     Trace t_nest = nested_sys.trace(Ray((0, 0), (1, 0), lambda = 633.0));
@@ -3625,18 +3629,91 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
                 Materials.WATER.n(),
                 1e-9);
 
-    Surface direct_surface = new Surface;
-    direct_surface.name = "Direct surface";
-    direct_surface.p = (0, -5) -- (0, 5);
-    direct_surface.axis = (1, 0);
-    direct_surface.add(reflect());
-    OpticalSystem direct_surface_system = system(direct_surface);
-    assert_true("system(Surface) wraps the surface",
-                direct_surface_system.elements.length == 1 && direct_surface_system.elements[0].surfaces.length == 1);
-    assert_true("OpticalSystem.add(Surface) traces the surface",
-                direct_surface_system.trace(Ray((-5, 0), (1, 0)), far = 10).segments().length == 2);
-    assert_true("Element.surface supports negative indices",
-                direct_surface_system.elements[0].surface(-1).name == "Direct surface");
+    Surface direct_geometry = Surface.line((0, -5), (0, 5));
+    Interface direct_interface = Interface(direct_geometry, props = properties(reflect()), name = "Direct interface");
+    Interface path_interface = Interface((1, -5) -- (1, 5), props = properties(reflect()), name = "Path interface");
+    Interface factory_interface = interface((2, -5) -- (2, 5), props = properties(reflect()), name = "Factory interface");
+    OpticalSystem direct_interface_system = system(direct_interface);
+    assert_true("system(Interface) wraps the interface",
+                direct_interface_system.elements.length == 1 && direct_interface_system.elements[0].interfaceCount() == 1);
+    assert_true("OpticalSystem.add(Interface) traces the interface",
+                direct_interface_system.trace(Ray((-5, 0), (1, 0)), far = 10).segments().length == 2);
+    assert_true("Element.interface supports negative indices",
+                direct_interface_system.elements[0].interface(-1).name == "Direct interface");
+    assert_true("Interface(path) infers geometry metadata",
+                path_interface.surface.center == (1, 0) && abs(path_interface.surface.axis.x) == 1);
+    assert_true("interface(path) constructs a physical interface",
+                factory_interface.surface.center == (2, 0) && factory_interface.props.length == 1);
+    Interface replaceable_interface = Interface(direct_geometry,
+                                                props = properties(refract(Materials.AIR, Materials.AIR), half_power));
+    replaceable_interface.setInteraction(reflect());
+    assert_true("setInteraction replaces boundary physics and keeps later-stage actions",
+                replaceable_interface.props.length == 2 &&
+                replaceable_interface.props[0].name == "Reflect" &&
+                replaceable_interface.props[1].name == "Half power coating");
+
+    Medium side_glass = medium("InterfaceSideGlass", 1.5);
+    Interface refracting_interface = Interface(Surface.planar((0, 0), (1, 0), 10),
+                                               m_pos = Materials.AIR,
+                                               m_neg = side_glass,
+                                               props = properties(refract(side_glass, Materials.AIR)),
+                                               name = "Side media interface");
+    Trace side_trace = system(Materials.AIR, refracting_interface).trace(Ray((-5, 0), (1, 0), side_glass), far = 10);
+    assert_true("Interface side media select transmitted medium",
+                side_trace.interaction(0).transmitted.length == 1 &&
+                side_trace.interaction(0).transmitted[0].medium == Materials.AIR);
+
+    Surface reversed_geometry = Surface(reverse(Surface.planar((0, 0), (1, 0), 10).p),
+                                        center = (0, 0), axis = (-1, 0));
+    Interface reversed_interface = Interface(reversed_geometry,
+                                            m_pos = side_glass,
+                                            m_neg = Materials.AIR,
+                                            props = properties(refract(side_glass, Materials.AIR)));
+    Trace reversed_trace = system(Materials.AIR, reversed_interface)
+                               .trace(Ray((-5, 0), (1, 0), side_glass), far = 10);
+    assert_true("Reversing interface path reverses side labels",
+                reversed_trace.interaction(0).transmitted[0].medium == Materials.AIR);
+
+    Surface rotated_geometry = Surface(Surface.planar((0, 0), (1, 0), 10).p,
+                                       center = (0, 0), axis = (1, 0), T = rotate(90));
+    Interface rotated_interface = Interface(rotated_geometry,
+                                            m_pos = Materials.AIR,
+                                            m_neg = side_glass,
+                                            props = properties(refract(side_glass, Materials.AIR)));
+    Trace rotated_side_trace = system(Materials.AIR, rotated_interface)
+                                   .trace(Ray((0, -5), (0, 1), side_glass), far = 10);
+    assert_true("Transformed interface preserves its positive-side medium",
+                rotated_side_trace.interaction(0).transmitted[0].medium == Materials.AIR);
+
+    Element composite_aperture = aperture((0, 0), 10, 2);
+    assert_true("Composite elements expose child interfaces",
+                composite_aperture.interfaceCount() == 2 &&
+                composite_aperture.interface(1).name == "Aperture bottom");
+    assert_true("Named face lookup finds child interfaces",
+                composite_aperture.interfaceNamed("bottom").name == "Aperture bottom");
+    composite_aperture.interfaceNamed("bottom").setInteraction(reflect());
+    assert_true("Named child interface access is mutable",
+                composite_aperture.interface(-1).props[0].name == "Reflect");
+    Element named_cube = BeamSplitter.cube((0, 0), 0, 10);
+    assert_true("Named face lookup finds cube coating",
+                named_cube.interfaceNamed("Coating").name == "Cube Beam Splitter Coating");
+
+    Interface mutable_interface = Interface(Surface.planar((0, 0), (1, 0), 10),
+                                             m_pos = side_glass,
+                                             m_neg = side_glass,
+                                             props = properties(refract(side_glass, side_glass)));
+    OpticalSystem mutable_interface_system = system(Materials.AIR, mutable_interface);
+    Trace cached_side_trace = mutable_interface_system.trace(Ray((-5, 0), (1, 0), side_glass), far = 10);
+    assert_true("Interface initially resolves its positive-side medium",
+                cached_side_trace.interaction(0).transmitted[0].medium == side_glass);
+    mutable_interface.setMedia(Materials.AIR, side_glass);
+    Trace updated_side_trace = mutable_interface_system.trace(Ray((-5, 0), (1, 0), side_glass), far = 10);
+    assert_true("Changing interface media refreshes cached trace data",
+                updated_side_trace.interaction(0).transmitted[0].medium == Materials.AIR);
+    mutable_interface.m_pos = side_glass;
+    Trace direct_side_trace = mutable_interface_system.trace(Ray((-5, 0), (1, 0), side_glass), far = 10);
+    assert_true("Direct interface media changes refresh cached trace data",
+                direct_side_trace.interaction(0).transmitted[0].medium == side_glass);
 
     real old_asz = config.rendering.arrow_size;
     config.rendering.arrow_size = 9pt;
@@ -3645,13 +3722,16 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
 
     Medium m15 = medium("Glass15", 1.5);
     Element itl = Lens.idealThick((0, 0), 0, 20.0, -20.0, 4.0, 16.0, m15);
+    assert_true("Lens.idealThick exposes its face interfaces",
+                itl.interfaceCount() == 2 && itl.front().name == "Ideal Thick Lens Front" &&
+                itl.back().name == "Ideal Thick Lens Back");
     CardinalPoints cp_it = cardinalPoints(system(itl, Materials.AIR), paraxial_h = 1e-3);
     real n_a = Materials.AIR.n();
     real phi1 = (1.5 - n_a) / 20.0, phi2 = (n_a - 1.5) / (-20.0);
     real phi_tot = phi1 + phi2 - (4.0 / 1.5) * phi1 * phi2;
     assert_near("Lens.idealThick cardinalPoints f2 matches Lensmaker", cp_it.f2, n_a / phi_tot, 1e-5);
 
-    Trace t_mk = system(interface((0, -5) -- (0, 5), Materials.AIR, m15)).trace(Ray.angle((-2, 0), 20.0));
+    Trace t_mk = system(refractiveElement((0, -5) -- (0, 5), Materials.AIR, m15)).trace(Ray.angle((-2, 0), 20.0));
     picture p_mk;
     real ang_mk = markAcute(p_mk, "", 1, 10, t_mk, 0, Ray.Incident);
     assert_near("markAcute(Trace, ...) returns 20 deg", ang_mk, 20.0, 1e-5);

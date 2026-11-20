@@ -1799,7 +1799,7 @@ typedef Medium
 mediumResolver(pair, Ray, Medium, Medium, bool);
 typedef Ray[] rayGenerator(Ray r, Hit h, mediumResolver resolve);
 typedef pair propertyAlignFunc(pair in_dir, pair target_dir, real lambda, int order_index);
-// Surface properties run in stage, priority, and declaration order.
+// Interface properties run in stage, priority, and declaration order.
 // Create custom properties with property(name, action, stage, priority, align).
 struct PropertyStage {
     static int BeforeBoundary = 0;
@@ -2047,7 +2047,7 @@ pair phaseGradientNormal(Ray r, Hit h) {
     return dot(r.d, N) > 0 ? -N : N;
 }
 
-// Generic factory for custom surface properties
+// Generic factory for custom interface properties
 Property property(string name,
                   rayGenerator action,
                   int stage = PropertyStage.Interact,
@@ -2083,17 +2083,194 @@ Property ordered(Property src, int stage = PropertyStage.Interact, int priority 
 
 Property[] properties( ... Property[] props) { return props; }
 
-// Surface Boundary & Physics Struct
+private Property[]
+sortProperties(Property[] props) {
+    Property[] sorted;
+    for (Property prop : props) {
+        if (prop == null) continue;
+        sorted.push(prop);
+        int j = sorted.length - 2;
+        while (j >= 0 && (sorted[j].stage > prop.stage ||
+                          (sorted[j].stage == prop.stage && sorted[j].priority > prop.priority))) {
+            sorted[j + 1] = sorted[j];
+            --j;
+        }
+        sorted[j + 1] = prop;
+    }
+    return sorted;
+}
+
+pair boundaryCenter(path boundary) {
+    if (length(boundary) == 0) return (0, 0);
+    if (cyclic(boundary)) return 0.5 * (min(boundary) + max(boundary));
+    return 0.5 * (point(boundary, 0) + point(boundary, length(boundary)));
+}
+
+pair boundaryAxis(path boundary) {
+    if (length(boundary) == 0) return (1, 0);
+    pair chord = point(boundary, length(boundary)) - point(boundary, 0);
+    if (abs(chord) > config.geometry.eps) return perp(chord);
+    pair tangent = dir(boundary, 0);
+    if (abs(tangent) > config.geometry.eps) return perp(tangent);
+    return (1, 0);
+}
+
+// Surface geometry and optical interface are separate so geometry can be
+// reused with different media, properties, and rendering styles.
+private path
+sphericalArc(pair vertex, pair N, real R, real diameter) {
+    if (abs(R) <= config.math.eps || abs(R) == infinity) {
+        pair tangent = (-N.y, N.x);
+        return vertex - 0.5 * diameter * tangent -- vertex + 0.5 * diameter * tangent;
+    }
+    pair C = vertex + R * N;
+    real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
+    real theta = degrees(vertex - C);
+    return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
+}
+
 struct Surface {
-    string name;
-    Property[] props; // Composable Properties
+    // p is local geometry. T maps it into its parent element's coordinates;
+    // the element transform is applied afterward during flattening.
     transform T = identity();
     transform inv_T = identity();
     path p;
-    pen stroke;
-    pen fill = nullpen;
     pair center;
     pair axis;
+
+    void operator init(path p = nullpath, pair center = (0, 0), pair axis = (1, 0), transform T = identity()) {
+        this.p = p;
+        this.center = center;
+        this.axis = unitOr(axis);
+        this.T = T;
+        this.inv_T = inverse(T);
+    }
+
+    static Surface line(pair a, pair b, pair axis = (0, 0)) {
+        pair d = b - a;
+        pair tangent = unitOr(d);
+        pair ax = (axis != (0, 0)) ? unitOr(axis) : (-tangent.y, tangent.x);
+        return Surface(a -- b, center = 0.5 * (a + b), axis = ax);
+    }
+
+    static Surface planar(pair center, pair axis, real diameter) {
+        pair normal = unitOr(axis);
+        pair tangent = (-normal.y, normal.x);
+        return Surface(center - 0.5 * diameter * tangent -- center + 0.5 * diameter * tangent,
+                       center = center, axis = normal);
+    }
+
+    static Surface spherical(pair vertex, pair axis, real R, real diameter) {
+        pair normal = unitOr(axis);
+        return Surface(sphericalArc(vertex, normal, R, diameter), center = vertex, axis = normal);
+    }
+
+    static Surface parabolic(pair vertex, pair axis, real focal_length, real diameter) {
+        real h = diameter / 2.0;
+        int n_points = max(32, 2 * config.geometry.arc_subdivisions);
+        guide g;
+        for (int i = 0; i <= n_points; ++i) {
+            real y = -h + 2.0 * h * i / n_points;
+            real x = sgn(focal_length) * y * y / (4.0 * max(config.math.eps, abs(focal_length)));
+            g = g .. (x, y);
+        }
+        pair normal = unitOr(axis);
+        transform T = shift(vertex) * rotate(degrees(normal));
+        return Surface(T * g, center = vertex, axis = normal);
+    }
+
+    static Surface custom(path p, pair center = (nan, nan), pair axis = (nan, nan)) {
+        pair c = (isnan(center.x) || isnan(center.y)) ? boundaryCenter(p) : center;
+        pair a = (isnan(axis.x) || isnan(axis.y)) ? boundaryAxis(p) : axis;
+        return Surface(p, center = c, axis = a);
+    }
+
+    Hit intersect(Ray r, real max_distance = infinity, bool ignore_origin = false) {
+        Hit h = new Hit;
+        h.valid = false;
+        h.t = infinity;
+        if (length(this.p) == 0) return h;
+        real ray_reach = (max_distance < infinity) ? max_distance : config.physics.far;
+        pair local_p = this.inv_T * r.p;
+        pair local_end = this.inv_T * (r.p + ray_reach * r.d);
+        real[] hits = intersections(this.p, local_p, local_end);
+        real best_time = -1;
+        real best_distance = infinity;
+        for (real u : hits) {
+            pair pt = point(this.p, u);
+            pair global_pt = this.T * pt;
+            pair global_q = global_pt - r.p;
+            real d = length(global_q);
+            if (ignore_origin && d <= config.geometry.self_intersection_factor * config.geometry.eps_intersection) continue;
+            if (d <= max_distance + config.geometry.eps_intersection && d < best_distance &&
+                ((d <= config.geometry.near_intersection_factor * config.geometry.eps_intersection &&
+                  dot(global_q, r.d) >= -config.geometry.eps_intersection) || dot(global_q, r.d) > config.geometry.eps)) {
+                best_distance = d;
+                best_time = u;
+            }
+        }
+        if (best_time < 0) return h;
+        h.valid = true;
+        pair local_hit_pt = point(this.p, best_time);
+        pair local_tangent = dir(this.p, best_time);
+        pair local_normal = (local_tangent.y, -local_tangent.x);
+        h.p = this.T * local_hit_pt;
+        h.tangent = unitOr(this.T * (local_hit_pt + local_tangent) - h.p, local_tangent);
+        pair inv_origin = this.inv_T * (0, 0);
+        pair inv_e1 = this.inv_T * (1, 0) - inv_origin;
+        pair inv_e2 = this.inv_T * (0, 1) - inv_origin;
+        h.normal = unitOr((dot(inv_e1, local_normal), dot(inv_e2, local_normal)), local_normal);
+        h.center = this.center;
+        h.axis = this.axis;
+        h.t = best_distance;
+        h.entering = dot(r.d, h.normal) < 0;
+        return h;
+    }
+}
+
+struct Interface {
+    string name;
+    Surface surface;
+    // +normal is the right-hand normal of the path tangent. A ray crossing
+    // toward +normal resolves into m_pos; crossing toward -normal resolves m_neg.
+    Medium m_pos = null;
+    Medium m_neg = null;
+    Property[] props;
+    pen stroke = black;
+    pen fill = nullpen;
+    int revision = 0;
+
+    void operator init(Surface surface,
+                       Medium m_pos = null,
+                       Medium m_neg = null,
+                       Property[] props = new Property[],
+                       pen stroke = black,
+                       pen fill = nullpen,
+                       string name = "") {
+        this.surface = surface;
+        this.m_pos = m_pos;
+        this.m_neg = m_neg;
+        this.stroke = stroke;
+        this.fill = fill;
+        this.name = name;
+        this.props = sortProperties(props);
+    }
+
+    void operator init(path boundary,
+                       Medium m_pos = null,
+                       Medium m_neg = null,
+                       Property[] props = new Property[],
+                       pen stroke = black,
+                       pen fill = nullpen,
+                       string name = "") {
+        this.surface = Surface.custom(boundary);
+        this.m_pos = m_pos;
+        this.m_neg = m_neg;
+        this.stroke = stroke;
+        this.fill = fill;
+        this.name = name;
+        this.props = sortProperties(props);
+    }
 
   private
     void insertSorted(Property p) {
@@ -2106,72 +2283,54 @@ struct Surface {
         props[j + 1] = p;
     }
 
-    Surface add(Property p) {
+    // Appends an ordered action. Adding another Interact-stage property runs
+    // it after existing boundary physics.
+    Interface add(Property p) {
         insertSorted(p);
+        ++revision;
         return this;
     }
 
-    Surface properties( ... Property[] p_list) {
+    // Replaces Interact-stage properties while retaining Before/AfterBoundary actions.
+    Interface setInteraction(Property prop) {
+        if (prop != null && prop.stage != PropertyStage.Interact)
+            abort("Interface.setInteraction requires an Interact-stage property.");
+        Property[] retained;
+        for (Property existing : this.props)
+            if (existing.stage != PropertyStage.Interact) retained.push(existing);
+        this.props = retained;
+        insertSorted(prop);
+        ++revision;
+        return this;
+    }
+
+    Interface setMedia(Medium m_pos, Medium m_neg) {
+        this.m_pos = m_pos;
+        this.m_neg = m_neg;
+        ++revision;
+        return this;
+    }
+
+    Interface properties( ... Property[] p_list) {
         for (Property p : p_list) insertSorted(p);
+        ++revision;
         return this;
     }
 
     Hit intersect(Ray r, real max_distance = infinity, bool ignore_origin = false) {
-        Hit h = new Hit;
-        h.valid = false;
-        h.t = infinity;
-        if (length(this.p) == 0) return h;
-        // Uses the precomputed inverse! No inverse() computation during tracing!
-        real ray_reach = (max_distance < infinity) ? max_distance : config.physics.far;
-        pair local_p = this.inv_T * r.p;
-        pair local_end = this.inv_T * (r.p + ray_reach * r.d);
-        real[] hits = intersections(this.p, local_p, local_end);
-        real best_time = -1;
-        real best_distance = infinity;
-        for (real u : hits) {
-            pair pt = point(this.p, u);
-            pair global_pt = this.T * pt;
-            pair global_q = global_pt - r.p;
-            real d = length(global_q);
-            if (ignore_origin && d <= config.geometry.self_intersection_factor * config.geometry.eps_intersection) {
-                continue;
-            }
-
-            if (d <= max_distance + config.geometry.eps_intersection && d < best_distance) {
-                if ((d <= config.geometry.near_intersection_factor * config.geometry.eps_intersection &&
-                     dot(global_q, r.d) >= -config.geometry.eps_intersection) ||
-                    dot(global_q, r.d) > config.geometry.eps) {
-                    best_distance = d;
-                    best_time = u;
-                }
-            }
-        }
-
-        if (best_time < 0) return h;
-        h.valid = true;
-        pair local_hit_pt = point(this.p, best_time);
-        pair local_tangent = dir(this.p, best_time);
-        pair local_normal = (local_tangent.y, -local_tangent.x);
-        h.p = this.T * local_hit_pt;
-        h.tangent = unitOr(this.T * (local_hit_pt + local_tangent) - h.p, local_tangent);
-        pair inv_origin = this.inv_T * (0, 0);
-        pair inv_e1 = this.inv_T * (1, 0) - inv_origin;
-        pair inv_e2 = this.inv_T * (0, 1) - inv_origin;
-        pair world_normal = (dot(inv_e1, local_normal), dot(inv_e2, local_normal));
-        h.normal = unitOr(world_normal, local_normal);
-        h.center = this.center;
-        h.axis = this.axis;
-        h.t = best_distance;
-        // Boundaries are CCW, so `normal` is the outward normal: the ray
-        // enters the enclosed region when it travels against it.
-        h.entering = dot(r.d, h.normal) < 0;
-        return h;
+        return this.surface.intersect(r, max_distance, ignore_origin);
     }
 
     // Ordered, composable interaction pipeline. Actions are stable-sorted by
     // stage and priority; equal keys retain declaration order.
     InteractionResult interact(Ray r, Hit h, mediumResolver resolve) {
         if (this.props.length == 0) return interactionResult(new Ray[], 0, true);
+
+        Interface inf = this;
+        mediumResolver resolve_sides = new Medium(pair p, Ray ray, Medium m1, Medium m2, bool from_m1) {
+            Medium side_medium = from_m1 ? inf.m_pos : inf.m_neg;
+            return (side_medium != null) ? side_medium : resolve(p, ray, m1, m2, from_m1);
+        };
 
         Ray[] active = {spawnRay(r, h, r.d, r.intensity(), r.medium, 0.0, r.wave_normal)};
         for (Property p : this.props) {
@@ -2180,7 +2339,7 @@ struct Surface {
 
             Ray[] next;
             for (Ray ray : active) {
-                Ray[] produced = p.generate(ray, h, resolve);
+                Ray[] produced = p.generate(ray, h, resolve_sides);
                 next.append(produced);
             }
             active = next;
@@ -2190,9 +2349,9 @@ struct Surface {
     }
 }
 
-// STATELESS FLAT SURFACE PREPARATION
-struct FlatSurfaceRecord {
-    Surface s;
+// STATELESS FLAT INTERFACE PREPARATION
+struct FlatInterfaceRecord {
+    Interface inf;
     int element_index = -1;
     transform inv_T; // Precomputed inverse!
     pair min_bound;
@@ -2201,17 +2360,20 @@ struct FlatSurfaceRecord {
 
 Surface
 copy(Surface src) {
-    Surface s = new Surface;
-    s.name = src.name;
-    s.props = copy(src.props);
-    s.T = src.T;
-    s.inv_T = src.inv_T;
-    s.p = src.p;
-    s.stroke = src.stroke;
-    s.fill = src.fill;
-    s.center = src.center;
-    s.axis = src.axis;
-    return s;
+    return Surface(src.p, src.center, src.axis, src.T);
+}
+
+Interface copy(Interface src) {
+    Interface out = new Interface;
+    out.name = src.name;
+    out.surface = copy(src.surface);
+    out.m_pos = src.m_pos;
+    out.m_neg = src.m_neg;
+    out.props = copy(src.props);
+    out.stroke = src.stroke;
+    out.fill = src.fill;
+    out.revision = src.revision;
+    return out;
 }
 
 private
@@ -2221,12 +2383,12 @@ pair transformedDirection(transform T, pair origin, pair direction) {
 }
 
 private
-Surface transformedSurface(Surface src, transform parent_T) {
-    Surface out = copy(src);
-    out.T = parent_T * src.T;
-    out.inv_T = inverse(out.T); // Precalculated ONCE here!
-    out.center = parent_T * src.center;
-    out.axis = transformedDirection(parent_T, src.center, src.axis);
+Interface transformedInterface(Interface src, transform parent_T) {
+    Interface out = copy(src);
+    out.surface.T = parent_T * src.surface.T;
+    out.surface.inv_T = inverse(out.surface.T);
+    out.surface.center = parent_T * src.surface.center;
+    out.surface.axis = transformedDirection(parent_T, src.surface.center, src.surface.axis);
     return out;
 }
 
@@ -2234,7 +2396,7 @@ Surface transformedSurface(Surface src, transform parent_T) {
 struct Element {
     string name;
     transform T = identity();
-    Surface[] surfaces;
+    Interface[] interfaces;
     Element[] children;
     pair axis;
     pair center;
@@ -2246,18 +2408,50 @@ struct Element {
     pen fill = nullpen;
     bool show_info;
     void custom_draw(picture pic, Element e) = null;
-    void add(Surface s) { surfaces.push(s); }
+    void add(Interface inf) { interfaces.push(inf); }
 
-    Surface surface(int i = 0) {
-        int index = (i < 0) ? i + surfaces.length : i;
-        if (index < 0 || index >= surfaces.length) abort("Element.surface: index out of range.");
-        return surfaces[index];
+    // Access follows flatten order: this element's interfaces, then each
+    // child's interfaces recursively. Returned interfaces remain mutable.
+    int interfaceCount() {
+        int count = interfaces.length;
+        for (Element child : children) count += child.interfaceCount();
+        return count;
     }
+
+    Interface interface(int i = 0) {
+        int count = interfaceCount();
+        int index = (i < 0) ? i + count : i;
+        if (index < 0 || index >= count) abort("Element.interface: index out of range.");
+        if (index < interfaces.length) return interfaces[index];
+        index -= interfaces.length;
+        for (Element child : children) {
+            int child_count = child.interfaceCount();
+            if (index < child_count) return child.interface(index);
+            index -= child_count;
+        }
+        abort("Element.interface: index out of range.");
+        return new Interface;
+    }
+
+    Interface interfaceNamed(string name) {
+        int count = interfaceCount();
+        for (int i = 0; i < count; ++i) {
+            Interface inf = interface(i);
+            if (inf.name == name ||
+                (length(name) > 0 && length(inf.name) >= length(name) &&
+                 substr(inf.name, length(inf.name) - length(name), length(name)) == name)) return inf;
+        }
+        abort("Element.interfaceNamed: no interface named '" + name + "'.");
+        return new Interface;
+    }
+
+    Interface front() { return this.interface(0); }
+    Interface back() { return this.interface(-1); }
 
     void add(Element e) { children.push(e); }
 
     Element add(Property p) {
-        for (Surface s : surfaces) s.add(p);
+        for (Interface inf : interfaces) inf.add(p);
         for (Element child : children) child.add(p);
         return this;
     }
@@ -2267,16 +2461,16 @@ struct Element {
         return this;
     }
 
-    // Flattens the element hierarchy using accumulated transform and native append()
-    Surface[] flatten(transform parent_T = identity()) {
-        Surface[] result;
+    // Flattens the element hierarchy into transformed interfaces.
+    Interface[] flatten(transform parent_T = identity()) {
+        Interface[] result;
         transform total_T = parent_T * this.T;
-        // Transform and add own surfaces
-        for (Surface s : this.surfaces) {
-            result.push(transformedSurface(s, total_T));
+        // Transform and add own interfaces
+        for (Interface inf : this.interfaces) {
+            result.push(transformedInterface(inf, total_T));
         }
 
-        // Recursively flatten children and append in 1 line
+        // Recursively flatten children and append their interfaces.
         for (Element child : this.children) {
             result.append(child.flatten(total_T)); // <-- Native append()
         }
@@ -2307,8 +2501,8 @@ Element copy(Element src) {
     e.med_e = src.med_e;
     e.focal_length = src.focal_length;
     e.custom_draw = src.custom_draw;
-    for (Surface s : src.surfaces) {
-        e.surfaces.push(copy(s));
+    for (Interface inf : src.interfaces) {
+        e.interfaces.push(copy(inf));
     }
 
     for (Element child : src.children) {
@@ -2326,24 +2520,19 @@ Element element(path boundary,
                 pair axis = (1, 0),
                 Medium medium = null,
                 Medium med_e = null) {
-    Surface s = new Surface;
-    s.name = name;
-    s.p = ensureCCW(boundary);
-    s.stroke = stroke;
-    s.fill = fill;
-    for (Property prop : props) s.add(prop);
-    s.center = center;
-    s.axis = unitOr(axis);
+    Surface geometry = Surface(ensureCCW(boundary), center, unitOr(axis));
+    Interface inf = Interface(geometry, m_pos = null, m_neg = medium, props = props,
+                              stroke = stroke, fill = fill, name = name);
     Element e = new Element;
     e.name = name;
     e.stroke = stroke;
     e.fill = fill;
     e.center = center;
-    e.axis = s.axis;
-    e.boundary = s.p;
+    e.axis = geometry.axis;
+    e.boundary = geometry.p;
     e.medium = medium; // Explicitly assigned!
     e.med_e = med_e;   // Optional second mode for crystals!
-    e.add(s);
+    e.add(inf);
     return e;
 }
 
@@ -2564,17 +2753,17 @@ FresnelResult fresnelUniaxial(Ray r, Hit h, Medium med_iso, Medium med_o, Medium
 }
 
 private
-FlatSurfaceRecord[] prepareFlatSurfaces(Element[] elements) {
-    FlatSurfaceRecord[] records;
+FlatInterfaceRecord[] prepareFlatInterfaces(Element[] elements) {
+    FlatInterfaceRecord[] records;
     for (int i = 0; i < elements.length; ++i) {
-        Surface[] flat = elements[i].flatten();
+        Interface[] flat = elements[i].flatten();
         for (int j = 0; j < flat.length; ++j) {
-            FlatSurfaceRecord rec = new FlatSurfaceRecord;
-            rec.s = flat[j];
+            FlatInterfaceRecord rec = new FlatInterfaceRecord;
+            rec.inf = flat[j];
             rec.element_index = i;
-            rec.inv_T = flat[j].inv_T; // Already inverted once by transformedSurface()
-            if (length(flat[j].p) > 0) {
-                path global_path = flat[j].T * flat[j].p;
+            rec.inv_T = flat[j].surface.inv_T; // Already inverted once by transformedInterface()
+            if (length(flat[j].surface.p) > 0) {
+                path global_path = flat[j].surface.T * flat[j].surface.p;
                 rec.min_bound = min(global_path);
                 rec.max_bound = max(global_path);
             }
@@ -2605,12 +2794,12 @@ bool rayIntersectsAABB(pair ro, pair rd, pair bmin, pair bmax, real max_dist) {
 }
 
 private
-Hit nearestIntersection(Ray r, FlatSurfaceRecord[] flat_surfaces, real max_distance = infinity) {
+Hit nearestIntersection(Ray r, FlatInterfaceRecord[] flat_interfaces, real max_distance = infinity) {
     Hit best_hit = new Hit;
     best_hit.valid = false;
     best_hit.t = infinity;
-    for (int i = 0; i < flat_surfaces.length; ++i) {
-        FlatSurfaceRecord rec = flat_surfaces[i];
+    for (int i = 0; i < flat_interfaces.length; ++i) {
+        FlatInterfaceRecord rec = flat_interfaces[i];
         // Fast Ray-Box Slab Test (With Distance Pruning)
         // If a hit was already found at distance best_hit.t, reject any surface further away!
         real current_reach = min(max_distance, best_hit.t);
@@ -2628,11 +2817,11 @@ Hit nearestIntersection(Ray r, FlatSurfaceRecord[] flat_surfaces, real max_dista
         }
 
         // Exact Bézier Spline Intersection (Only evaluated when ray actually hits the box)
-        Hit h = rec.s.intersect(r, current_reach, ignore_origin);
+        Hit h = rec.inf.intersect(r, current_reach, ignore_origin);
         if (h.valid && h.t < best_hit.t) {
             best_hit = h;
             best_hit.flat_index = i;
-            best_hit.element_index = flat_surfaces[i].element_index;
+            best_hit.element_index = flat_interfaces[i].element_index;
         }
     }
 
@@ -2657,8 +2846,8 @@ bool requiresNumericalIntegration(Medium m) {
 }
 
 private
-PropagationResult propagateAnalytic(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far) {
-    Hit h = nearestIntersection(r, flat_surfaces, far);
+PropagationResult propagateAnalytic(Medium medium, Ray r, FlatInterfaceRecord[] flat_interfaces, real far) {
+    Hit h = nearestIntersection(r, flat_interfaces, far);
     // OPL accumulates k.dr along the group direction; for
     // extraordinary rays this is n_phase * cos(walk-off), not n_phase.
     real current_n = rayIndex(medium, r.p, r.wave_normal, r.d, r.lambda, r.pol);
@@ -2677,7 +2866,7 @@ PropagationResult propagateAnalytic(Medium medium, Ray r, FlatSurfaceRecord[] fl
 }
 
 private
-PropagationResult propagateGRIN(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far, real ds) {
+PropagationResult propagateGRIN(Medium medium, Ray r, FlatInterfaceRecord[] flat_interfaces, real far, real ds) {
     real t_total = 0;
     Ray curr_ray = copy(r);
     guide traj = curr_ray.p;
@@ -2719,7 +2908,7 @@ PropagationResult propagateGRIN(Medium medium, Ray r, FlatSurfaceRecord[] flat_s
             test_ray.p = curr_ray.p;
             test_ray.d = chord / chord_length;
             test_ray.ignored_flat_indices = copy(curr_ray.ignored_flat_indices);
-            h = nearestIntersection(test_ray, flat_surfaces, chord_length);
+            h = nearestIntersection(test_ray, flat_interfaces, chord_length);
             hit_valid = h.valid;
         }
 
@@ -2766,9 +2955,9 @@ PropagationResult propagateGRIN(Medium medium, Ray r, FlatSurfaceRecord[] flat_s
 }
 
 private
-PropagationResult propagate(Medium medium, Ray r, FlatSurfaceRecord[] flat_surfaces, real far, real ds) {
-    return requiresNumericalIntegration(medium) ? propagateGRIN(medium, r, flat_surfaces, far, ds)
-                                                : propagateAnalytic(medium, r, flat_surfaces, far);
+PropagationResult propagate(Medium medium, Ray r, FlatInterfaceRecord[] flat_interfaces, real far, real ds) {
+    return requiresNumericalIntegration(medium) ? propagateGRIN(medium, r, flat_interfaces, far, ds)
+                                                : propagateAnalytic(medium, r, flat_interfaces, far);
 }
 
 // Advances ray geometrically to a target point along its ray line, accumulating OPL
@@ -3064,7 +3253,7 @@ struct Trace {
         if (a == null || b == null) return false;
         if (a == b) return true;
         if (a.name != b.name || a.center != b.center || a.axis != b.axis) return false;
-        if (a.surfaces.length != b.surfaces.length) return false;
+        if (a.interfaces.length != b.interfaces.length) return false;
         if (length(a.boundary) != length(b.boundary)) return false;
         if (length(a.boundary) > 0 && point(a.boundary, 0) != point(b.boundary, 0)) return false;
         return true;
@@ -3255,7 +3444,7 @@ Trace copy(Trace src) {
 // The Tracer Engine (Queue-Based BFS)
 private
 struct Tracer {
-    FlatSurfaceRecord[] flat_surfaces;
+    FlatInterfaceRecord[] flat_interfaces;
     mediumResolver resolve;
     int max_depth = config.physics.max_depth;
     real min_intensity = config.physics.min_intensity;
@@ -3287,18 +3476,18 @@ struct Tracer {
                 if (!r.alive || r.terminated || r.intensity() <= min_intensity || r.generation >= max_depth) continue;
                 // 5 parameters (no sceneDomain)
                 // 1. Propagate ray to boundary or far reach
-                PropagationResult prop_res = propagate(r.medium, r, flat_surfaces, far, ds);
+                PropagationResult prop_res = propagate(r.medium, r, flat_interfaces, far, ds);
                 r.trajectory = prop_res.trajectory;
                 r.opl = prop_res.ray.opl;
                 r.end_pol = copy(prop_res.ray.pol);
 
-                // 2. Handle Surface Interaction
+                // 2. Handle interface interaction
                 if (prop_res.hit_surface) {
                     r.hit = prop_res.hit;
-                    Surface hit_surf = flat_surfaces[prop_res.hit.flat_index].s;
+                    Interface hit_interface = flat_interfaces[prop_res.hit.flat_index].inf;
 
                     // Execute surface physics and receive InteractionResult:
-                    InteractionResult ix_res = hit_surf.interact(prop_res.ray, prop_res.hit, resolve);
+                    InteractionResult ix_res = hit_interface.interact(prop_res.ray, prop_res.hit, resolve);
                     r.default_child_index = ix_res.default_index;
 
                     bool accepted_child = false;
@@ -3333,9 +3522,9 @@ struct Tracer {
 }
 
 private Tracer
-makeTracer(FlatSurfaceRecord[] flat_surfaces, mediumResolver resolve, real ds, real far, int max_depth) {
+makeTracer(FlatInterfaceRecord[] flat_interfaces, mediumResolver resolve, real ds, real far, int max_depth) {
     Tracer tracer = new Tracer;
-    tracer.flat_surfaces = flat_surfaces;
+    tracer.flat_interfaces = flat_interfaces;
     tracer.resolve = resolve;
     tracer.ds = ds;
     tracer.far = far;
@@ -3350,36 +3539,38 @@ struct OpticalSystem {
     Element[] elements;
     Medium ambient = null;
   private
-    FlatSurfaceRecord[] cached_surfaces;
+    FlatInterfaceRecord[] cached_interfaces;
   private
     transform[] cached_transforms;
   private
-    int[] cached_surf_counts;
+    int[] cached_interface_counts;
   private
     int[] cached_child_counts;
   private
     int[] cached_prop_counts;
   private
+    int[] cached_interface_revisions;
+  private
     bool cache_valid = false;
 
     void invalidateCache() {
         this.cache_valid = false;
-        this.cached_surfaces = new FlatSurfaceRecord[];
+        this.cached_interfaces = new FlatInterfaceRecord[];
     }
     void add(Element e) {
         this.elements.push(e);
         this.invalidateCache();
     }
-    void add(Surface s) {
-        if (s == null) return;
+    void add(Interface inf) {
+        if (inf == null) return;
         Element e = new Element;
-        e.name = s.name;
-        e.center = s.center;
-        e.axis = s.axis;
-        e.boundary = s.p;
-        e.stroke = s.stroke;
-        e.fill = s.fill;
-        e.add(s);
+        e.name = inf.name;
+        e.center = inf.surface.center;
+        e.axis = inf.surface.axis;
+        e.boundary = inf.surface.p;
+        e.stroke = inf.stroke;
+        e.fill = inf.fill;
+        e.add(inf);
         this.add(e);
     }
     void add(Element[] e_list) {
@@ -3393,40 +3584,66 @@ struct OpticalSystem {
     int elementPropCount(Element e) {
         if (e == null) return 0;
         int total = 0;
-        for (Surface s : e.surfaces) total += s.props.length;
+        for (Interface inf : e.interfaces) total += inf.props.length;
         for (Element child : e.children) total += elementPropCount(child);
         return total;
     }
 
-    FlatSurfaceRecord[] flat_surfaces() {
+    int elementInterfaceRevision(Element e) {
+        if (e == null) return 0;
+        int total = 0;
+        for (Interface inf : e.interfaces) total += inf.revision;
+        for (Element child : e.children) total += elementInterfaceRevision(child);
+        return total;
+    }
+
+    bool interfaceMediaMatch(Element e, FlatInterfaceRecord[] cached, int[] cursor) {
+        if (e == null) return true;
+        for (Interface inf : e.interfaces) {
+            if (cursor[0] >= cached.length) return false;
+            Interface old = cached[cursor[0]].inf;
+            if (old.m_pos != inf.m_pos || old.m_neg != inf.m_neg) return false;
+            ++cursor[0];
+        }
+        for (Element child : e.children)
+            if (!interfaceMediaMatch(child, cached, cursor)) return false;
+        return true;
+    }
+
+    FlatInterfaceRecord[] flatInterfaces() {
         bool valid = this.cache_valid && (this.cached_transforms.length == this.elements.length);
         if (valid) {
+            int[] interface_cursor = {0};
             for (int i = 0; i < this.elements.length; ++i) {
                 Element e = this.elements[i];
-                if (e == null || e.T != this.cached_transforms[i] || e.surfaces.length != this.cached_surf_counts[i] ||
+                if (e == null || e.T != this.cached_transforms[i] || e.interfaces.length != this.cached_interface_counts[i] ||
                     e.children.length != this.cached_child_counts[i] ||
-                    elementPropCount(e) != this.cached_prop_counts[i]) {
+                    elementPropCount(e) != this.cached_prop_counts[i] ||
+                    elementInterfaceRevision(e) != this.cached_interface_revisions[i] ||
+                    !interfaceMediaMatch(e, this.cached_interfaces, interface_cursor)) {
                     valid = false;
                     break;
                 }
             }
         }
         if (!valid) {
-            this.cached_surfaces = prepareFlatSurfaces(this.elements);
+            this.cached_interfaces = prepareFlatInterfaces(this.elements);
             this.cached_transforms = new transform[this.elements.length];
-            this.cached_surf_counts = new int[this.elements.length];
+            this.cached_interface_counts = new int[this.elements.length];
             this.cached_child_counts = new int[this.elements.length];
             this.cached_prop_counts = new int[this.elements.length];
+            this.cached_interface_revisions = new int[this.elements.length];
             for (int i = 0; i < this.elements.length; ++i) {
                 Element e = this.elements[i];
                 this.cached_transforms[i] = (e != null) ? e.T : identity();
-                this.cached_surf_counts[i] = (e != null) ? e.surfaces.length : 0;
+                this.cached_interface_counts[i] = (e != null) ? e.interfaces.length : 0;
                 this.cached_child_counts[i] = (e != null) ? e.children.length : 0;
                 this.cached_prop_counts[i] = elementPropCount(e);
+                this.cached_interface_revisions[i] = elementInterfaceRevision(e);
             }
             this.cache_valid = true;
         }
-        return this.cached_surfaces;
+        return this.cached_interfaces;
     }
 
     Trace trace(Ray[] rays,
@@ -3436,13 +3653,13 @@ struct OpticalSystem {
         validateConfig();
         if (ds <= 0 || far <= 0 || max_depth < 1)
             abort("OpticalSystem.trace requires positive ds/far and max_depth >= 1.");
-        FlatSurfaceRecord[] flat_surfaces = this.flat_surfaces();
+        FlatInterfaceRecord[] flat_interfaces = this.flatInterfaces();
         Element[] trace_elements = elements;
         Medium trace_ambient = ambient;
         mediumResolver resolve = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
             return resolveMediumAt(trace_elements, trace_ambient, p, r, m1, m2, from_m1);
         };
-        Trace result = makeTracer(flat_surfaces, resolve, ds, far, max_depth).traceRays(rays);
+        Trace result = makeTracer(flat_interfaces, resolve, ds, far, max_depth).traceRays(rays);
         result.system_elements = elements;
         return result;
     }
@@ -3463,10 +3680,10 @@ makeSystem(Element[] elements, Medium ambient = null) {
 }
 
 private OpticalSystem
-makeSystem(Surface[] surfaces, Medium ambient = null) {
+makeSystem(Interface[] interfaces, Medium ambient = null) {
     OpticalSystem result = new OpticalSystem;
     result.ambient = ambient;
-    for (Surface s : surfaces) result.add(s);
+    for (Interface inf : interfaces) result.add(inf);
     return result;
 }
 
@@ -3474,8 +3691,12 @@ OpticalSystem system(Element[] elements, Medium ambient = null) {
     return makeSystem(elements, ambient);
 }
 
-OpticalSystem system(Surface[] surfaces, Medium ambient = null) {
-    return makeSystem(surfaces, ambient);
+OpticalSystem system(Interface[] interfaces, Medium ambient = null) {
+    return makeSystem(interfaces, ambient);
+}
+
+OpticalSystem system(Interface inf, Medium ambient) {
+    return makeSystem(new Interface[]{inf}, ambient);
 }
 
 OpticalSystem system(Element element, Medium ambient) {
@@ -3494,16 +3715,16 @@ OpticalSystem system(Element first ... Element[] rest) {
     return makeSystem(elements);
 }
 
-OpticalSystem system(Medium ambient, Surface first ... Surface[] rest) {
-    Surface[] surfaces = {first};
-    surfaces.append(rest);
-    return makeSystem(surfaces, ambient);
+OpticalSystem system(Medium ambient, Interface first ... Interface[] rest) {
+    Interface[] interfaces = {first};
+    interfaces.append(rest);
+    return makeSystem(interfaces, ambient);
 }
 
-OpticalSystem system(Surface first ... Surface[] rest) {
-    Surface[] surfaces = {first};
-    surfaces.append(rest);
-    return makeSystem(surfaces);
+OpticalSystem system(Interface first ... Interface[] rest) {
+    Interface[] interfaces = {first};
+    interfaces.append(rest);
+    return makeSystem(interfaces);
 }
 
 OpticalSystem copy(OpticalSystem src) {
@@ -3610,7 +3831,7 @@ Ray[] emitFresnelPair(Ray r, Hit h, FresnelResult res) {
     return rays;
 }
 
-// Surface Property: Refract (Updated with Complex Fresnel Phase Retardance)
+// Interface Property: Refract (Updated with Complex Fresnel Phase Retardance)
 Property refract(Medium inside, Medium ambient = null) {
     return property(
         "Refract",
@@ -4403,34 +4624,20 @@ struct LensPath {
         return (vertex.x, -h) -- (vertex.x, h);
     }
 
-    // Robust thick lens boundary path generator
-    static path thickLens(real R1, real R2, real thickness, real diameter, real min_edge_thickness = 0.0) {
+    static path[] thickLensFaces(real R1, real R2, real thickness, real diameter, real min_edge_thickness = 0.0) {
         real t_safe = max(thickness, config.geometry.eps);
-        real max_d = thickLensMaxDiameter(R1, R2, t_safe, min_edge_thickness);
-        // Auto-clamp requested diameter to physical maximum:
-        real eff_diameter = min(diameter, max_d);
+        real eff_diameter = min(diameter, thickLensMaxDiameter(R1, R2, t_safe, min_edge_thickness));
         real h = eff_diameter / 2.0;
         pair front_vertex = (-t_safe / 2.0, 0);
         pair back_vertex = (t_safe / 2.0, 0);
-        path front_arc = lensSurfaceArc(front_vertex, R1, h);
-        path back_arc = lensSurfaceArc(back_vertex, R2, h);
-        return front_arc -- reverse(back_arc) -- cycle;
+        return new path[]{lensSurfaceArc(front_vertex, R1, h), reverse(lensSurfaceArc(back_vertex, R2, h))};
     }
-}
 
-pair boundaryCenter(path boundary) {
-    if (length(boundary) == 0) return (0, 0);
-    if (cyclic(boundary)) return 0.5 * (min(boundary) + max(boundary));
-    return 0.5 * (point(boundary, 0) + point(boundary, length(boundary)));
-}
-
-pair boundaryAxis(path boundary) {
-    if (length(boundary) == 0) return (1, 0);
-    pair chord = point(boundary, length(boundary)) - point(boundary, 0);
-    if (abs(chord) > config.geometry.eps) return perp(chord);
-    pair tangent = dir(boundary, 0);
-    if (abs(tangent) > config.geometry.eps) return perp(tangent);
-    return (1, 0);
+    // Robust thick lens boundary path generator
+    static path thickLens(real R1, real R2, real thickness, real diameter, real min_edge_thickness = 0.0) {
+        path[] faces = thickLensFaces(R1, R2, thickness, diameter, min_edge_thickness);
+        return faces[0] -- faces[1] -- cycle;
+    }
 }
 
 path linearBoundary(pair center, pair axis, real diameter) {
@@ -4491,25 +4698,14 @@ struct BeamSplitter {
         e.boundary = box_p;
         e.medium = glass;
 
-        Surface s_outer = new Surface;
-        s_outer.name = name + " Outer";
-        s_outer.p = box_p;
-        s_outer.stroke = stroke;
-        s_outer.fill = fill;
-        s_outer.center = center;
-        s_outer.axis = ax;
-        s_outer.add(refract(glass, ambient));
-        e.add(s_outer);
+        Surface outer_geometry = Surface(box_p, center, ax);
+        e.add(Interface(outer_geometry, m_pos = ambient, m_neg = glass,
+                        props = properties(refract(glass, ambient)), stroke = stroke, fill = fill,
+                        name = name + " Outer"));
 
-        Surface s_diag = new Surface;
-        s_diag.name = name + " Coating";
-        s_diag.p = T * ((-h, -h) -- (h, h));
-        s_diag.stroke = stroke;
-        s_diag.fill = nullpen;
-        s_diag.center = center;
-        s_diag.axis = ax;
-        s_diag.add(diag_prop);
-        e.add(s_diag);
+        Surface diagonal_geometry = Surface(T * ((-h, -h) -- (h, h)), center, ax);
+        e.add(Interface(diagonal_geometry, m_pos = glass, m_neg = glass,
+                        props = properties(diag_prop), stroke = stroke, name = name + " Coating"));
         return e;
     }
 
@@ -4549,21 +4745,43 @@ struct BeamSplitter {
 }
 
 // Universal Refractive Interface Primitive
-Element interface(path boundary,
-                  Medium inside,
-                  Medium ambient = null,
-                  pen stroke = black,
-                  pen fill = nullpen,
-                  string name = "Interface") {
+Interface interface(Surface geometry,
+                    Medium m_pos = null,
+                    Medium m_neg = null,
+                    Property[] props = new Property[],
+                    pen stroke = black,
+                    pen fill = nullpen,
+                    string name = "") {
+    return Interface(geometry, m_pos, m_neg, props, stroke, fill, name);
+}
+
+Interface interface(path boundary,
+                    Medium m_pos = null,
+                    Medium m_neg = null,
+                    Property[] props = new Property[],
+                    pen stroke = black,
+                    pen fill = nullpen,
+                    string name = "") {
+    return Interface(Surface.custom(ensureCCW(boundary)), m_pos, m_neg, props, stroke, fill, name);
+}
+
+Element refractiveElement(path boundary,
+                          Medium inside,
+                          Medium ambient = null,
+                          pen stroke = black,
+                          pen fill = nullpen,
+                          string name = "Interface") {
     Property[] props = {refract(inside, ambient)};
-    return element(boundary,
-                   props,
-                   stroke,
-                   fill,
-                   name,
-                   boundaryCenter(boundary),
-                   boundaryAxis(boundary),
-                   inside); // <-- Passes inside directly
+    Element e = element(boundary,
+                        props,
+                        stroke,
+                        fill,
+                        name,
+                        boundaryCenter(boundary),
+                        boundaryAxis(boundary),
+                        inside);
+    e.front().m_pos = ambient;
+    return e;
 }
 
 struct Polarizer {
@@ -4577,12 +4795,12 @@ struct Polarizer {
         // Index-free dichroic medium: no Fresnel loss, only diattenuation.
         Medium pol_med = medium("Polarizer").add(dichroic(0.0, extinction, axis));
         path plate = box((-thickness / 2, -diameter / 2), (thickness / 2, diameter / 2));
-        Element e = interface(shift(center) * rotate(angle) * plate, pol_med);
+        Element e = refractiveElement(shift(center) * rotate(angle) * plate, pol_med);
         e.name = "Linear Polarizer";
         e.center = center;
         e.axis = dir(angle);
-        e.surfaces[0].center = center;
-        e.surfaces[0].axis = dir(angle);
+        e.front().surface.center = center;
+        e.front().surface.axis = dir(angle);
         return e;
     }
 
@@ -4606,14 +4824,6 @@ struct Polarizer {
     static Element HWP(pair center, real fast_axis = 0.0, real diameter = 30.0, real angle = 0.0) {
         return retarder(center, pi, fast_axis, diameter, angle, name = "HWP");
     }
-}
-
-private path
-sphericalArc(pair vertex, pair N, real R, real diameter) {
-    pair C = vertex + R * N;
-    real half = aSin(min(1.0, diameter / (2.0 * abs(R))));
-    real theta = degrees(vertex - C);
-    return Arc(C, abs(R), theta - half, theta + half, config.geometry.arc_subdivisions);
 }
 
 private
@@ -4664,17 +4874,7 @@ struct Mirror {
                              real diameter,
                              pen stroke = config.rendering.pen_mirror,
                              string name = "Parabolic Mirror") {
-        real h = diameter / 2.0;
-        int n_pts = max(32, 2 * config.geometry.arc_subdivisions);
-        guide g;
-        for (int i = 0; i <= n_pts; ++i) {
-            real y = -h + 2.0 * h * i / n_pts;
-            real x = sgn(f) * (y * y) / (4.0 * abs(f));
-            g = g .. (x, y);
-        }
-
-        transform T = shift(vertex) * rotate(angle);
-        path boundary = T * g;
+        path boundary = Surface.parabolic(vertex, dir(angle), f, diameter).p;
         Property[] props = {reflect()};
         return element(boundary, props, stroke, nullpen, name, vertex, dir(angle));
     }
@@ -4698,10 +4898,12 @@ Element sphericalInterface(pair vertex,
     pair N = dir(angle);
     Property[] props = {idealRefract(vertex, N, R, inside, ambient)};
     path boundary = sphericalArc(vertex, N, R, diameter);
-    return element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
+    Element e = element(boundary, props, stroke, nullpen, name, boundaryCenter(boundary), boundaryAxis(boundary), inside);
+    e.front().m_pos = ambient;
+    return e;
 }
 
-// Default Surface Drawing
+// Default Interface Drawing
 // Native Asymptote Arrowhead for Thin Lenses (Convex & Concave)
 arrowhead LensHead(bool concave = false, real angle = 20, real bow = 0.3, real barb = 0.5) {
     arrowhead ah = new arrowhead;
@@ -4739,8 +4941,12 @@ arrowhead LensConcaveHead = LensHead(concave = true);
 
 // Thin Lens Drawing Delegate (Arrowhead hooks & Focal points)
 void drawThinLens(picture pic, Element e) {
-    if (e.surfaces.length == 0) return;
-    Surface lens_surface = transformedSurface(e.surfaces[0], e.T);
+    if (e.interfaces.length == 0) return;
+    Surface lens_surface = e.front().surface;
+    lens_surface.T = e.T * lens_surface.T;
+    lens_surface.inv_T = inverse(lens_surface.T);
+    lens_surface.center = e.T * lens_surface.center;
+    lens_surface.axis = transformedDirection(e.T, e.front().surface.center, e.front().surface.axis);
     pair center = lens_surface.center;
     pair axis = lens_surface.axis;
     pair q = (-axis.y, axis.x);
@@ -4777,13 +4983,16 @@ struct Lens {
         if (abs(R) > config.math.eps && abs(R) != infinity) {
             return sphericalInterface(V, angle, R, diameter, glass, ambient, stroke, label_name);
         }
-        return linearElement(V,
-                             angle,
-                             diameter,
-                             idealRefract(V, dir(angle), 0.0, glass, ambient),
-                             stroke,
-                             label_name,
-                             glass);
+        Element face = linearElement(V,
+                                     angle,
+                                     diameter,
+                                     idealRefract(V, dir(angle), 0.0, glass, ambient),
+                                     stroke,
+                                     label_name,
+                                     glass);
+        face.front().m_pos = glass;
+        face.front().m_neg = ambient;
+        return face;
     }
 
     static Element thin(pair center,
@@ -4836,8 +5045,8 @@ struct Lens {
         e.stroke = stroke;
         e.fill = fill;
 
-        e.add(idealFace(V1, angle, R1, diameter, glass, ambient, stroke, name + " Front"));
-        e.add(idealFace(V2, angle, R2, diameter, glass, ambient, stroke, name + " Back"));
+        e.add(idealFace(V1, angle, R1, diameter, glass, ambient, stroke, name + " Front").front());
+        e.add(idealFace(V2, angle, R2, diameter, glass, ambient, stroke, name + " Back").front());
         return e;
     }
 
@@ -4852,18 +5061,24 @@ struct Lens {
                          pen stroke = config.rendering.pen_lens,
                          pen fill = nullpen,
                          string name = "Thick Lens") {
-        path local_p = LensPath.thickLens(R1, R2, thickness, diameter);
+        path[] face_paths = LensPath.thickLensFaces(R1, R2, thickness, diameter);
         transform T = shift(center) * rotate(angle);
-        Element e = interface(T * local_p, glass, ambient, stroke, fill, name);
-
-        // Explicitly assign the real optical axis and center (do not let Interface guess!):
+        Element e = new Element;
+        e.name = name;
         e.center = center;
         e.axis = dir(angle);
-        if (e.surfaces.length > 0) {
-            e.surfaces[0].center = center;
-            e.surfaces[0].axis = dir(angle);
-        }
+        e.boundary = ensureCCW(T * LensPath.thickLens(R1, R2, thickness, diameter));
+        e.medium = glass;
+        e.stroke = stroke;
+        e.fill = fill;
+        Surface front_geometry = Surface(reverse(T * face_paths[0]), center, dir(angle));
+        Surface back_geometry = Surface(reverse(T * face_paths[1]), center, dir(angle));
+        e.add(Interface(front_geometry, m_pos = ambient, m_neg = glass,
+                        props = properties(refract(glass, ambient)), stroke = stroke, name = name + " Front"));
+        e.add(Interface(back_geometry, m_pos = ambient, m_neg = glass,
+                        props = properties(refract(glass, ambient)), stroke = stroke, name = name + " Back"));
 
+        // Keep the optical axis explicit for both component and interfaces.
         return e;
     }
 
@@ -4941,14 +5156,18 @@ struct Lens {
                           pen stroke = config.rendering.pen_lens,
                           pen fill = nullpen,
                           string name = "Custom Lens") {
-        return interface(boundary, glass, ambient, stroke, fill, name);
+        return refractiveElement(boundary, glass, ambient, stroke, fill, name);
     }
 }
 
 // Grating Drawing Delegate (Tick marks)
 void drawGrating(picture pic = currentpicture, Element e) {
-    if (e.surfaces.length == 0) return;
-    Surface grating_surface = transformedSurface(e.surfaces[0], e.T);
+    if (e.interfaces.length == 0) return;
+    Surface grating_surface = e.front().surface;
+    grating_surface.T = e.T * grating_surface.T;
+    grating_surface.inv_T = inverse(grating_surface.T);
+    grating_surface.center = e.T * grating_surface.center;
+    grating_surface.axis = transformedDirection(e.T, e.front().surface.center, e.front().surface.axis);
     path global_path = grating_surface.T * grating_surface.p;
     real L_total = arclength(global_path);
     if (L_total <= config.rendering.min_drawable_length) return;
@@ -5074,8 +5293,8 @@ Element align(Element e, pair from_pos, pair to_pos, real lambda = config.physic
     //    - Mirrors -> use specular bisector (target_dir - in_dir)
     //    - Gratings -> use wavevectorShiftAxis()
     //    - Phase Gradients -> use delta_k shift
-    for (Surface s : e.surfaces) {
-        for (Property prop : s.props) {
+    for (Interface inf : e.interfaces) {
+        for (Property prop : inf.props) {
             if (prop.align != null) {
                 pair target_axis = prop.align(in_dir, target_dir, lambda, order_index);
                 if (abs(xpart(target_axis)) != infinity && abs(ypart(target_axis)) != infinity) {
@@ -5366,8 +5585,8 @@ CardinalPoints cardinalPoints(OpticalSystem sys,
     real launch_distance = 0.5 * config.physics.far;
     real min_proj = infinity;
     real max_proj = -infinity;
-    FlatSurfaceRecord[] recs = sys.flat_surfaces();
-    for (FlatSurfaceRecord rec : recs) {
+    FlatInterfaceRecord[] recs = sys.flatInterfaces();
+    for (FlatInterfaceRecord rec : recs) {
         if (rec.min_bound.x < infinity && rec.max_bound.x > -infinity) {
             pair[] pts = {rec.min_bound,
                           (rec.min_bound.x, rec.max_bound.y),
@@ -6927,16 +7146,17 @@ pen resolveRayPen(pen pen_base, Ray r, bool apply_op) {
 }
 
 // Complete Renderer Struct
-// Default Surface Drawing Delegate
+// Default Interface Drawing Delegate
 private
-void drawSurfaces(picture pic = currentpicture, Element e) {
-    for (Surface s : e.surfaces) {
-        if (length(s.p) > 0) {
-            transform total_T = e.T * s.T;
-            if (s.fill != nullpen && cyclic(s.p)) {
-                fill(pic, total_T * s.p, s.fill);
+void drawInterfaces(picture pic = currentpicture, Element e) {
+    for (Interface inf : e.interfaces) {
+        Surface surface = inf.surface;
+        if (length(surface.p) > 0) {
+            transform total_T = e.T * surface.T;
+            if (inf.fill != nullpen && cyclic(surface.p)) {
+                fill(pic, total_T * surface.p, inf.fill);
             }
-            draw(pic, total_T * s.p, s.stroke);
+            draw(pic, total_T * surface.p, inf.stroke);
         }
     }
 }
@@ -7057,8 +7277,8 @@ struct Renderer {
 
     void drawElement(picture pic = currentpicture, Element e) {
         bool has_surface_fill = false;
-        for (Surface s : e.surfaces) {
-            if (s.fill != nullpen && cyclic(s.p)) {
+        for (Interface inf : e.interfaces) {
+            if (inf.fill != nullpen && cyclic(inf.surface.p)) {
                 has_surface_fill = true;
                 break;
             }
@@ -7070,7 +7290,7 @@ struct Renderer {
         if (e.custom_draw != null) {
             e.custom_draw(pic, e);
         } else {
-            drawSurfaces(pic, e);
+            drawInterfaces(pic, e);
         }
 
         for (Element child : e.children) {
