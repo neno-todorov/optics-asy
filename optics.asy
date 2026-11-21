@@ -6485,8 +6485,8 @@ void drawTargetConnector(frame f, pair target_pt, pair anchor_pt, frame box_fram
 struct Inset {
     picture pic;              // Content canvas
     pair pos = (nan, nan);    // Local badge/inset position on diagram
+    pair offset = (nan, nan); // Screen-space displacement from target when pos is unset
     pair target = (nan, nan); // Physical target point on ray
-    real gap = nan;           // Optional fixed clearance from target to inset frame
     string title = "";        // Optional title
     string tag = "";          // Badge tag (e.g. "A", "1")
     real size = 20.0;         // Content scale/radius
@@ -6509,27 +6509,20 @@ struct Inset {
     void draw(picture dest = currentpicture, pair position = (nan, nan), pen p = nullpen) {
         pair draw_pos = (!isnan(position.x)) ? position : this.pos;
         dest.add(new void(frame f, transform t) {
-            pair pos_pt = t * draw_pos;
             frame box_content = makeFramedBox(this.pic.fit(), this.box_margin, this.border, this.fill);
-            pair box_min = min(box_content);
-            pair box_max = max(box_content);
-            pair box_center = 0.5 * (box_min + box_max);
-            pair anchor_pt = pos_pt + box_center;
+            bool has_target = !isnan(this.target.x) && !isnan(this.target.y);
+            pair target_pt = has_target ? t * this.target : (0, 0);
+            bool has_position = !isnan(draw_pos.x) && !isnan(draw_pos.y);
+            bool has_offset = !isnan(this.offset.x) && !isnan(this.offset.y);
+            pair pos_pt = has_position ? t * draw_pos
+                                       : ((has_target && has_offset) ? target_pt + this.offset
+                                                                     : (has_target ? target_pt : t * draw_pos));
             frame box_frame = shift(pos_pt) * box_content;
-            // Draw connector line and dot at target point
-            if (!isnan(this.target.x) && !isnan(this.target.y)) {
-                pair target_pt = t * this.target;
-                if (!isnan(this.gap)) {
-                    pair direction = unitOr(anchor_pt - target_pt);
-                    real support =
-                        0.5 * (abs(direction.x) * (box_max.x - box_min.x) + abs(direction.y) * (box_max.y - box_min.y));
-                    anchor_pt = target_pt + (max(0.0, this.gap) + support) * direction;
-                    pos_pt = anchor_pt - box_center;
-                    box_frame = shift(pos_pt) * box_content;
-                }
+
+            if (has_target && target_pt != pos_pt) {
                 pen pen_line = (p != nullpen) ? p : this.getConnectorPen();
                 pen pen_dot = (this.border != nullpen) ? this.border : pen_line;
-                drawTargetConnector(f, target_pt, anchor_pt, box_frame, pen_line, pen_dot);
+                drawTargetConnector(f, target_pt, pos_pt, box_frame, pen_line, pen_dot);
             }
 
             // Stamp boxed inset on canvas
@@ -6539,6 +6532,30 @@ struct Inset {
 
 }
 
+// Shared inset header: every inset uses the same tag pill and title baseline.
+private
+void drawInsetHeader(picture pic, real y, string title, string tag, pen border) {
+    frame header;
+    real title_x = 0.0;
+    if (tag != "") {
+        frame tag_frame;
+        label(tag_frame, Label("\bfseries{\tiny " + tag + "}", white));
+        roundbox(tag_frame, tag_frame, 0.0, 0.0, border, Fill(border), above = false);
+        add(header, tag_frame, N);
+        title_x = max(tag_frame).x;
+    }
+
+    if (title != "") {
+        pair title_anchor = (tag != "") ? (title_x, 0) : (0, 0);
+        label(header, Label("\bfseries{\tiny\strut " + title + "}", border), title_anchor, (tag != "") ? E : W);
+    }
+
+    if (title != "" || tag != "") {
+        pair header_center = ((min(header).x + max(header).x) / 2.0, 0);
+        add(pic, shift((-header_center.x, y)) * header);
+    }
+}
+
 private string
 debugMediumText(Medium med, pair p, string sign) {
     if (med == null) return "dynamic";
@@ -6546,49 +6563,119 @@ debugMediumText(Medium med, pair p, string sign) {
     return name + "$n_{" + sign + "} = " + format("%#.3f", med.n(p)) + "$";
 }
 
-Inset interfaceInfoInsetAt(Element e, int index, real offset = 20.0, pen border = nullpen, pen fill = white) {
-    if (e == null) abort("interfaceInfoInset: element must not be null.");
-    int count = e.interfaces.length;
-    int i = (index < 0) ? index + count : index;
-    if (i < 0 || i >= count) abort("interfaceInfoInset: interface index is out of range.");
-
-    Interface inf = e.interfaces[i];
-    path surface = e.T * inf.surface.T * inf.surface.p;
-    real surface_length = arclength(surface);
-    if (length(surface) == 0 || surface_length <= config.geometry.eps)
-        abort("interfaceInfoInset: interface has no drawable geometry.");
-
-    real s = arctime(surface, 0.5 * surface_length);
-    pair target = point(surface, s);
-    pair tangent = unitOr(dir(surface, s));
-    pair normal = (tangent.y, -tangent.x); // +normal matches Interface.m_pos.
-    if (cyclic(e.boundary)) {
-        pair element_center = e.T * boundaryCenter(e.boundary);
-        if (dot(normal, target - element_center) < 0.0) normal = -normal;
+private
+Inset makeInterfaceInfoInset(Element e,
+                             Interface inf,
+                             transform elem_T,
+                             pair target,
+                             pair normal,
+                             int tag_index,
+                             int fan_index,
+                             real offset,
+                             pen border,
+                             pen fill) {
+    pair outward = normal;
+    path world_boundary = elem_T * e.boundary;
+    bool is_closed = length(e.boundary) > 0 && cyclic(e.boundary);
+    if (is_closed) {
+        real boundary_scale = length(max(world_boundary) - min(world_boundary));
+        real probe = max(config.geometry.eps_intersection * 10.0, 1e-4 * boundary_scale);
+        if (inside(world_boundary, target + probe * normal)) outward = -normal;
     }
-    string interface_name = (inf.name != "") ? texify(inf.name) : format("Interface %d", i + 1);
+
+    pair base_dir = (offset < 0.0) ? -outward : outward;
+    real fan_deg = 0.0;
+    if (fan_index > 0) {
+        real fan_sign = (fan_index % 2 == 1) ? 1.0 : -1.0;
+        fan_deg = fan_sign * 25.0 * ceil(fan_index / 2.0);
+    }
+    pair out_dir = unitOr(rotate(fan_deg) * base_dir, base_dir);
+    string interface_name = (inf.name != "") ? texify(inf.name) : format("Interface %d", tag_index);
 
     Inset info;
     info.title = interface_name;
-    info.tag = format("%d", i + 1);
+    info.tag = format("%d", tag_index);
     info.target = target;
-    info.pos = target + offset * normal;
-    info.gap = abs(offset);
     info.border = (border != nullpen) ? border : ((inf.stroke != nullpen) ? inf.stroke : rgb(0.15, 0.25, 0.55));
     info.connector = info.border + dashed;
     info.fill = fill;
-    info.box_margin = 2.0;
-    label(info.pic, Label("\tiny " + info.tag + ": " + interface_name, info.border), (0, 7), W);
-    label(info.pic, Label("\tiny " + debugMediumText(inf.m_pos, target, "+"), black), (0, -1), W);
-    label(info.pic, Label("\tiny " + debugMediumText(inf.m_neg, target, "-"), black), (0, -8), W);
+    info.box_margin = 2pt;
+    object[] medium_rows = {
+        object(Label("\tiny " + debugMediumText(inf.m_pos, target, "+"), black)),
+        object(Label("\tiny " + debugMediumText(inf.m_neg, target, "-"), black))
+    };
+    frame medium_info = pack(align = S, ... medium_rows);
+    add(info.pic, medium_info);
+    drawInsetHeader(info.pic,
+                    max(medium_info).y + info.title_content_gap,
+                    interface_name,
+                    info.tag,
+                    info.border);
+
+    frame box_content = makeFramedBox(info.pic.fit(), info.box_margin, info.border, info.fill);
+    pair box_edge = point(box_content, -out_dir);
+    info.offset = (length(box_edge) + abs(offset)) * out_dir;
     return info;
 }
 
-Inset[] interfaceInfoInset(Element e, real offset = 20.0, pen border = nullpen, pen fill = white) {
-    if (e == null) abort("interfaceInfoInset: element must not be null.");
+Inset interfaceInfoInsetAt(Element e, int index, real offset = 16pt, pen border = nullpen, pen fill = white) {
+    if (e == null) abort("interfaceInfoInsetAt: element must not be null.");
+    int count = e.interfaces.length;
+    int i = (index < 0) ? index + count : index;
+    if (i < 0 || i >= count) abort("interfaceInfoInsetAt: interface index is out of range.");
+    Interface inf = e.interfaces[i];
+    path surface = e.T * inf.surface.T * inf.surface.p;
+    real surface_length = arclength(surface);
+    if (length(surface) == 0 || surface_length <= config.rendering.min_drawable_length)
+        abort("interfaceInfoInsetAt: interface has no drawable geometry.");
+    real s = arctime(surface, 0.5 * surface_length);
+    pair target = point(surface, s);
+    pair tangent = unitOr(dir(surface, s));
+    return makeInterfaceInfoInset(e, inf, e.T, target, (tangent.y, -tangent.x), i + 1, i, offset, border, fill);
+}
+
+private
+Inset[] collectInterfaceInfoInsets(Element e,
+                                   transform parent_T,
+                                   real offset,
+                                   pen border,
+                                   pen fill,
+                                   int tag_offset = 0) {
     Inset[] info;
-    for (int i = 0; i < e.interfaces.length; ++i) info.push(interfaceInfoInsetAt(e, i, offset, border, fill));
+    if (e == null) return info;
+    transform elem_T = parent_T * e.T;
+    for (int i = 0; i < e.interfaces.length; ++i) {
+        Interface inf = e.interfaces[i];
+        path surface = elem_T * inf.surface.T * inf.surface.p;
+        real surface_length = arclength(surface);
+        if (length(surface) == 0 || surface_length <= config.rendering.min_drawable_length) continue;
+        real s = arctime(surface, 0.5 * surface_length);
+        pair target = point(surface, s);
+        pair tangent = unitOr(dir(surface, s));
+        info.push(makeInterfaceInfoInset(e,
+                                         inf,
+                                         elem_T,
+                                         target,
+                                         (tangent.y, -tangent.x),
+                                         tag_offset + i + 1,
+                                         tag_offset + i,
+                                         offset,
+                                         border,
+                                         fill));
+    }
+
+    int child_tag = tag_offset + e.interfaces.length;
+    for (Element child : e.children) {
+        Inset[] child_info = collectInterfaceInfoInsets(child, elem_T, offset, border, fill, child_tag);
+        for (Inset inset : child_info) info.push(inset);
+        child_tag += child.interfaceCount();
+    }
     return info;
+}
+
+Inset[] interfaceInfoInset(Element e, real offset = 16pt, pen border = nullpen, pen fill = white) {
+    if (e == null) abort("interfaceInfoInset: element must not be null.");
+    return collectInterfaceInfoInsets(e, identity(), offset, border, fill);
 }
 
 arrowbar operator cast(ResolvedArrow a) {
@@ -8423,33 +8510,6 @@ real resolveSegmentOffset(Segment seg,
     }
     // Default for bounded segments: exact geometric midpoint (relative = 0.5)
     return 0.5 * L;
-}
-
-// Shared inset header: every inset uses the same tag pill and title baseline.
-private
-void drawInsetHeader(picture pic, real y, string title, string tag, pen border) {
-    frame header;
-    real title_x = 0.0;
-    if (tag != "") {
-        frame tag_frame;
-        label(tag_frame, Label("\bfseries{\tiny " + tag + "}", white));
-        roundbox(tag_frame, tag_frame, 0.0, 0.0, border, Fill(border), above = false);
-        add(header, tag_frame, N);
-        title_x = max(tag_frame).x;
-    }
-
-    if (title != "") {
-        // Keep the title vertically centered with or without a badge.  N
-        // alignment makes a badge-less title extend downward from its anchor,
-        // creating an unnecessarily large title/content gap.
-        pair title_anchor = (tag != "") ? (title_x, 0) : (0, 0);
-        label(header, Label("\bfseries{\tiny\strut " + title + "}", border), title_anchor, (tag != "") ? E : W);
-    }
-
-    if (title != "" || tag != "") {
-        pair header_center = ((min(header).x + max(header).x) / 2.0, 0);
-        add(pic, shift((-header_center.x, y)) * header);
-    }
 }
 
 // Polarization Inset Factory (From raw Polarization state)

@@ -3849,10 +3849,12 @@ write("Regression Suite: Wave, Polarization, Thin-Film, Diffraction, Crystal, & 
     Element inset_test_element = refractiveElement((0, -5) -- (0, 5), side_glass, Materials.AIR);
     Inset[] inset_positive = interfaceInfoInset(inset_test_element, 20);
     Inset[] inset_negative = interfaceInfoInset(inset_test_element, -20);
-    assert_near_pair("Positive inset offset follows interface normal",
-                     inset_positive[0].pos - inset_positive[0].target,
-                     -(inset_negative[0].pos - inset_negative[0].target), 1e-12);
-    assert_near("Inset offset magnitude sets frame clearance", inset_negative[0].target_gap, 20.0, 1e-12);
+    assert_near_pair("Negative inset offset moves to the opposite side",
+                     inset_positive[0].offset, -inset_negative[0].offset, 1e-12);
+    assert_near("Inset offset sets screen-space clearance", length(inset_negative[0].offset),
+                length(inset_positive[0].offset), 1e-12);
+    assert_true("All-interface inset factory includes nested element faces",
+                interfaceInfoInset(composite_aperture).length == composite_aperture.interfaceCount());
 
     Interface mutable_interface = Interface(Surface.planar((0, 0), (1, 0), 10),
                                              m_pos = side_glass,
