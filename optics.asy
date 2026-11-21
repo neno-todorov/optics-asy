@@ -205,6 +205,7 @@ arrowhead effectivePolArrowHead() {
 // Readability alias: use `complex` for optical amplitudes and indices,
 // `pair` for geometric quantities.  Both are the same Asymptote `pair` type.
 typedef pair complex;
+complex operator cast(real n) { return (n, 0.0); }
 
 // Soft Color Palette
 pen base_red = rgb(0.96, 0.50, 0.50);    // Soft red
@@ -481,77 +482,7 @@ struct Polarization {
     // ========================================================================
     // Static Factories
     // ========================================================================
-    // 1. Unpolarized light
-    static Polarization unpolarized(real intensity = 1.0) {
-        Polarization p = new Polarization;
-        p.S0 = intensity;
-        p.S1 = 0.0;
-        p.S2 = 0.0;
-        p.S3 = 0.0;
-        return p;
-    }
-
-    // 2. Linear polarization at angle theta
-    static Polarization linear(real theta, real intensity = 1.0) {
-        Polarization p = new Polarization;
-        real th = radians(theta);
-        p.S0 = intensity;
-        p.S1 = intensity * cos(2.0 * th);
-        p.S2 = intensity * sin(2.0 * th);
-        p.S3 = 0.0;
-        return p;
-    }
-
-    // 3. Circular polarization (+1: RCP, -1: LCP)
-    static Polarization circular(bool ccw = true, real intensity = 1.0) {
-        Polarization p = new Polarization;
-        p.S0 = intensity;
-        p.S1 = 0.0;
-        p.S2 = 0.0;
-        p.S3 = (ccw ? 1.0 : -1.0) * intensity;
-        return p;
-    }
-
-    // 4. Elliptical polarization via Poincaré angles (psi, chi)
-    static Polarization ellipticalFromAngles(real psi, real chi, real intensity = 1.0) {
-        Polarization p = new Polarization;
-        real psi_rad = radians(psi);
-        real chi_rad = radians(chi);
-        p.S0 = intensity;
-        p.S1 = intensity * cos(2.0 * chi_rad) * cos(2.0 * psi_rad);
-        p.S2 = intensity * cos(2.0 * chi_rad) * sin(2.0 * psi_rad);
-        p.S3 = intensity * sin(2.0 * chi_rad);
-        return p;
-    }
-
-    // Alias for elliptical polarization specified by Poincare-sphere angles.
-    static Polarization fromAngles(real psi, real chi, real intensity = 1.0) {
-        return ellipticalFromAngles(psi, chi, intensity);
-    }
-
-    static Polarization
-    elliptical(real a = 1.0, real b = 0.5, real phase = 90.0, real theta = 0.0, real intensity = nan) {
-        real delta_rad = radians(phase);
-        real theta_rad = radians(theta);
-
-        real s0 = a * a + b * b;
-        real s1 = a * a - b * b;
-        real s2 = 2.0 * a * b * cos(delta_rad);
-        real s3 = 2.0 * a * b * sin(delta_rad);
-
-        real c2 = cos(2.0 * theta_rad);
-        real s2_th = sin(2.0 * theta_rad);
-
-        Polarization p = new Polarization;
-        p.S0 = s0;
-        p.S1 = s1 * c2 - s2 * s2_th;
-        p.S2 = s1 * s2_th + s2 * c2;
-        p.S3 = s3;
-        if (!isnan(intensity) && s0 > config.math.eps) p.scaleTo(intensity);
-        return p;
-    }
-
-    // Convenient direct Stokes constructor:
+    // Static Factories
     static Polarization stokes(real s0, real s1, real s2 = 0.0, real s3 = 0.0) {
         Polarization p = new Polarization;
         p.S0 = s0;
@@ -561,20 +492,53 @@ struct Polarization {
         return p;
     }
 
-    // Factory constructor from complex Jones amplitudes (parallel to .stokes())
-    static Polarization jones(pair Es, pair Ep) {
-        Polarization pol = new Polarization;
-        real Is = abs2(Es);
-        real Ip = abs2(Ep);
-        pair cross = 2.0 * conj(Es) * Ep;
+    // OPTIMIZATION: Factories delegate directly to Polarization.stokes()
+    static Polarization unpolarized(real intensity = 1.0) { return Polarization.stokes(intensity, 0.0, 0.0, 0.0); }
 
-        pol.S0 = Is + Ip;
-        pol.S1 = Is - Ip;
-        pol.S2 = cross.x;
-        pol.S3 = cross.y;
-        return pol;
+    static Polarization linear(real theta, real intensity = 1.0) {
+        real th = radians(theta);
+        return Polarization.stokes(intensity, intensity * cos(2.0 * th), intensity * sin(2.0 * th), 0.0);
     }
 
+    static Polarization circular(bool ccw = true, real intensity = 1.0) {
+        return Polarization.stokes(intensity, 0.0, 0.0, (ccw ? 1.0 : -1.0) * intensity);
+    }
+
+    static Polarization
+    elliptical(real a = 1.0, real b = 0.5, real phase = 90.0, real theta = 0.0, real intensity = nan) {
+        real delta_rad = radians(phase);
+        real theta_rad = radians(theta);
+
+        real s0 = a * a + b * b;
+        real s1_unrot = a * a - b * b;
+        real s2_unrot = 2.0 * a * b * cos(delta_rad);
+        real s3 = 2.0 * a * b * sin(delta_rad);
+
+        real c2 = cos(2.0 * theta_rad);
+        real s2_th = sin(2.0 * theta_rad);
+
+        real s1 = s1_unrot * c2 - s2_unrot * s2_th;
+        real s2 = s1_unrot * s2_th + s2_unrot * c2;
+
+        Polarization p = Polarization.stokes(s0, s1, s2, s3);
+        if (!isnan(intensity) && s0 > config.math.eps) p.scaleTo(intensity);
+        return p;
+    }
+
+    static Polarization ellipticalFromAngles(real psi, real chi, real intensity = 1.0) {
+        real psi_rad = radians(psi), chi_rad = radians(chi);
+        real c2c = cos(2.0 * chi_rad);
+        return Polarization.stokes(intensity,
+                                   intensity * c2c * cos(2.0 * psi_rad),
+                                   intensity * c2c * sin(2.0 * psi_rad),
+                                   intensity * sin(2.0 * chi_rad));
+    }
+
+    static Polarization jones(pair Es, pair Ep) {
+        real Is = abs2(Es), Ip = abs2(Ep);
+        pair cross = 2.0 * conj(Es) * Ep;
+        return Polarization.stokes(Is + Ip, Is - Ip, cross.x, cross.y);
+    }
 }
 
 pair[] toJones(Polarization pol, real tol = config.math.eps) {
@@ -965,26 +929,21 @@ VolumeProperty gain(real g) {
     return vp;
 }
 
-// Linear dichroism.  alpha_s acts on light polarized along `axis`
-// (measured in the Stokes frame, 0 = s/TE), alpha_p on the orthogonal state.
+// OPTIMIZATION: Hoisted invariant angle conversion outside step closure
 VolumeProperty dichroic(real alpha_s, real alpha_p, real axis = 0.0) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "Dichroic";
-    real axis = radians(axis);
-
+    real axis_rad = radians(axis);
     vp.polarization_step = new Polarization(Polarization in_pol, pair p, pair d, real lambda, real ds) {
         if (in_pol == null) return null;
         if (ds <= 0) return copy(in_pol);
-
         Polarization out = copy(in_pol);
         real ds_um = geometryToUm(ds);
         real Ts = exp(-alpha_s * ds_um);
         real Tp = exp(-alpha_p * ds_um);
-        // Rotate into the dichroic eigenframe, apply the Mueller
-        // diattenuator, and rotate back.
-        if (axis != 0) out.applyRotation(-axis);
+        if (axis_rad != 0) out.applyRotation(-axis_rad);
         applyDiattenuation(out, out, Ts, Tp);
-        if (axis != 0) out.applyRotation(axis);
+        if (axis_rad != 0) out.applyRotation(axis_rad);
         return out;
     };
     return vp;
@@ -1081,37 +1040,31 @@ VolumeProperty uniaxialExtraordinary(real no, real ne, pair optic_axis = (1, 0))
     return vp;
 }
 
-// Optical Activity / Natural Polarization Rotation
+// OPTIMIZATION: Hoisted invariant rot_per_unit conversion outside step closure
 VolumeProperty opticalActivity(real rot_per_unit) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "OpticalActivity";
-
     vp.polarization_step = new Polarization(Polarization in_pol, pair p, pair d, real lambda, real ds) {
         if (in_pol == null) return null;
         if (ds <= 0) return copy(in_pol);
         Polarization out = copy(in_pol);
-
         real theta = radians(rot_per_unit * geometryToUm(ds));
         out.applyRotation(theta);
-
         return out;
     };
     return vp;
 }
 
-// Faraday Rotation: theta = V * (B . d) * ds (Non-reciprocal magnetic rotation)
+// OPTIMIZATION: Hoisted invariant magnetic vector dot conversion outside step closure
 VolumeProperty faradayRotator(real V, pair B = (1, 0)) {
     VolumeProperty vp = new VolumeProperty;
     vp.name = "FaradayRotator";
-
     vp.polarization_step = new Polarization(Polarization in_pol, pair p, pair d, real lambda, real ds) {
         if (in_pol == null) return null;
         if (ds <= 0) return copy(in_pol);
         Polarization out = copy(in_pol);
-
         real theta = radians(V * dot(B, d) * geometryToUm(ds));
         out.applyRotation(theta);
-
         return out;
     };
     return vp;
@@ -1571,22 +1524,6 @@ FresnelResult solveIsotropicInterface(complex n1_in, complex n2_in, pair inc_wav
     return res;
 }
 
-// Backward-Compatible Overloads
-// Overload: real n1, complex n2
-FresnelResult solveIsotropicInterface(real n1, complex n2_in, pair inc_wave_normal, pair N_into2, pair T_surf) {
-    return solveIsotropicInterface((n1, 0.0), n2_in, inc_wave_normal, N_into2, T_surf);
-}
-
-// Overload: complex n1, real n2
-FresnelResult solveIsotropicInterface(complex n1_in, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
-    return solveIsotropicInterface(n1_in, (n2, 0.0), inc_wave_normal, N_into2, T_surf);
-}
-
-// Overload: real n1, real n2
-FresnelResult solveIsotropicInterface(real n1, real n2, pair inc_wave_normal, pair N_into2, pair T_surf) {
-    return solveIsotropicInterface((n1, 0.0), (n2, 0.0), inc_wave_normal, N_into2, T_surf);
-}
-
 struct Ray {
     int id = -1;
     int parent_id = -1;
@@ -1863,6 +1800,7 @@ Polarization interfereState(Ray[] rays) {
     return Polarization.jones(Es_tot, Ep_tot);
 }
 
+// OPTIMIZATION: Variadic interfere / interfereState using direct array delegation
 Polarization interfereState( ... Ray[] rays) { return interfereState(rays); }
 
 // Computes detected irradiance from any number of rays meeting at a screen/detector point
@@ -6533,8 +6471,7 @@ struct Inset {
 }
 
 // Shared inset header: every inset uses the same tag pill and title baseline.
-private
-void drawInsetHeader(picture pic, real y, string title, string tag, pen border) {
+private void drawInsetHeader(picture pic, real y, string title, string tag, pen border) {
     frame header;
     real title_x = 0.0;
     if (tag != "") {
@@ -6556,8 +6493,8 @@ void drawInsetHeader(picture pic, real y, string title, string tag, pen border) 
     }
 }
 
-private string
-debugMediumText(Medium med, pair p, string sign) {
+private
+string debugMediumText(Medium med, pair p, string sign) {
     if (med == null) return "dynamic";
     string name = (med.name != "") ? texify(med.name) + ": " : "";
     return name + "$n_{" + sign + "} = " + format("%#.3f", med.n(p)) + "$";
@@ -6600,17 +6537,11 @@ Inset makeInterfaceInfoInset(Element e,
     info.connector = info.border + dashed;
     info.fill = fill;
     info.box_margin = 2pt;
-    object[] medium_rows = {
-        object(Label("\tiny " + debugMediumText(inf.m_pos, target, "+"), black)),
-        object(Label("\tiny " + debugMediumText(inf.m_neg, target, "-"), black))
-    };
+    object[] medium_rows = {object(Label("\tiny " + debugMediumText(inf.m_pos, target, "+"), black)),
+                            object(Label("\tiny " + debugMediumText(inf.m_neg, target, "-"), black))};
     frame medium_info = pack(align = S, ... medium_rows);
     add(info.pic, medium_info);
-    drawInsetHeader(info.pic,
-                    max(medium_info).y + info.title_content_gap,
-                    interface_name,
-                    info.tag,
-                    info.border);
+    drawInsetHeader(info.pic, max(medium_info).y + info.title_content_gap, interface_name, info.tag, info.border);
 
     frame box_content = makeFramedBox(info.pic.fit(), info.box_margin, info.border, info.fill);
     pair box_edge = point(box_content, -out_dir);
@@ -9161,73 +9092,72 @@ Inset interferenceInset(Trace trace,
 
 // Draw dimension lines and labels
 void distance(picture pic = currentpicture,
-              string L = "",
+              Label L = Label(""),
               pair A,
               pair B,
-              // 1. Structure & Geometry (How it's built)
+              // 1. Structure & Geometry
               real offset = 0bp,
               bool rotated = true,
               bool extensions = true,
-              // 2. Label Styling (How the text looks)
-              align align = Center,
-              filltype fill = UnFill(0pt),
-              pen textpen = currentpen,
-              // 3. Line Styling (How the line looks)
+              bool leftExtension = true,
+              bool rightExtension = true,
+              // 2. Line Styling
               pen linepen = grey + dashed,
               arrowbar arrow = Arrows(HookHead, 5pt),
               arrowbar bar = Bars,
               margin margin = PenMargins) {
     real D = abs(B - A);
+
     add(
         pic,
         new void(frame f, transform t) {
             pair A = t * A;
             pair B = t * B;
 
-            string s_l = L;
-            if (s_l == "") s_l = format("%#.2f", D);
-
-            pair d = B - A;
-            real dist = abs(d);
+            real dist = abs(B - A);
             if (dist == 0) return;
 
+            // Use supplied label or generate automatic distance
+            Label lab = L;
+            if (L.s == "") lab = Label(format("%#.2f", D));
+
+            pair d = B - A;
             pair u = unit(d);
             pair n = rotate(90) * u;
 
-            // True positions of the dimension line in the frame
+            // Dimension line positions
             pair A_dim = A + offset * n;
             pair B_dim = B + offset * n;
 
             // Extension lines
-            if (extensions) draw(f, A -- A_dim ^^ B -- B_dim, linepen);
+            if (extensions && leftExtension) draw(f, A -- A_dim, linepen);
 
-            // Local coordinates for the temporary picture
+            if (extensions && rightExtension) draw(f, B -- B_dim, linepen);
+
+            // Local coordinates
             pair p_a = rotated ? (0, 0) : A_dim;
             pair p_b = rotated ? (dist, 0) : B_dim;
 
             picture tmp;
 
-            // Build the Label using only the function's explicit arguments
-            Label lab = Label(s_l, align = align, p = textpen, filltype = fill);
-
             draw(tmp, lab, p_a -- p_b, linepen + solid, arrow = arrow, bar = bar, margin = margin);
 
-            // Transform: shift by true start point if rotated, otherwise do nothing
+            // Transform
             transform trans = rotated ? shift(A_dim) * rotate(degrees(u)) : identity();
+
             add(f, trans * tmp.fit());
         });
 }
 
-// Second overload wrapper for paths
+// Second overload: paths
 void distance(picture pic = currentpicture,
-              string L = "",
+              Label L = Label(""),
               path g,
               real offset = 0bp,
               bool rotated = true,
               bool extensions = true,
-              align align = Center,
-              filltype fill = UnFill(0pt),
-              pen textpen = currentpen,
+              bool leftExtension = true,
+              bool rightExtension = true,
               pen linepen = grey + dashed,
               arrowbar arrow = Arrows(HookHead, 5pt),
               arrowbar bar = Bars,
@@ -9235,7 +9165,6 @@ void distance(picture pic = currentpicture,
     pair A = point(g, 0);
     pair B = point(g, length(g));
 
-    // Explicitly forward everything using named arguments to ensure no mismatches
     distance(pic = pic,
              L = L,
              A = A,
@@ -9243,9 +9172,8 @@ void distance(picture pic = currentpicture,
              offset = offset,
              rotated = rotated,
              extensions = extensions,
-             align = align,
-             fill = fill,
-             textpen = textpen,
+             leftExtension = leftExtension,
+             rightExtension = rightExtension,
              linepen = linepen,
              arrow = arrow,
              bar = bar,

@@ -1764,7 +1764,7 @@ assert_near("Elliptical S2", el1.S2, 0.0, 1e-5);
 assert_near("Elliptical S3", el1.S3, 1.0, 1e-5);
 assert_near("Elliptical DOP", el1.dop(), 1.0, 1e-5);
 
-Polarization el2 = Polarization.fromAngles(psi = 45.0, chi = 20.0, intensity = 1.0);
+Polarization el2 = Polarization.ellipticalFromAngles(psi = 45.0, chi = 20.0, intensity = 1.0);
 
 assert_stokes_physical("Elliptical state 2", el2);
 assert_near("Poincare S1", el2.S1, 0.0, 1e-4);
@@ -1900,7 +1900,7 @@ Element crystal = crystal(box((0.0, -20.0), (20.0, 20.0)), calcite_o, calcite_e,
 OpticalSystem sys_energy = system(crystal, Materials.VACUUM);
 
 // Launch arbitrary elliptical polarization at 40 deg incidence
-Polarization p_in = Polarization.fromAngles(25.0, 15.0, 1.0); // Intensity = 1.0
+Polarization p_in = Polarization.ellipticalFromAngles(25.0, 15.0, 1.0); // Intensity = 1.0
 Ray r_in = Ray((-10, 0), unit((cos(radians(40.0)), sin(radians(40.0)))), pol = p_in);
 
 Trace t = sys_energy.trace(r_in);
@@ -1935,7 +1935,7 @@ assert_near("Absorbed S0 = exp(-alpha L)", rg_absOut.S0, rg_direct_transmission,
 assert_near("Absorbed S1 decays with S0", rg_absOut.S1, rg_direct_transmission, 1e-9);
 assert_stokes_physical("Absorbed linear state", rg_absOut, 1e-12);
 
-Polarization rg_ell = Polarization.fromAngles(20.0, 10.0, 1.0);
+Polarization rg_ell = Polarization.ellipticalFromAngles(20.0, 10.0, 1.0);
 Polarization rg_ellOut = rg_absMed.stepPolarization(rg_ell, (0, 0), (1, 0), 633.0, 3.0);
 assert_near("Absorbed elliptical state keeps DoP = 1",
             sqrt(rg_ellOut.S1 ^ 2 + rg_ellOut.S2 ^ 2 + rg_ellOut.S3 ^ 2) / rg_ellOut.S0,
@@ -2114,8 +2114,8 @@ assert_near("Mirror agrees with dielectric normal-incidence handedness flip",
             1e-9);
 Trace rg_tRetro =
     system(new Element[]{Mirror.flat((25, 0), 90, 50), Mirror.flat((0, 25), 0, 50)})
-        .trace(Ray((40, 30), (-cos(radians(37)), -sin(radians(37))), pol = Polarization.fromAngles(15, 20)));
-Polarization rg_retroIn = Polarization.fromAngles(15, 20);
+        .trace(Ray((40, 30), (-cos(radians(37)), -sin(radians(37))), pol = Polarization.ellipticalFromAngles(15, 20)));
+Polarization rg_retroIn = Polarization.ellipticalFromAngles(15, 20);
 Polarization rg_retroOut = rg_tRetro.reflected(1).pol;
 assert_near("Two reflections restore S2", rg_retroOut.S2, rg_retroIn.S2, 1e-9);
 assert_near("Two reflections restore S3", rg_retroOut.S3, rg_retroIn.S3, 1e-9);
@@ -2180,7 +2180,7 @@ Medium rg_ue = uniaxialExtraordinary("ue", 1.658, 1.486, unit((1, 2)));
 mediumResolver rg_resU = new Medium(pair p, Ray r, Medium m1, Medium m2, bool from_m1) {
     return (p.x > 0) ? rg_uo : Materials.VACUUM;
 };
-Ray rg_ru = Ray((-1, 0), dir(35), Materials.VACUUM, pol = Polarization.fromAngles(10, 5));
+Ray rg_ru = Ray((-1, 0), dir(35), Materials.VACUUM, pol = Polarization.ellipticalFromAngles(10, 5));
 FresnelResult rg_fu = fresnelUniaxial(rg_ru, rg_h, Materials.VACUUM, rg_uo, rg_ue, rg_resU);
 assert_near("Uniaxial R + T = 1", rg_fu.R + rg_fu.T, 1.0, 1e-12);
 assert_near("Uniaxial T = incident-weighted To/Te",
@@ -2232,7 +2232,7 @@ write("Test Case 77: Fresnel Mueller transmission/reflection invariants");
 Element rg_iface = refractiveElement((0, -50) -- (0, 50), Materials.VACUUM, medium("g", 1.5));
 real[] rg_incs = {0.0, 20.0, 50.0, 70.0, 85.0};
 for (real th : rg_incs) {
-    Polarization rg_pin = Polarization.fromAngles(30.0, 12.0, 1.0);
+    Polarization rg_pin = Polarization.ellipticalFromAngles(30.0, 12.0, 1.0);
     Trace rg_tf = system(rg_iface).trace(Ray((0, 0) - 10 * dir(th), dir(th), pol = rg_pin));
     Interaction rg_fix = rg_tf.interaction(0);
     Ray rg_tr = rg_fix.transmitted[0];
